@@ -92,6 +92,8 @@ function Sidebar({
   onDeleteSession,
   onRefresh,
   onSleep,
+  onConsolidate,
+  consolidating,
   pollSleep,
 }: {
   sessions: Session[];
