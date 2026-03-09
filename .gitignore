@@ -1,0 +1,24 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Runtime data
+data/
+adapters/
+
+# OS
+.DS_Store
+
+# PID files
+.kaida.pids
+.frameo.pids
+
+# IDE
+.idea/
+.vscode/
+
+# Next.js
+ui/.next/
+ui/node_modules/
