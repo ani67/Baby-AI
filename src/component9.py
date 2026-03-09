@@ -168,6 +168,13 @@ def get_fact_count() -> int:
     return len(_facts)
 
 
+def get_all_facts(n: int = 20) -> list[Fact]:
+    """Return up to n facts, most recent first. No semantic filtering."""
+    _ensure_init()
+    all_facts = sorted(_facts.values(), key=lambda f: f.timestamp, reverse=True)
+    return all_facts[:n]
+
+
 # ---------- prompt augmentation ----------
 
 
@@ -215,7 +222,7 @@ def _augmented_submit_correction(prompt: str, correct_completion: str) -> None:
     """Submit correction and auto-store it as a fact. No-op if not initialised."""
     _original_submit_correction(prompt, correct_completion)
     if _initialised:
-        store_fact(correct_completion, "user_correction", 0.95)
+        store_fact(correct_completion, "user_correction", 0.75)
 
 
 component3.submit_correction = _augmented_submit_correction

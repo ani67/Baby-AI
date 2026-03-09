@@ -104,6 +104,8 @@ function Sidebar({
   onDeleteSession: (id: string) => void;
   onRefresh: () => void;
   onSleep: () => void;
+  onConsolidate: () => void;
+  consolidating: boolean;
   pollSleep: () => void;
 }) {
   return (
@@ -168,6 +170,17 @@ function Sidebar({
               }`}
             >
               {sleeping ? "sleeping" : "sleep"}
+            </button>
+            <button
+              onClick={onConsolidate}
+              disabled={consolidating || sleeping}
+              className={`text-xs transition-colors cursor-pointer ${
+                consolidating || sleeping
+                  ? "text-[#333] cursor-default"
+                  : "text-[#555] hover:text-[var(--accent)]"
+              }`}
+            >
+              {consolidating ? "..." : "consolidate"}
             </button>
             <button
               onClick={onRefresh}
@@ -364,6 +377,7 @@ export default function Home() {
   const [showQueued, setShowQueued] = useState(false);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [consolidating, setConsolidating] = useState(false);
   const prevSleepState = useRef<string>("awake");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -669,6 +683,15 @@ export default function Home() {
                 setTimeout(pollSleep, 200);
               } catch {}
             }}
+            onConsolidate={async () => {
+              setConsolidating(true);
+              try {
+                await fetch(`${API}/consolidate`, { method: "POST" });
+                fetchStatus();
+              } catch {}
+              setConsolidating(false);
+            }}
+            consolidating={consolidating}
             pollSleep={pollSleep}
           />
         </div>

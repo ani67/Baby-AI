@@ -35,7 +35,8 @@ _SEVEN_DAYS = 7 * 24 * 60 * 60
 _THIRTY_DAYS = 30 * 24 * 60 * 60
 _TWENTY_FOUR_HOURS = 24 * 60 * 60
 
-TRIGGER_EPISODE_COUNT = 100      # consolidate every N new episodes
+TRIGGER_EPISODE_COUNT = 100      # consolidate every N new episodes (after first)
+TRIGGER_FIRST_COUNT = 30         # first consolidation triggers earlier
 TRIGGER_STORE_SIZE = 500         # consolidate when store exceeds this
 LOSS_REVERT_THRESHOLD = 0.10     # revert if loss increases by >10%
 
@@ -45,6 +46,7 @@ _LOG_FILE = _LOG_DIR / "consolidation_log.jsonl"
 # ---------- state ----------
 
 _episodes_since_last = 0
+_first_consolidation_done = False
 _last_consolidation_time = time.time()
 _consolidation_thread: threading.Thread | None = None
 _stop_event = threading.Event()
@@ -188,7 +190,7 @@ def _log_report(report: ConsolidationReport, reverted: bool = False):
 
 def run_consolidation_cycle() -> ConsolidationReport:
     """Run one full consolidation cycle. Can be called manually or by the background thread."""
-    global _episodes_since_last, _last_consolidation_time
+    global _episodes_since_last, _first_consolidation_done, _last_consolidation_time
 
     t_start = time.time()
 
@@ -244,6 +246,7 @@ def run_consolidation_cycle() -> ConsolidationReport:
 
     # Reset counters
     _episodes_since_last = 0
+    _first_consolidation_done = True
     _last_consolidation_time = time.time()
 
     report = ConsolidationReport(
@@ -263,7 +266,8 @@ def run_consolidation_cycle() -> ConsolidationReport:
 def should_consolidate() -> bool:
     """Check if any trigger condition is met."""
     component4._ensure_init()
-    if _episodes_since_last >= TRIGGER_EPISODE_COUNT:
+    threshold = TRIGGER_FIRST_COUNT if not _first_consolidation_done else TRIGGER_EPISODE_COUNT
+    if _episodes_since_last >= threshold:
         return True
     if time.time() - _last_consolidation_time > _TWENTY_FOUR_HOURS:
         return True

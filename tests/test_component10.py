@@ -29,12 +29,17 @@ from component10 import (
     _MAX_PROMPT_TOKENS,
     _count_tokens,
     _is_garbled,
+    _is_meta_question,
+    _handle_meta_question,
     _conversation_history,
     _extract_user_facts,
     _extract_ai_facts,
     _check_repeated_topics,
     _run_sleep_cycle,
     _SLEEP_INACTIVITY,
+    run_consolidation_only,
+    get_ablation_status,
+    set_ablation,
 )
 from component7 import InternalState
 
@@ -270,7 +275,7 @@ def test_user_declarative_stored_as_fact():
         matching = [f for f in facts if f.source == "conversation"]
         assert len(matching) >= 1
         assert any("Python" in f.fact for f in matching)
-        assert all(f.confidence == 0.7 for f in matching)
+        assert all(f.confidence == 0.85 for f in matching)
         stop()
     finally:
         shutil.rmtree(fresh)
@@ -452,3 +457,82 @@ def test_sleep_status_during_and_after():
     finally:
         shutil.rmtree(fresh)
         start(data_dir=_tmpdir)
+
+
+# ---------- FIX 3: date injection ----------
+
+
+def test_date_in_prompt():
+    """Augmented prompt should include today's date after system prompt."""
+    import datetime
+    today = datetime.date.today().strftime("%B %d %Y")
+    result = _build_augmented_prompt("Hello", [], [])
+    assert today in result
+    # Date must come after system prompt
+    sys_end = result.index(_SYSTEM_PROMPT) + len(_SYSTEM_PROMPT)
+    date_pos = result.index(today)
+    assert date_pos > sys_end
+
+
+# ---------- FIX 5: meta-question detection ----------
+
+
+def test_meta_question_detected():
+    """Meta-questions about memory should be detected."""
+    assert _is_meta_question("What do you know about me?")
+    assert _is_meta_question("what have I told you so far")
+    assert _is_meta_question("Do you know who I am?")
+    assert not _is_meta_question("What is the weather today?")
+    assert not _is_meta_question("Tell me a joke")
+
+
+def test_meta_question_lists_facts():
+    """Meta-question handler should list all stored facts."""
+    fresh = tempfile.mkdtemp(prefix="meta_test_")
+    try:
+        start(data_dir=fresh)
+        component9.store_fact("Ani uses Python", "conversation", 0.85)
+        component9.store_fact("Ani likes coffee", "conversation", 0.85)
+
+        result = _handle_meta_question("what do you know about me")
+        assert "Ani uses Python" in result
+        assert "Ani likes coffee" in result
+        stop()
+    finally:
+        shutil.rmtree(fresh)
+        start(data_dir=_tmpdir)
+
+
+# ---------- FIX 6: consolidation-only ----------
+
+
+def test_consolidation_only():
+    """run_consolidation_only() should return a report dict."""
+    result = run_consolidation_only()
+    assert "episodes_processed" in result
+    assert "episodes_pruned" in result
+    assert "duration_seconds" in result
+
+
+# ---------- FIX 7: ablation ----------
+
+
+def test_ablation_defaults():
+    """Ablation flags should default to False."""
+    status = get_ablation_status()
+    assert status["no_store"] is False
+    assert status["no_lora"] is False
+
+
+def test_ablation_set_and_reset():
+    """Ablation flags should be settable."""
+    set_ablation(no_store=True)
+    assert get_ablation_status()["no_store"] is True
+    assert get_ablation_status()["no_lora"] is False
+
+    set_ablation(no_store=False, no_lora=True)
+    assert get_ablation_status()["no_store"] is False
+    assert get_ablation_status()["no_lora"] is True
+
+    # Reset
+    set_ablation(no_store=False, no_lora=False)

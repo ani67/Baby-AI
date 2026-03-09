@@ -179,10 +179,10 @@ def test_submit_correction_stores_fact():
         # The stored fact should be the correction text
         facts = retrieve_facts("answer is 4")
         assert any("The answer is 4" in f.fact for f in facts)
-        # Should have user_correction source and 0.95 confidence
+        # Should have user_correction source and 0.75 confidence
         correction_facts = [f for f in facts if f.source == "user_correction"]
         assert len(correction_facts) >= 1
-        assert correction_facts[0].confidence == 0.95
+        assert correction_facts[0].confidence == 0.75
     finally:
         shutil.rmtree(fresh)
         component9.init(data_dir=_tmpdir)

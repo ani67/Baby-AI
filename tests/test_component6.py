@@ -117,11 +117,20 @@ def test_selection_picks_high_importance():
 
 
 def test_trigger_episode_count():
-    """Should trigger after TRIGGER_EPISODE_COUNT new episodes."""
+    """Should trigger after TRIGGER_FIRST_COUNT (30) for first consolidation."""
     component6._episodes_since_last = 0
+    component6._first_consolidation_done = False
     assert not should_consolidate()
 
-    # Simulate 100 new episodes
+    # Simulate 30 new episodes — should trigger first consolidation
+    for _ in range(30):
+        notify_new_episode()
+    assert should_consolidate()
+
+    # After first consolidation, threshold goes back to 100
+    component6._episodes_since_last = 0
+    component6._first_consolidation_done = True
+    assert not should_consolidate()
     for _ in range(100):
         notify_new_episode()
     assert should_consolidate()

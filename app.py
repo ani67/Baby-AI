@@ -115,3 +115,25 @@ def trigger_sleep():
     import threading
     threading.Thread(target=component10._run_sleep_cycle, daemon=True).start()
     return {"ok": True}
+
+
+@app.post("/consolidate")
+def consolidate():
+    result = component10.run_consolidation_only()
+    return {"ok": True, **result}
+
+
+@app.get("/ablation-status")
+def ablation_status():
+    return component10.get_ablation_status()
+
+
+class AblationRequest(BaseModel):
+    no_store: bool | None = None
+    no_lora: bool | None = None
+
+
+@app.post("/ablation")
+def set_ablation(req: AblationRequest):
+    component10.set_ablation(no_store=req.no_store, no_lora=req.no_lora)
+    return component10.get_ablation_status()

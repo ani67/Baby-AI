@@ -232,17 +232,50 @@ _STOP_WORDS = {
 # ---------- prompt building ----------
 
 _SYSTEM_PROMPT = (
-    "You are Kaida Reed, an AI assistant. "
-    "The person you are talking to is Ani Dalal. "
+    "You are Kaida Reed, an AI assistant built by Ani Dalal. "
+    "The person talking to you is Ani Dalal. "
     "You are not Ani. You are not human. "
-    "Never refer to yourself as Ani Dalal. "
-    "When Ani says Hi, say Hi back briefly. "
+    "Never introduce yourself as Ani Dalal. "
+    "Never describe yourself as a product designer or generative artist. "
+    "Those describe Ani, not you. "
     "Match response length to message length. "
     "Short input gets short output. "
-    "Only elaborate when explicitly asked."
+    "Never say 'here is the concise answer' or any variation. "
+    "Never add commentary to facts Ani tells you. "
+    "When Ani tells you something about themselves, just acknowledge briefly. "
+    "When uncertain, say so. Have opinions when asked."
 )
 
 _MAX_PROMPT_TOKENS = 2000
+
+# ---------- ablation flags ----------
+
+ABLATION_NO_STORE = False  # skip knowledge/episodic retrieval in prompts
+ABLATION_NO_LORA = False   # use base model weights only for inference
+
+# ---------- meta-question detection ----------
+
+_META_PATTERNS = [
+    "what do you know about me",
+    "what have i told you",
+    "what do you remember",
+    "do you know who i am",
+    "what do you know about yourself",
+]
+
+
+def _is_meta_question(prompt: str) -> bool:
+    lower = prompt.lower()
+    return any(p in lower for p in _META_PATTERNS)
+
+
+def _handle_meta_question(prompt: str) -> str:
+    """Handle meta-questions by listing all stored facts."""
+    all_facts = component9.get_all_facts(n=20)
+    if not all_facts:
+        return "I don't have any stored facts yet."
+    lines = [f"- {f.fact}" for f in all_facts]
+    return "Here's what I know:\n" + "\n".join(lines)
 
 
 def _count_tokens(text: str) -> int:
@@ -297,6 +330,10 @@ def _build_augmented_prompt(
     # 0. System prompt — ALWAYS first, cannot be overridden
     system_part = _SYSTEM_PROMPT
 
+    # 0b. Date injection — always right after system prompt
+    import datetime
+    date_part = f"Today's date is {datetime.date.today().strftime('%B %d %Y')}."
+
     # 1. Past episode context (long-term memory) — corrections only
     corrections = [ep for ep in (episodes or [])[:5] if ep.correction is not None]
     correction_lines = []
@@ -324,8 +361,8 @@ def _build_augmented_prompt(
     user_part = f"Answer ONLY the following. Be concise.\nUser: {prompt}"
 
     # --- token budget enforcement ---
-    # Fixed parts that are never truncated: system_part, facts_part, user_part
-    fixed = "\n\n".join(p for p in [system_part, facts_part, user_part] if p)
+    # Fixed parts that are never truncated: system_part, date_part, facts_part, user_part
+    fixed = "\n\n".join(p for p in [system_part, date_part, facts_part, user_part] if p)
     budget_remaining = _MAX_PROMPT_TOKENS - _count_tokens(fixed)
 
     # Trim history first (oldest first)
@@ -343,7 +380,7 @@ def _build_augmented_prompt(
         correction_lines.pop(0)
 
     # Assemble final prompt
-    parts = [system_part]
+    parts = [system_part, date_part]
     if correction_lines:
         parts.append("Corrections to remember:\n" + "\n".join(correction_lines))
     if facts_part:
@@ -361,11 +398,12 @@ def _build_augmented_prompt(
 
 
 def _extract_user_facts(prompt: str):
-    """Store first-person declarative statements as facts."""
+    """Store first-person declarative statements as facts and queue for LoRA training."""
     lower = prompt.lower()
     for pattern in _USER_DECLARATIVES:
         if pattern in lower:
-            component9.store_fact(prompt, "conversation", 0.7)
+            component9.store_fact(prompt, "conversation", 0.85)
+            component3.submit_correction(prompt, prompt)
             return
 
 
@@ -606,32 +644,75 @@ def chat(prompt: str) -> str:
 
     _last_activity = time.time()
 
-    # 1. Retrieve relevant facts
-    facts = component9.retrieve_facts(prompt, n=5)
-    high_conf_facts = [f for f in facts if f.confidence > 0.7]
+    # 0. Meta-question shortcut — list all facts, skip inference
+    if _is_meta_question(prompt):
+        response = _handle_meta_question(prompt)
+        _conversation_history.append((prompt, response))
+        for s in _sessions:
+            if s["id"] == _current_session_id:
+                if s["title"] == "New conversation":
+                    s["title"] = prompt[:50] + ("..." if len(prompt) > 50 else "")
+                break
+        _sync_history_to_session()
+        component4.store_episode(prompt, response, None, time.time())
+        return response
 
-    # 2. Retrieve similar past episodes
-    episodes = component4.get_similar_episodes(prompt, n=5)
+    # 1. Retrieve relevant facts (skip if ablation)
+    if ABLATION_NO_STORE:
+        high_conf_facts = []
+        episodes = []
+    else:
+        facts = component9.retrieve_facts(prompt, n=5)
+        high_conf_facts = [f for f in facts if f.confidence > 0.7]
+        episodes = component4.get_similar_episodes(prompt, n=5)
 
-    # 3. Build augmented prompt (facts + history + current prompt)
+    # 2. Build augmented prompt (facts + history + current prompt)
     augmented = _build_augmented_prompt(
         prompt, high_conf_facts, episodes,
         history=_conversation_history[-_MAX_HISTORY:],
     )
 
-    # 4. Run inference (bypass component9's fact hook — we already included facts)
-    response = component9._original_query(augmented)
+    # 3. Run inference
+    if ABLATION_NO_LORA:
+        # Use base model weights — zero out LoRA params, infer, restore
+        from component3 import _model_lock
+        from component1 import _model, _tokenizer
+        from mlx_lm.sample_utils import make_sampler
+        from mlx.utils import tree_flatten
+        import mlx.core as mx
+        import mlx_lm
 
-    # 4b. Sanity check — retry once with lower temperature if garbled
+        with _model_lock:
+            snapshot = {name: mx.array(param) for name, param in tree_flatten(_model.trainable_parameters())}
+            _model.load_weights(
+                [(name, mx.zeros_like(param)) for name, param in snapshot.items()],
+                strict=False,
+            )
+            mx.eval(_model.parameters())
+            formatted = _tokenizer.apply_chat_template(
+                [{"role": "user", "content": augmented}],
+                add_generation_prompt=True, tokenize=False,
+            )
+            response = mlx_lm.generate(
+                _model, _tokenizer, prompt=formatted,
+                max_tokens=256, sampler=make_sampler(temp=0.7),
+            )
+            _model.load_weights(list(snapshot.items()), strict=False)
+            mx.eval(_model.parameters())
+    else:
+        response = component9._original_query(augmented)
+
+    # 3b. Sanity check — retry once with lower temperature if garbled
     if _is_garbled(response):
         logger.warning("[GARBLED] Response failed sanity check, retrying with temp=0.3: %s", response[:200])
-        from component3 import _model_lock, query as _c3_query
+        from component3 import _model_lock
         with _model_lock:
             from component1 import _model, _tokenizer
             from mlx_lm.sample_utils import make_sampler
             import mlx_lm
             formatted = _tokenizer.apply_chat_template(
-                [{"role": "user", "content": augmented}], add_generation_prompt=True
+                [{"role": "user", "content": augmented}],
+                add_generation_prompt=True, tokenize=False,
             )
             response = mlx_lm.generate(
                 _model, _tokenizer, prompt=formatted,
@@ -639,7 +720,7 @@ def chat(prompt: str) -> str:
             )
         if _is_garbled(response):
             logger.error("[GARBLED] Retry also garbled: %s", response[:200])
-            response = "I'm having trouble generating a clear response. Could you try rephrasing?"
+            response = "I encountered an error, please try again."
 
     # Record in conversation history
     _conversation_history.append((prompt, response))
@@ -653,19 +734,18 @@ def chat(prompt: str) -> str:
 
     _sync_history_to_session()
 
-    # 5. Store episode (synchronous — next chat() needs to see it)
+    # 4. Store episode (synchronous — next chat() needs to see it)
     component4.store_episode(prompt, response, None, time.time())
 
-    # 6. Scoring is automatic via component5 hook in store_episode
+    # 5. Scoring is automatic via component5 hook in store_episode
 
-    # 7-9. Background: state update, auto-learning, teacher trigger
+    # 6-8. Background: state update, auto-learning, teacher trigger
     threading.Thread(
         target=_post_inference_tasks,
         args=(prompt, response),
         daemon=True,
     ).start()
 
-    # 10. Return response
     return response
 
 
@@ -683,6 +763,36 @@ def get_system_status() -> SystemStatus:
         uptime_seconds=uptime,
         self_narrative=_generate_self_narrative(),
     )
+
+
+# ---------- consolidation-only ----------
+
+
+def run_consolidation_only() -> dict:
+    """Run consolidation immediately without full sleep cycle."""
+    report = component6.run_consolidation_cycle()
+    return {
+        "episodes_processed": report.episodes_processed,
+        "episodes_pruned": report.episodes_pruned,
+        "loss_before": round(report.adapter_loss_before, 6),
+        "loss_after": round(report.adapter_loss_after, 6),
+        "duration_seconds": round(report.duration_seconds, 2),
+    }
+
+
+# ---------- ablation ----------
+
+
+def get_ablation_status() -> dict:
+    return {"no_store": ABLATION_NO_STORE, "no_lora": ABLATION_NO_LORA}
+
+
+def set_ablation(no_store: bool | None = None, no_lora: bool | None = None):
+    global ABLATION_NO_STORE, ABLATION_NO_LORA
+    if no_store is not None:
+        ABLATION_NO_STORE = no_store
+    if no_lora is not None:
+        ABLATION_NO_LORA = no_lora
 
 
 # ---------- self-narrative ----------
