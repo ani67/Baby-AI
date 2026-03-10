@@ -1,21 +1,11 @@
-#!/bin/bash
-# Stop Kaida Reed — kill backend + frontend
-DIR="$(cd "$(dirname "$0")" && pwd)"
-PIDFILE="$DIR/.kaida.pids"
+#!/usr/bin/env bash
+# stop.sh — kills backend, frontend, and (optionally) Ollama
 
-DIM='\033[2m'
-RESET='\033[0m'
-BLUE='\033[0;34m'
+pkill -f "uvicorn main:app" 2>/dev/null && echo "Backend stopped" || echo "Backend not running"
+pkill -f "vite"             2>/dev/null && echo "Frontend stopped" || echo "Frontend not running"
 
-if [ -f "$PIDFILE" ]; then
-    while read -r pid; do
-        kill "$pid" 2>/dev/null
-    done < "$PIDFILE"
-    rm -f "$PIDFILE"
+read -p "Stop Ollama too? [y/N] " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    pkill -f "ollama serve" 2>/dev/null && echo "Ollama stopped" || echo "Ollama not running"
 fi
-
-# Also kill by port as fallback
-lsof -ti:8000 | xargs kill 2>/dev/null || true
-lsof -ti:3000 | xargs kill 2>/dev/null || true
-
-echo -e "${BLUE}kaida${RESET} stopped"

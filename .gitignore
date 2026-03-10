@@ -1,24 +1,27 @@
 # Python
-.venv/
 __pycache__/
 *.pyc
 *.pyo
+.venv/
+*.egg-info/
 
-# Runtime data
-data/
-adapters/
+# Node
+node_modules/
+dist/
+
+# Data & checkpoints (generated at runtime)
+backend/data/
+backend/*.db
+backend/*.sqlite
+*.pt
+
+# Logs
+.logs/
 
 # OS
 .DS_Store
-
-# PID files
-.kaida.pids
-.frameo.pids
+Thumbs.db
 
 # IDE
-.idea/
 .vscode/
-
-# Next.js
-ui/.next/
-ui/node_modules/
+.idea/

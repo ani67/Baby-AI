@@ -1,101 +1,109 @@
-# AI-Experiments
+# Baby AI
 
-A continuous local AI system that learns and self-corrects on an M1 Mac. Built as 10 modular components inspired by biological brain architecture — episodic memory, importance scoring, sleep consolidation, internal state monitoring, and multi-teacher learning.
+A developmental AI that grows a neural architecture from scratch. It starts with no knowledge, asks questions of a local teacher LLM, learns from the answers, and evolves its own internal structure over time. You watch it happen in real time through a 3D graph visualization.
+
+Everything runs locally on an M1 Mac. One script starts everything.
 
 ## What it does
 
-A Llama-3.2-3B model runs locally via MLX with LoRA adapters. When you chat with it, it:
+1. A **curriculum** picks a training item (image or text concept)
+2. A **teacher LLM** (LLaVA via Ollama) answers a question about it
+3. **CLIP** encodes the answer into a 512-dimensional vector
+4. The **baby model** processes it through a graph of clusters and nodes
+5. **Forward-Forward learning** updates weights locally (no backpropagation)
+6. A **growth system** evolves the architecture: splitting clusters, adding layers, pruning weak connections
+7. The **3D visualizer** shows the living graph in real time via WebSocket
 
-1. Retrieves relevant memories and facts to augment its response
-2. Stores the interaction as an episodic memory
-3. Scores the interaction's importance (like an amygdala)
-4. Monitors its own uncertainty, novelty, and coherence (proto-self)
-5. When uncertain, asks teacher models (Ollama phi4-mini + Gemini Flash) for training data
-6. Periodically consolidates memories during "sleep" — pruning low-value episodes, strengthening important ones
-7. Learns from corrections immediately — user feedback becomes both a fact and a training signal
-
-All inference and training happen simultaneously via a double-buffer system. No downtime.
+The model doesn't use gradient descent. Each node learns independently using the Forward-Forward algorithm — positive examples strengthen activations, negative examples suppress them. The architecture itself grows and prunes based on activation patterns.
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  Component 10: Orchestrator                                  │
-│  Ties everything together. chat() is the main entry point.   │
-├──────────────────────────────────────────────────────────────┤
-│                                                              │
-│  ┌─────────────┐  ┌─────────────┐  ┌──────────────────────┐ │
-│  │ 1. Base      │  │ 2. LoRA     │  │ 3. Double-Buffer     │ │
-│  │ Inference    │  │ Training    │  │ (train + infer       │ │
-│  │ (Llama 3B)  │  │ (112 params)│  │  simultaneously)     │ │
-│  └─────────────┘  └─────────────┘  └──────────────────────┘ │
-│                                                              │
-│  ┌─────────────┐  ┌─────────────┐  ┌──────────────────────┐ │
-│  │ 4. Episodic  │  │ 5. Importance│ │ 6. Consolidation    │ │
-│  │ Store       │  │ Scorer      │  │ ("Sleep")            │ │
-│  │ (ChromaDB)  │  │ (Amygdala)  │  │ Prune + strengthen   │ │
-│  └─────────────┘  └─────────────┘  └──────────────────────┘ │
-│                                                              │
-│  ┌─────────────┐  ┌─────────────┐  ┌──────────────────────┐ │
-│  │ 7. State     │  │ 8. Teacher  │  │ 9. Knowledge Store   │ │
-│  │ Monitor     │  │ Ensemble    │  │ (Facts, not weights)  │ │
-│  │ (Proto-self)│  │ (Ollama +   │  │ Anti-hallucination    │ │
-│  │             │  │  Gemini)    │  │                      │ │
-│  └─────────────┘  └─────────────┘  └──────────────────────┘ │
-└──────────────────────────────────────────────────────────────┘
+frontend (React + Three.js)     backend (FastAPI + Python)
+┌─────────────────────────┐     ┌────────────────────────────────┐
+│  3D Graph Visualizer    │     │  Learning Loop (orchestrator)  │
+│  Dialogue Feed (Q/T/M)  │◄───►│  Baby Model (graph of clusters)│
+│  Controls & Chat        │ WS  │  Teacher Bridge (Ollama/LLaVA) │
+└─────────────────────────┘     │  CLIP Encoder/Decoder          │
+                                │  Growth Monitor                │
+                                │  Viz Emitter                   │
+                                └────────────────────────────────┘
 ```
 
-## Components
+### Baby Model
 
-| # | Component | What it does |
-|---|-----------|-------------|
-| 1 | **Base Inference** | Loads Llama-3.2-3B via MLX. ~0.6s per response. |
-| 2 | **LoRA Training** | 112 trainable parameters. Single-step fine-tuning from corrections. |
-| 3 | **Double-Buffer** | Two LoRA adapters (A serves, B trains). Atomic swap. Metal lock for thread safety. |
-| 4 | **Episodic Store** | ChromaDB + JSON persistence. Similarity retrieval. Survives restarts. |
-| 5 | **Importance Scorer** | Scores interactions 0-1. Drives learning rate (0.1→1e-5, 1.0→5e-4). |
-| 6 | **Consolidation** | "Sleep" cycle every 100 episodes or 24hrs. Prunes low-value memories, replays important ones. Safety: reverts if loss increases >10%. |
-| 7 | **State Monitor** | Tracks uncertainty, novelty, coherence, confidence via ring buffers. Flags uncertainty > 0.7 to trigger teacher queries. |
-| 8 | **Teacher Ensemble** | Ollama phi4-mini (local) + Gemini Flash (API). Consensus via word overlap. Rate-limited (10/hr). Background worker thread. |
-| 9 | **Knowledge Store** | Separate fact store. User corrections → facts at 0.95 confidence. Augments prompts with relevant facts. |
-| 10 | **Orchestrator** | `chat()` entry point. Retrieves context, runs inference, stores episode, triggers background learning. Self-narrative from state + history. |
+- **Nodes**: Each has a 512-dim weight vector and bias. Activation = `tanh(w·x + b)`.
+- **Clusters**: Groups of 8 nodes. A cluster's output is the weighted sum of its nodes' activations.
+- **Graph**: Clusters connected by edges with learned strengths. Organized in layers.
+- **Forward pass**: Input routes through the graph layer by layer, following edges.
+- **Learning**: Forward-Forward algorithm — no backprop, no global loss function. Each node adjusts its own weights based on whether the current example is positive or negative.
 
-## Stack
+### Growth Operations
 
-- **Model**: Llama-3.2-3B (~3.5GB) via MLX
-- **Training**: LoRA via MLX-LM (112 parameters)
-- **Memory**: ChromaDB (all-MiniLM-L6-v2 embeddings)
-- **Teachers**: Ollama (phi4-mini) + Gemini Flash API
-- **Backend**: FastAPI
-- **Frontend**: Next.js
-- **Tests**: pytest (82 tests)
+| Operation | What it does |
+|-----------|-------------|
+| **BUD** | Splits a cluster with bimodal activations into two |
+| **CONNECT** | Adds an edge between clusters that frequently co-activate |
+| **PRUNE** | Removes edges that are weak and unused |
+| **INSERT** | Adds a new cluster between two existing ones with high residual |
+| **EXTEND** | Adds a new layer on top when the top layer collapses |
+| **DORMANT** | Deactivates clusters that haven't fired in a long time |
+
+Growth is capped at 64 active clusters. PRUNE and DORMANT still run to reclaim space.
+
+### Learning Stages
+
+- **Stage 0**: Pure exposure. The model sees everything as positive (except every 3rd step = noise). Growth is aggressive. Auto-advances to stage 1 after 100 steps at the cluster cap.
+- **Stage 1**: Real learning. Model predictions are compared to teacher answers via cosine similarity. An adaptive threshold (median of last 25 scores) determines positive vs negative — roughly 50/50 split for maximum contrast signal.
+- **Stage 2+**: Same as 1, with EXTEND enabled. Not meaningfully different yet.
+
+### Training Data
+
+~998 items across two modalities:
+- **656 images** across 93 categories (animals, vehicles, food, nature, objects, scenes)
+- **342 text concepts** (emotions, opposites, actions, abstract concepts, sensory words, spatial, temporal)
+
+Images are downloaded from loremflickr.com via `seed_data.py`. Text concepts are CLIP-encoded at training time.
 
 ## Running
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Start (launches backend + frontend)
+# Full system (recommended)
 bash start.sh
 
-# Stop
-bash stop.sh
+# This starts:
+#   - Ollama (teacher LLM)
+#   - Backend (FastAPI on port 8000)
+#   - Frontend (Vite on port 5180)
+#   - Opens browser automatically
 
-# Run tests
-pytest tests/
+# Seed more training data
+cd backend && python3 seed_data.py
+
+# Manual control
+curl -X POST localhost:8000/start    # start training
+curl -X POST localhost:8000/pause    # pause
+curl -X POST localhost:8000/step     # single step
+curl -s localhost:8000/status         # check status
 ```
 
-Requires: Python 3.11+, Node.js 18+, Ollama with phi4-mini model.
+## Requirements
 
-## Design Documents
+- macOS with Apple Silicon (M1/M2/M3)
+- Python 3.11+
+- Node.js 18+
+- Ollama with LLaVA model
 
-The `Context/` folder contains the architectural thinking behind each component:
+## What you see
 
-- `build-spec.md` — Master spec with component interfaces and session prompts
-- `continuous-training-paradigm.md` — Why the freeze-then-fine-tune cycle is wrong
-- `memory-and-wiring-problem.md` — Why memory needs episodic + knowledge layers
-- `brain-architecture-scaling.md` — Biological grounding for importance and state monitoring
-- `model-dialogue-training.md` — Why teacher ensemble beats search-based training
-- `from-scratch-minimum-model.md` — Why the model is small and facts live outside weights
-- `modality-emergence-self.md` — Self-narrative and multimodality roadmap
+- **3D graph**: Clusters as colored spheres (size = activation, pulse = active, dim = dead). Edges show connections (opacity = strength). Force-directed layout where structure emerges from the data.
+- **Dialogue feed**: Each training step shows Q (question), T (teacher answer), M (model answer). Green check = positive example, red cross = negative.
+- **"Talk to it"**: Send text to the model and see its decoded response.
+- **Controls**: Start/pause/step, speed slider, stage buttons, image upload.
+
+## Stack
+
+- **Backend**: Python, FastAPI, PyTorch, MLX CLIP, SQLite
+- **Frontend**: React, TypeScript, Three.js (React Three Fiber), Zustand, Vite
+- **Teacher**: Ollama + LLaVA
+- **Encoding**: CLIP ViT-B/32 (512-dim vectors)
