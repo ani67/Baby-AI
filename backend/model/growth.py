@@ -161,6 +161,7 @@ class GrowthMonitor:
         self._coactivation: dict[tuple, deque] = {}
         self._residuals: dict[tuple, deque] = {}
         self._activation_history: dict[str, deque] = {}
+        self._bud_cooldown: dict[str, int] = {}  # cluster_id → step when last budded
 
     def record_step(
         self,
@@ -199,7 +200,19 @@ class GrowthMonitor:
             and cluster.output_coherence < 0.4
             and cluster.age > 200
             and not cluster.dormant
+            and cluster.id not in self._bud_cooldown
         )
+
+    def mark_budded(self, cluster_id: str, step: int) -> None:
+        """Record that a cluster was budded at this step (500-step cooldown)."""
+        self._bud_cooldown[cluster_id] = step
+
+    def clear_expired_cooldowns(self, current_step: int) -> None:
+        """Remove cooldown entries older than 500 steps."""
+        self._bud_cooldown = {
+            cid: s for cid, s in self._bud_cooldown.items()
+            if current_step - s < 500
+        }
 
     def should_prune(self, edge: Edge) -> bool:
         return edge.strength < 0.05 and edge.steps_since_activation > 150

@@ -26,8 +26,13 @@ export function useLoopControl() {
     setStatus(status)
   }, [setStatus])
 
-  const reset = useCallback(async () => {
-    const status = await api.reset()
+  const reset = useCallback(async (notes: {
+    architecture_state: string
+    signal_quality: string
+    why_reset: string
+    what_was_learned: string
+  }) => {
+    const status = await api.reset(notes)
     setStatus(status)
   }, [setStatus])
 

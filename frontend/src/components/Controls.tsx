@@ -7,6 +7,7 @@ export function Controls() {
   const status = useLoopStore(s => s.status)
   const { start, pause, resume, step, reset, setStage, setSpeed } =
     useLoopControl()
+  const [showResetModal, setShowResetModal] = useState(false)
 
   const isRunning = status?.state === 'running'
   const isPaused = status?.state === 'paused' || status?.state === 'idle'
@@ -32,10 +33,20 @@ export function Controls() {
         >
           STEP
         </button>
-        <button onClick={reset} className="btn-ghost">
+        <button onClick={() => setShowResetModal(true)} className="btn-ghost">
           RESET
         </button>
       </div>
+
+      {showResetModal && (
+        <ResetModal
+          onConfirm={async (notes) => {
+            await reset(notes)
+            setShowResetModal(false)
+          }}
+          onCancel={() => setShowResetModal(false)}
+        />
+      )}
 
       {/* Speed */}
       <div className="control-group">
@@ -68,6 +79,79 @@ export function Controls() {
 
       {/* Image URL paste */}
       <ImageUrlInput />
+    </div>
+  )
+}
+
+const RESET_FIELDS = [
+  { key: 'architecture_state', label: 'Architecture State', placeholder: 'Describe the current graph structure, cluster count, layer depth...' },
+  { key: 'signal_quality', label: 'Signal Quality', placeholder: 'How was the positive/negative signal? Threshold behavior, saturation...' },
+  { key: 'why_reset', label: 'Why Reset', placeholder: 'What went wrong or what do you want to try differently...' },
+  { key: 'what_was_learned', label: 'What Was Learned', placeholder: 'Key observations, patterns noticed, hypotheses confirmed/rejected...' },
+] as const
+
+interface ResetNotes {
+  architecture_state: string
+  signal_quality: string
+  why_reset: string
+  what_was_learned: string
+}
+
+function ResetModal({ onConfirm, onCancel }: {
+  onConfirm: (notes: ResetNotes) => Promise<void>
+  onCancel: () => void
+}) {
+  const [notes, setNotes] = useState<ResetNotes>({
+    architecture_state: '',
+    signal_quality: '',
+    why_reset: '',
+    what_was_learned: '',
+  })
+  const [submitting, setSubmitting] = useState(false)
+
+  const allValid = RESET_FIELDS.every(f => notes[f.key].trim().length >= 10)
+
+  const handleConfirm = async () => {
+    setSubmitting(true)
+    try {
+      await onConfirm(notes)
+    } catch {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="reset-modal-overlay" onClick={onCancel}>
+      <div className="reset-modal" onClick={e => e.stopPropagation()}>
+        <h3>Reset Experiment</h3>
+        <p className="reset-modal-desc">Document your observations before resetting. All fields require at least 10 characters.</p>
+
+        {RESET_FIELDS.map(({ key, label, placeholder }) => (
+          <div key={key} className="reset-field">
+            <label>{label}</label>
+            <textarea
+              value={notes[key]}
+              onChange={e => setNotes(prev => ({ ...prev, [key]: e.target.value }))}
+              placeholder={placeholder}
+              rows={3}
+            />
+            {notes[key].length > 0 && notes[key].trim().length < 10 && (
+              <span className="reset-field-hint">{10 - notes[key].trim().length} more chars needed</span>
+            )}
+          </div>
+        ))}
+
+        <div className="reset-modal-actions">
+          <button onClick={onCancel} className="btn-ghost" disabled={submitting}>Cancel</button>
+          <button
+            onClick={handleConfirm}
+            className="btn-primary"
+            disabled={!allValid || submitting}
+          >
+            {submitting ? 'Resetting...' : 'Confirm Reset'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

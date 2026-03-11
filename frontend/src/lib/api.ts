@@ -5,7 +5,20 @@ export const api = {
   pause:    () => fetch(`${BASE_URL}/pause`, { method: 'POST' }).then(r => r.json()),
   resume:   () => fetch(`${BASE_URL}/resume`, { method: 'POST' }).then(r => r.json()),
   step:     () => fetch(`${BASE_URL}/step`, { method: 'POST' }).then(r => r.json()),
-  reset:    () => fetch(`${BASE_URL}/reset`, { method: 'POST' }).then(r => r.json()),
+  reset: (notes: {
+    architecture_state: string
+    signal_quality: string
+    why_reset: string
+    what_was_learned: string
+  }) =>
+    fetch(`${BASE_URL}/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(notes),
+    }).then(r => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      return r.json()
+    }),
   status:   () => fetch(`${BASE_URL}/status`).then(r => r.json()),
   snapshot: () => fetch(`${BASE_URL}/snapshot`).then(r => r.json()),
 

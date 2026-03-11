@@ -15,7 +15,7 @@ from models import (
     StatusResponse, StepResponse, StageRequest, SpeedRequest,
     ChatRequest, ChatResponse, ImageUrlRequest, ImageUploadResponse,
     BulkImageUrlRequest, BulkImageResult, BulkImageUploadResponse,
-    SnapshotResponse,
+    SnapshotResponse, ResetRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -290,8 +290,44 @@ async def step_once():
 
 
 @app.post("/reset", response_model=StatusResponse)
-async def reset():
+async def reset(body: ResetRequest):
+    # Save experiment notes before resetting
+    from pathlib import Path
+    from datetime import datetime
+
     loop = app.state.loop
+    store = app.state.store
+    step = loop.model.step
+    stage = loop.get_status().stage
+
+    notes_dir = Path("data/experiment_notes")
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    notes_path = notes_dir / f"reset_step{step}_{ts}.md"
+
+    notes_path.write_text(
+        f"# Experiment Reset — Step {step}, Stage {stage}\n"
+        f"**Date:** {datetime.now().isoformat()}\n\n"
+        f"## Architecture State\n{body.architecture_state}\n\n"
+        f"## Signal Quality\n{body.signal_quality}\n\n"
+        f"## Why Reset\n{body.why_reset}\n\n"
+        f"## What Was Learned\n{body.what_was_learned}\n"
+    )
+    print(f"[reset] notes saved to {notes_path}", flush=True)
+
+    # Delete all checkpoint .pt files on disk
+    ckpt_dir = Path("data/checkpoints")
+    deleted = 0
+    if ckpt_dir.exists():
+        for pt_file in ckpt_dir.glob("*.pt"):
+            pt_file.unlink()
+            deleted += 1
+
+    # Clear SQLite tables so next run starts fresh
+    store.clear_for_reset()
+
+    print(f"[reset] deleted {deleted} checkpoint files, cleared dialogue history", flush=True)
+
     await loop.reset()
     return loop.get_status()
 

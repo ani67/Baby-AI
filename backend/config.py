@@ -26,6 +26,13 @@ class Config:
     snapshot_interval: int = 50
     projection_interval: int = 10
 
+    # Inhibition
+    inhibition_radius: float = 0.92       # cosine similarity threshold (very similar only)
+    suppression_factor: float = 0.5       # halve suppressed activations (not obliterate)
+
+    # Resonance
+    resonance_threshold: float = 0.02     # min cosine sim to input for cluster to participate
+
     @property
     def device(self) -> str:
         try:

@@ -180,16 +180,27 @@ interface NodeSphereProps {
 
 function NodeSphere({ node, color, activation }: NodeSphereProps) {
   const meshRef = useRef<THREE.Mesh>(null)
+  const matRef = useRef<THREE.MeshStandardMaterial>(null)
   const baseScale = 0.12 + Math.abs(node.activation_mean) * 0.08
+  // Track dormant fade — starts at current opacity, fades to 0.15 over ~500ms
+  const dormantTarget = node.alive ? 0.9 : 0.15
+  const emissiveTarget = node.alive ? color : '#2a2a2a'
 
   useFrame((_, delta) => {
     if (!meshRef.current) return
+    // Scale pulse
     const target = activation > 0.1
       ? baseScale * 1.5
       : baseScale
     const current = meshRef.current.scale.x
     const next = current + (target - current) * Math.min(delta * ANIMATION.PULSE_LERP_SPEED, 1)
     meshRef.current.scale.setScalar(next)
+
+    // Smooth opacity fade (dormant transition ~500ms)
+    if (matRef.current) {
+      const currentOpacity = matRef.current.opacity
+      matRef.current.opacity += (dormantTarget - currentOpacity) * Math.min(delta * 4, 1)
+    }
   })
 
   return (
@@ -200,13 +211,14 @@ function NodeSphere({ node, color, activation }: NodeSphereProps) {
     >
       <sphereGeometry args={[1, 8, 8]} />
       <meshStandardMaterial
-        color={color}
-        emissive={color}
+        ref={matRef}
+        color={node.alive ? color : '#2a2a2a'}
+        emissive={emissiveTarget}
         emissiveIntensity={0.4 + activation * 0.6}
         roughness={0.6}
         metalness={0.2}
         transparent
-        opacity={node.alive ? 0.9 : 0.15}
+        opacity={dormantTarget}
       />
     </mesh>
   )

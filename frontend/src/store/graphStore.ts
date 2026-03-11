@@ -47,6 +47,18 @@ interface SnapshotMessage {
   model_stats?: Record<string, unknown>
 }
 
+interface DeltaMessage {
+  activated: string[]
+  deactivated: string[]
+  activation_values: Record<string, number>
+  edges_formed: [string, string, number][]
+  edges_pruned: [string, string][]
+  clusters_added: GraphCluster[]
+  clusters_dormanted: string[]
+  positions: Record<string, [number, number, number]>
+  nodes_added?: GraphNode[]
+}
+
 interface GraphState {
   nodes: GraphNode[]
   clusters: GraphCluster[]
@@ -56,6 +68,7 @@ interface GraphState {
 
   setSnapshot: (snapshot: SnapshotMessage) => void
   applyDiff: (diff: GraphDiff, positionsStale: boolean) => void
+  applyDelta: (delta: DeltaMessage) => void
   setActivations: (activations: Record<string, number>) => void
   updatePositions: (positions: Record<string, [number, number, number]>) => void
   triggerGrowthEvents: (events: GrowthEvent[]) => void
@@ -128,6 +141,69 @@ export const useGraphStore = create<GraphState>((set) => ({
     }
 
     return { nodes, clusters, edges }
+  }),
+
+  applyDelta: (delta) => set((state) => {
+    let nodes = state.nodes
+    let clusters = state.clusters
+    let edges = state.edges
+
+    // Add new clusters
+    if (delta.clusters_added.length > 0) {
+      const existingIds = new Set(clusters.map(c => c.id))
+      const newClusters = delta.clusters_added.filter(c => !existingIds.has(c.id))
+      if (newClusters.length > 0) {
+        clusters = [...clusters, ...newClusters]
+      }
+    }
+
+    // Add nodes for new clusters
+    if (delta.nodes_added && delta.nodes_added.length > 0) {
+      const existingIds = new Set(nodes.map(n => n.id))
+      const newNodes = delta.nodes_added.filter(n => !existingIds.has(n.id))
+      if (newNodes.length > 0) {
+        nodes = [...nodes, ...newNodes]
+      }
+    }
+
+    // Mark dormanted clusters
+    if (delta.clusters_dormanted.length > 0) {
+      const dormantSet = new Set(delta.clusters_dormanted)
+      clusters = clusters.map(c =>
+        dormantSet.has(c.id) ? { ...c, dormant: true } : c
+      )
+    }
+
+    // Add formed edges
+    if (delta.edges_formed.length > 0) {
+      const existingKeys = new Set(edges.map(e => `${e.from}-${e.to}`))
+      const newEdges = delta.edges_formed
+        .filter(([f, t]) => !existingKeys.has(`${f}-${t}`))
+        .map(([f, t, s]) => ({ from: f, to: t, strength: s }))
+      if (newEdges.length > 0) {
+        edges = [...edges, ...newEdges]
+      }
+    }
+
+    // Remove pruned edges
+    if (delta.edges_pruned.length > 0) {
+      const prunedKeys = new Set(delta.edges_pruned.map(([f, t]) => `${f}-${t}`))
+      edges = edges.filter(e => !prunedKeys.has(`${e.from}-${e.to}`))
+    }
+
+    // Update positions — only changed nodes
+    if (delta.positions && Object.keys(delta.positions).length > 0) {
+      nodes = nodes.map(n =>
+        delta.positions[n.id] ? { ...n, pos: delta.positions[n.id] } : n
+      )
+    }
+
+    return {
+      nodes,
+      clusters,
+      edges,
+      activations: delta.activation_values,
+    }
   }),
 
   setActivations: (activations) => set({ activations }),

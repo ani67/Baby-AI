@@ -48,6 +48,13 @@ class ImageUploadResponse(BaseModel):
     message: str
 
 
+class ResetRequest(BaseModel):
+    architecture_state: str
+    signal_quality: str
+    why_reset: str
+    what_was_learned: str
+
+
 class StatusResponse(BaseModel):
     state: str
     step: int

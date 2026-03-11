@@ -90,10 +90,13 @@ class Projector:
             offsets = self._node_offsets(weights, spread=0.25)
 
             for node, offset in zip(living, offsets):
+                ox = offset[0] if len(offset) > 0 else 0.0
+                oy = offset[1] if len(offset) > 1 else 0.0
+                oz = offset[2] if len(offset) > 2 else 0.0
                 node.pos = [
-                    float(cx + offset[0]),
-                    float(cy + offset[1]),
-                    float(cz + offset[2]),
+                    float(cx + ox),
+                    float(cy + oy),
+                    float(cz + oz),
                 ]
                 self._last_positions[node.id] = node.pos
 

@@ -14,6 +14,15 @@ class QuestionGenerator:
         "Name what you see.",
     ]
 
+    CONCEPT_TEMPLATES = [
+        "Tell me about {label}.",
+        "What is {label}?",
+        "Describe {label}.",
+        "What do you know about {label}?",
+        "Explain {label}.",
+        "What does {label} mean?",
+    ]
+
     TEMPLATES = {
         0: [
             "What is this? [IMAGE: {description}]",
@@ -55,6 +64,15 @@ class QuestionGenerator:
                 if not self._too_similar(question, recent_questions):
                     return question
             return random.choice(self.IMAGE_TEMPLATES)
+
+        # For concept items (text-only, no image), use concept templates
+        if item.item_type == "concept" or not item.image_path:
+            label = item.label or "this"
+            for attempt in range(10):
+                question = random.choice(self.CONCEPT_TEMPLATES).format(label=label)
+                if not self._too_similar(question, recent_questions):
+                    return question
+            return f"Tell me about {label}."
 
         templates = self.TEMPLATES.get(stage, self.TEMPLATES[4])
         for attempt in range(10):

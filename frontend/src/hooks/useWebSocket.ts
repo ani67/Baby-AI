@@ -5,6 +5,7 @@ import { useLoopStore } from '../store/loopStore'
 
 export function useWebSocket(url: string) {
   const applyDiff = useGraphStore(s => s.applyDiff)
+  const applyDelta = useGraphStore(s => s.applyDelta)
   const setSnapshot = useGraphStore(s => s.setSnapshot)
   const setActivations = useGraphStore(s => s.setActivations)
   const updatePositions = useGraphStore(s => s.updatePositions)
@@ -28,6 +29,33 @@ export function useWebSocket(url: string) {
 
         if (msg.type === 'snapshot') {
           setSnapshot(msg)
+        }
+
+        if (msg.type === 'delta') {
+          applyDelta(msg)
+
+          if (msg.growth_events?.length) {
+            triggerGrowthEvents(msg.growth_events)
+          }
+          if (msg.dialogue) {
+            addDialogue({
+              step: msg.step,
+              ...msg.dialogue,
+              stage: msg.stage,
+              timestamp: Date.now(),
+            })
+          }
+          // Update status bar
+          const prev = useLoopStore.getState().status
+          setStatus({
+            state: 'running',
+            step: msg.step,
+            stage: msg.stage,
+            delay_ms: prev?.delay_ms ?? 500,
+            error_message: null,
+            graph_summary: msg.graph_summary ?? prev?.graph_summary ?? {},
+            teacher_healthy: prev?.teacher_healthy ?? true,
+          })
         }
 
         if (msg.type === 'step') {
@@ -83,5 +111,5 @@ export function useWebSocket(url: string) {
       clearTimeout(reconnectTimer)
       ws?.close()
     }
-  }, [url, applyDiff, setSnapshot, setActivations, updatePositions, triggerGrowthEvents, addDialogue, setStatus])
+  }, [url, applyDiff, applyDelta, setSnapshot, setActivations, updatePositions, triggerGrowthEvents, addDialogue, setStatus])
 }

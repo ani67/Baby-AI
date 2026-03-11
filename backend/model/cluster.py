@@ -43,6 +43,15 @@ class Cluster:
         return actual / possible
 
     @property
+    def identity(self) -> torch.Tensor:
+        """Normalized mean of all node weight vectors — the cluster's semantic fingerprint."""
+        living = [n for n in self.nodes if n.alive]
+        if not living:
+            return torch.zeros(512)
+        weights = torch.stack([n.weights for n in living])
+        return F.normalize(weights.mean(dim=0), dim=0)
+
+    @property
     def mean_activation(self) -> float:
         if not self.nodes:
             return 0.0

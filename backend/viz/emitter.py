@@ -14,6 +14,9 @@ class VizEmitter:
     ):
         self._clients: set = set()
         self._last_graph_json: dict = {}
+        self._prev_activations: dict[str, float] = {}
+        self._prev_cluster_ids: set[str] = set()
+        self._prev_edge_keys: set[tuple[str, str]] = set()
         self._projector = Projector()
         self._snapshot_interval = snapshot_interval
         self._projection_interval = projection_interval
@@ -61,25 +64,70 @@ class VizEmitter:
         self._step = step
         growth_events = growth_events or []
 
+        # Seed tracking state from last graph on first emission (avoids reporting all existing state as "new")
+        if not self._prev_cluster_ids and self._last_graph_json:
+            self._prev_cluster_ids = {c["id"] for c in self._last_graph_json.get("clusters", [])}
+            self._prev_edge_keys = {(e["from"], e["to"]) for e in self._last_graph_json.get("edges", [])}
+            self._prev_activations = dict(activations)
+
         # Reproject positions BEFORE capturing JSON so positions are included
         positions_stale = (step % self._projection_interval != 0)
         if not positions_stale:
             await self._projector.reproject(graph)
 
-        # Compute diff against last known graph state
+        # Capture current graph state
         current_json = graph.to_json()
-        diff = compute_diff(self._last_graph_json, current_json)
-        self._last_graph_json = current_json
-
-        # Build step message
         graph_summary = graph.summary() if hasattr(graph, 'summary') else {}
-        message = {
-            "type": "step",
+
+        # ── Compute delta ──
+        # Activated / deactivated
+        current_active = {cid for cid, v in activations.items() if v > 0.01}
+        prev_active = {cid for cid, v in self._prev_activations.items() if v > 0.01}
+        activated = list(current_active - prev_active)
+        deactivated = list(prev_active - current_active)
+
+        # Clusters added / dormanted
+        current_cluster_ids = {c["id"] for c in current_json.get("clusters", []) if not c.get("dormant", False)}
+        current_dormant_ids = {c["id"] for c in current_json.get("clusters", []) if c.get("dormant", False)}
+        clusters_added_ids = current_cluster_ids - self._prev_cluster_ids
+        clusters_dormanted = list(current_dormant_ids & self._prev_cluster_ids)  # was active, now dormant
+
+        clusters_added = [
+            c for c in current_json.get("clusters", [])
+            if c["id"] in clusters_added_ids
+        ]
+
+        # Edges formed / pruned
+        current_edge_keys = {(e["from"], e["to"]) for e in current_json.get("edges", [])}
+        edge_map = {(e["from"], e["to"]): e for e in current_json.get("edges", [])}
+        edges_formed = [
+            (e["from"], e["to"], e.get("strength", 0.1))
+            for k, e in edge_map.items() if k not in self._prev_edge_keys
+        ]
+        edges_pruned = [
+            list(k) for k in self._prev_edge_keys if k not in current_edge_keys
+        ]
+
+        # Positions — only changed clusters (compare node positions)
+        positions = {}
+        if not positions_stale:
+            for n in current_json.get("nodes", []):
+                if n.get("pos") is not None:
+                    positions[n["id"]] = n["pos"]
+
+        # Build delta message
+        delta = {
+            "type": "delta",
             "step": step,
             "stage": stage,
-            "graph_diff": diff,
-            "activations": activations,
-            "growth_events": growth_events,
+            "activated": activated,
+            "deactivated": deactivated,
+            "activation_values": activations,
+            "edges_formed": edges_formed,
+            "edges_pruned": edges_pruned,
+            "clusters_added": clusters_added,
+            "clusters_dormanted": clusters_dormanted,
+            "positions": positions,
             "dialogue": {
                 "question": last_question,
                 "answer": last_answer,
@@ -88,20 +136,32 @@ class VizEmitter:
                 "is_positive": is_positive,
                 "image_url": image_url,
             },
-            "positions_stale": positions_stale,
+            "growth_events": growth_events,
             "graph_summary": graph_summary,
         }
 
-        # On projection steps, include all node positions
-        if not positions_stale:
-            message["node_positions"] = {
-                n["id"]: n["pos"] for n in current_json.get("nodes", [])
-                if n.get("pos") is not None
-            }
+        # Also include nodes for newly added clusters
+        if clusters_added_ids:
+            delta["nodes_added"] = [
+                n for n in current_json.get("nodes", [])
+                if n.get("cluster") in clusters_added_ids or n.get("cluster_id") in clusters_added_ids
+            ]
 
-        await self._broadcast(message)
+        print(
+            f"[delta] step={step} activated={len(activated)} deactivated={len(deactivated)}"
+            f" edges_formed={len(edges_formed)} edges_pruned={len(edges_pruned)}",
+            flush=True,
+        )
 
-        # Full snapshot on interval
+        # Update tracking state
+        self._prev_activations = dict(activations)
+        self._prev_cluster_ids = current_cluster_ids | current_dormant_ids
+        self._prev_edge_keys = current_edge_keys
+        self._last_graph_json = current_json
+
+        await self._broadcast(delta)
+
+        # Full snapshot on interval (unchanged)
         if step % self._snapshot_interval == 0:
             snapshot = self._build_snapshot(step, stage, graph)
             await self._broadcast(snapshot)

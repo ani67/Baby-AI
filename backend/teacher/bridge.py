@@ -51,7 +51,7 @@ class TeacherBridge:
         stage: int,
         context: str | None = None,
         image_bytes: bytes | None = None,
-    ) -> TeacherResponse:
+    ) -> TeacherResponse | None:
         prompt = build_prompt(question, context, stage)
         payload = {
             "model": self.model,
@@ -85,8 +85,30 @@ class TeacherBridge:
         duration_ms = int((time.monotonic() - t0) * 1000)
         data = response.json()
 
+        answer = data["response"].strip()
+
+        # Repetition check — skip if any word appears more than 5 times
+        words = answer.lower().split()
+        if words:
+            from collections import Counter
+            counts = Counter(words)
+            most_common_word, most_common_count = counts.most_common(1)[0]
+            if most_common_count > 5:
+                print(f"[teacher] repetition detected (\"{most_common_word}\" x{most_common_count}), skipping step", flush=True)
+                return None
+
+            # Sequence repetition check — any 10-word chunk appearing more than once
+            if len(words) >= 20:
+                chunks = Counter()
+                for i in range(len(words) - 9):
+                    chunk = " ".join(words[i:i + 10])
+                    chunks[chunk] += 1
+                    if chunks[chunk] > 1:
+                        print(f"[teacher] sequence repetition detected, skipping step", flush=True)
+                        return None
+
         return TeacherResponse(
-            answer=data["response"].strip(),
+            answer=answer,
             model=data.get("model", self.model),
             duration_ms=duration_ms,
             tokens_used=data.get("eval_count", 0)

@@ -1,27 +1,7 @@
-# Python
+node_modules/
 __pycache__/
 *.pyc
-*.pyo
-.venv/
-*.egg-info/
-
-# Node
-node_modules/
-dist/
-
-# Data & checkpoints (generated at runtime)
-backend/data/
-backend/*.db
-backend/*.sqlite
-*.pt
-
-# Logs
-.logs/
-
-# OS
 .DS_Store
-Thumbs.db
-
-# IDE
-.vscode/
-.idea/
+backend/data/
+frontend/dist/
+.env

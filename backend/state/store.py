@@ -295,6 +295,15 @@ class StateStore:
             "latest_snapshot_step": latest_snapshot["step"] if latest_snapshot else 0,
         }
 
+    def clear_for_reset(self):
+        """Delete all dialogues, graph_events, model_checkpoints, and latent_snapshots."""
+        self._conn.execute("DELETE FROM dialogues")
+        self._conn.execute("DELETE FROM graph_events")
+        self._conn.execute("DELETE FROM model_checkpoints")
+        self._conn.execute("DELETE FROM latent_snapshots")
+        self._conn.execute("DELETE FROM human_chat")
+        self._conn.commit()
+
     # ── Maintenance ──
 
     def prune_old_snapshots(self, keep_every_n: int = 10) -> int:

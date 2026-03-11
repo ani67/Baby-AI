@@ -206,6 +206,7 @@ class Graph:
                 "strength": e.strength,
                 "age_steps": e.age,
                 "direction": e.direction,
+                "steps_since_activation": e.steps_since_activation,
             })
 
         return {

@@ -514,3 +514,87 @@ html, body, #root {
   color: var(--text);
   border-color: var(--text-dim);
 }
+
+/* ── Reset Modal ── */
+
+.reset-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.reset-modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 24px;
+  width: 480px;
+  max-width: 90vw;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.reset-modal h3 {
+  color: var(--text-bright);
+  font-size: 16px;
+  margin-bottom: 4px;
+}
+
+.reset-modal-desc {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-bottom: 16px;
+}
+
+.reset-field {
+  margin-bottom: 12px;
+}
+
+.reset-field label {
+  display: block;
+  color: var(--text);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.reset-field textarea {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 8px;
+  resize: vertical;
+}
+
+.reset-field textarea:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+}
+
+.reset-field-hint {
+  color: var(--warning);
+  font-size: 11px;
+  margin-top: 2px;
+  display: block;
+}
+
+.reset-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.reset-modal-actions .btn-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

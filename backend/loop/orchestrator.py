@@ -89,6 +89,8 @@ class LearningLoop:
         self._recent_questions: deque = deque(maxlen=50)
         self._known_words: set = set()
         self._similarity_history: deque = deque(maxlen=25)
+        self._stage0_stable_steps: int = 0
+        self._stage0_last_active: int = 0
         self._stage0_completion_step: int | None = None
         self._loop_task: asyncio.Task | None = None
 
@@ -208,6 +210,10 @@ class LearningLoop:
                 return StepResult(skipped=True, reason="teacher_timeout")
             raise
 
+        # Teacher returned None — repetition detected, skip this step
+        if teacher_response is None:
+            return StepResult(skipped=True, reason="teacher_repetition")
+
         # ── 6. ENCODE ──
         answer_vectors = self._encode_answer(
             teacher_response.answer,
@@ -228,7 +234,13 @@ class LearningLoop:
         else:
             # Stage 0: every 3rd step is a negative example (random vector)
             is_positive = (self.model.step % 3 != 0)
-            print(f"[signal] step={self.model.step} stage0 positive={is_positive}", flush=True)
+            if answer_vectors:
+                mean_answer = torch.stack(answer_vectors).mean(dim=0)
+                mean_answer = F.normalize(mean_answer, dim=0)
+                stage0_sim = torch.dot(prediction, mean_answer).item()
+            else:
+                stage0_sim = 0.0
+            print(f"[signal] step={self.model.step} sim={stage0_sim:.4f} stage0 positive={is_positive}", flush=True)
 
         # ── 8. UPDATE ──
         changes = {}
@@ -303,11 +315,15 @@ class LearningLoop:
                 for node in cluster.nodes:
                     state_dict[f"{node.id}.weights"] = node.weights
                     state_dict[f"{node.id}.bias"] = node.bias
+            graph_json = self.model.graph.to_json()
+            nc = len(graph_json["clusters"])
+            ne = len(graph_json["edges"])
+            print(f"[checkpoint] saved step={self.model.step} clusters={nc} edges={ne}", flush=True)
             self.store.save_checkpoint(
                 step=self.model.step,
                 stage=self._stage,
                 model_state_dict=state_dict,
-                graph_json=self.model.graph.to_json(),
+                graph_json=graph_json,
             )
             self.store.prune_old_snapshots()
 
@@ -332,9 +348,13 @@ class LearningLoop:
         # ── 13. AUTO-ADVANCE stage 0 → 1 ──
         if self._stage == 0:
             active_count = sum(1 for c in self.model.graph.clusters if not c.dormant)
-            if active_count >= self.model.max_clusters and self._stage0_completion_step is None:
+
+            if (self.model.step >= 800
+                    and active_count >= 60
+                    and self._stage0_completion_step is None):
                 self._stage0_completion_step = self.model.step + 100
-                print(f"[stage] clusters={active_count} reached at step={self.model.step}, will advance to stage 1 at step={self._stage0_completion_step}", flush=True)
+                print(f"[stage] advance condition met: step>=800 clusters={active_count}, advancing in 100 steps", flush=True)
+
             if self._stage0_completion_step is not None and self.model.step >= self._stage0_completion_step:
                 self.set_stage(1)
                 self.model.stage = 1
