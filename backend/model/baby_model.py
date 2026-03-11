@@ -29,7 +29,8 @@ class BabyModel:
         self.growth_warning_threshold = 256  # soft warning only, no blocking
         self.inhibition_radius = 0.92
         self.suppression_factor = 0.5
-        self.resonance_threshold = 0.1
+        self.resonance_threshold = 0.02
+        self.resonance_min_pass = 12
         self.growth_check_interval = growth_check_interval
         self.snapshot_interval = snapshot_interval
         self._growth_monitor = GrowthMonitor(self.graph)
@@ -100,7 +101,7 @@ class BabyModel:
                 age=cj.get("age", 0),
                 dormant=cj.get("dormant", False),
             )
-            self.graph.add_cluster(cluster)
+            self.graph.add_cluster(cluster, source="restore")
 
         # Rebuild edges
         for ej in edges_json:
@@ -196,8 +197,8 @@ class BabyModel:
         # Filter by threshold
         passed = {cid: s for cid, s in scores.items() if s > self.resonance_threshold}
 
-        # Guarantee minimum 12 clusters pass
-        min_pass = 12
+        # Guarantee minimum clusters pass
+        min_pass = self.resonance_min_pass
         if len(passed) < min_pass and len(scores) >= min_pass:
             top_n = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:min_pass]
             for cid, s in top_n:
@@ -283,7 +284,7 @@ class BabyModel:
             )
             for node in cluster.nodes:
                 node.cluster_id = cluster.id
-            self.graph.add_cluster(cluster)
+            self.graph.add_cluster(cluster, source="init")
 
         # Connect layer 0 clusters to layer 1 clusters
         layer0 = [c for c in self.graph.clusters if c.layer_index == 0]
@@ -467,13 +468,13 @@ class BabyModel:
         Checks all growth triggers. Executes any triggered operations.
         Logs each operation to store. Returns list of events that fired.
         """
-        # Global cooldown: skip growth check if a BUD fired within last 20 steps
-        if self.step % self.growth_check_interval != 0:
+        # Dynamic growth check interval: slows as model scales
+        active_clusters = [c for c in self.graph.clusters if not c.dormant]
+        check_every = 50 + (len(active_clusters) // 10)
+        if self.step % check_every != 0:
             return []
         if self.step - self._last_bud_step < 20:
             return []
-
-        active_clusters = [c for c in self.graph.clusters if not c.dormant]
         total_clusters = len(self.graph.clusters)
 
         events = []
@@ -493,11 +494,13 @@ class BabyModel:
         if len(active_clusters) > self.growth_warning_threshold:
             print(f"[growth] WARNING: {len(active_clusters)} active clusters exceeds soft threshold {self.growth_warning_threshold}", flush=True)
 
-        # Check BUD — dynamic rate limit based on cluster count
+        # Check BUD — hardcoded to 1, and zero in Stage 0 above 80 clusters
         bud_count = 0
         bud_skipped = 0
-        cluster_bucket = max(1, len(active_clusters) // 50)
-        max_buds_per_check = max(1, 10 // cluster_bucket)
+        max_buds_per_check = 1
+        if self.stage == 0 and len(active_clusters) >= 80:
+            max_buds_per_check = 0
+            print(f"[growth] step={self.step} Stage 0 hard cap: {len(active_clusters)} >= 80, BUD disabled", flush=True)
         for cluster in list(self.graph.clusters):
             if monitor.should_bud(cluster):
                 if bud_count >= max_buds_per_check:
@@ -579,31 +582,38 @@ class BabyModel:
         if pruned_count > 0:
             print(f"[prune] step={self.step} removed {pruned_count} edges (strength<0.05), total={len(self.graph.edges)}", flush=True)
 
-        # Check INSERT
-        for cluster_a, cluster_b in self.graph.adjacent_pairs():
-            residuals = monitor.get_residuals(cluster_a.id, cluster_b.id)
-            if residuals is not None and monitor.should_insert(residuals):
-                new_cluster = insert_layer(
-                    cluster_a, cluster_b, residuals, self.graph
-                )
-                event = {
-                    "event_type": "INSERT",
-                    "cluster_a": cluster_a.id,
-                    "cluster_b": cluster_b.id,
-                    "metadata": {
-                        "new_cluster": new_cluster.id,
-                        "reason": "structured_residual",
-                    },
-                }
-                store.log_graph_event(
-                    step=self.step, event_type="INSERT",
-                    cluster_a=cluster_a.id, cluster_b=cluster_b.id,
-                    metadata=event["metadata"],
-                )
-                events.append(event)
+        # Check INSERT — respect Stage 0 hard cap
+        growth_allowed = not (self.stage == 0 and len(active_clusters) >= 80)
+        insert_count = 0
+        max_inserts_per_check = 2
+        if growth_allowed:
+            for cluster_a, cluster_b in self.graph.adjacent_pairs():
+                if insert_count >= max_inserts_per_check:
+                    break
+                residuals = monitor.get_residuals(cluster_a.id, cluster_b.id)
+                if residuals is not None and monitor.should_insert(residuals):
+                    new_cluster = insert_layer(
+                        cluster_a, cluster_b, residuals, self.graph
+                    )
+                    insert_count += 1
+                    event = {
+                        "event_type": "INSERT",
+                        "cluster_a": cluster_a.id,
+                        "cluster_b": cluster_b.id,
+                        "metadata": {
+                            "new_cluster": new_cluster.id,
+                            "reason": "structured_residual",
+                        },
+                    }
+                    store.log_graph_event(
+                        step=self.step, event_type="INSERT",
+                        cluster_a=cluster_a.id, cluster_b=cluster_b.id,
+                        metadata=event["metadata"],
+                    )
+                    events.append(event)
 
-        # Check EXTEND
-        if monitor.should_extend(self.stage):
+        # Check EXTEND — respect Stage 0 hard cap
+        if growth_allowed and monitor.should_extend(self.stage):
             new_cluster = extend_top(self.graph)
             event = {
                 "event_type": "EXTEND",

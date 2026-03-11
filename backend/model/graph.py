@@ -38,9 +38,11 @@ class Graph:
         self._node_counter: int = 0
         self._cluster_counter: int = 0
 
-    def add_cluster(self, cluster: Cluster) -> None:
+    def add_cluster(self, cluster: Cluster, source: str = "unknown") -> None:
         self.clusters.append(cluster)
         self._cluster_index[cluster.id] = cluster
+        total = len(self.clusters)
+        print(f"[cluster_create] id={cluster.id} layer={cluster.layer_index} source={source} total={total}", flush=True)
 
     def remove_cluster(self, cluster_id: str) -> None:
         cluster = self._cluster_index.pop(cluster_id, None)
@@ -112,12 +114,12 @@ class Graph:
                     pairs.append((a, b))
         return pairs
 
-    def replace_cluster(self, old: Cluster, new_clusters: list[Cluster]) -> None:
+    def replace_cluster(self, old: Cluster, new_clusters: list[Cluster], source: str = "bud") -> None:
         """Replace old cluster with new clusters, transferring external edges."""
         for nc in new_clusters:
             for node in nc.nodes:
                 node.cluster_id = nc.id
-            self.add_cluster(nc)
+            self.add_cluster(nc, source=source)
 
         # Transfer external edges to all new clusters
         new_edges = []
@@ -147,7 +149,7 @@ class Graph:
     ) -> None:
         for node in new.nodes:
             node.cluster_id = new.id
-        self.add_cluster(new)
+        self.add_cluster(new, source="insert")
         # Remove direct edge between before and after
         self.edges = [
             e for e in self.edges

@@ -143,7 +143,7 @@ def extend_top(graph: Graph, nodes_per_cluster: int = 8) -> Cluster:
     for c in graph.top_layer_clusters():
         graph.add_edge(c.id, new_cluster.id, strength=0.3)
 
-    graph.add_cluster(new_cluster)
+    graph.add_cluster(new_cluster, source="extend")
     for node in new_cluster.nodes:
         node.cluster_id = new_cluster.id
 
@@ -162,6 +162,7 @@ class GrowthMonitor:
         self._residuals: dict[tuple, deque] = {}
         self._activation_history: dict[str, deque] = {}
         self._bud_cooldown: dict[str, int] = {}  # cluster_id → step when last budded
+        self.bud_cooldown_steps: int = 500
 
     def record_step(
         self,
@@ -204,14 +205,13 @@ class GrowthMonitor:
         )
 
     def mark_budded(self, cluster_id: str, step: int) -> None:
-        """Record that a cluster was budded at this step (500-step cooldown)."""
         self._bud_cooldown[cluster_id] = step
 
     def clear_expired_cooldowns(self, current_step: int) -> None:
-        """Remove cooldown entries older than 500 steps."""
+        cooldown = self.bud_cooldown_steps
         self._bud_cooldown = {
             cid: s for cid, s in self._bud_cooldown.items()
-            if current_step - s < 500
+            if current_step - s < cooldown
         }
 
     def should_prune(self, edge: Edge) -> bool:

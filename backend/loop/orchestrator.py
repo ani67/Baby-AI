@@ -12,6 +12,7 @@ import torch
 import torch.nn.functional as F
 
 from .curiosity import CuriosityScorer
+from .health_monitor import HealthMonitor
 from .question_gen import QuestionGenerator
 from .sentence_splitter import split_sentences
 
@@ -81,6 +82,7 @@ class LearningLoop:
 
         self.curiosity = CuriosityScorer()
         self.question_gen = QuestionGenerator()
+        self.health_monitor = HealthMonitor()
 
         self._state = LoopState.IDLE
         self._stage = 0
@@ -89,9 +91,11 @@ class LearningLoop:
         self._recent_questions: deque = deque(maxlen=50)
         self._known_words: set = set()
         self._similarity_history: deque = deque(maxlen=25)
+        self._positive_history: deque = deque(maxlen=50)
         self._stage0_stable_steps: int = 0
         self._stage0_last_active: int = 0
         self._stage0_completion_step: int | None = None
+        self._stage1_completion_step: int | None = None
         self._loop_task: asyncio.Task | None = None
 
     # ── Control ──
@@ -289,6 +293,18 @@ class LearningLoop:
                     event.get("metadata", {}).get("new_cluster", "")
                 )
 
+        # ── 10b. HEALTH MONITOR ──
+        active_count = sum(1 for c in self.model.graph.clusters if not c.dormant)
+        total_clusters = len(self.model.graph.clusters)
+        self.health_monitor.record_step(active_count, total_clusters)
+        self.health_monitor.check(
+            step=self.model.step,
+            stage=self._stage,
+            model=self.model,
+            positive_history=self._positive_history,
+            similarity_history=self._similarity_history,
+        )
+
         # ── 11. LOG ──
         self.store.log_dialogue(
             step=self.model.step,
@@ -360,6 +376,26 @@ class LearningLoop:
                 self.model.stage = 1
                 print(f"[stage] auto-advanced to stage 1 at step={self.model.step}", flush=True)
 
+        # ── 14. AUTO-ADVANCE stage 1 → 2 ──
+        if self._stage == 1:
+            active_count = sum(1 for c in self.model.graph.clusters if not c.dormant)
+            positive_rate = (
+                sum(self._positive_history) / len(self._positive_history)
+                if len(self._positive_history) >= 20 else 0.0
+            )
+
+            if (self.model.step >= 3000
+                    and active_count > 120
+                    and positive_rate > 0.55
+                    and self._stage1_completion_step is None):
+                self._stage1_completion_step = self.model.step + 100
+                print(f"[stage] advance 1→2 condition met: step>=3000 clusters={active_count} positive_rate={positive_rate*100:.0f}%, advancing in 100 steps", flush=True)
+
+            if self._stage1_completion_step is not None and self.model.step >= self._stage1_completion_step:
+                self.set_stage(2)
+                self.model.stage = 2
+                print(f"[stage] auto-advanced to stage 2 at step={self.model.step}", flush=True)
+
         return StepResult(
             step=self.model.step,
             question=question,
@@ -426,8 +462,11 @@ class LearningLoop:
         from model.baby_model import BabyModel
         self.model = BabyModel()
         self.curiosity = CuriosityScorer()
+        self.health_monitor = HealthMonitor()
         self._recent_questions.clear()
         self._known_words.clear()
+        self._similarity_history.clear()
+        self._positive_history.clear()
         self._stage = 0
         self._state = LoopState.IDLE
         self._error_message = None
@@ -468,13 +507,22 @@ class LearningLoop:
         mean_answer = F.normalize(mean_answer, dim=0)
         similarity = torch.dot(prediction, mean_answer).item()
         self._similarity_history.append(similarity)
-        # Adaptive threshold: 50th percentile (median) for equal pos/neg FF contrast
+        # Adaptive threshold: adjust percentile based on positive rate
         if len(self._similarity_history) >= 10:
             sorted_scores = sorted(self._similarity_history)
-            idx = int(len(sorted_scores) * 0.5)
+            # Check positive rate and lower percentile if too many negatives
+            percentile = 0.5
+            if len(self._positive_history) >= 20:
+                positive_rate = sum(self._positive_history) / len(self._positive_history)
+                if positive_rate < 0.4:
+                    percentile = 0.4
+                    print(f"[signal] ratio warning: positive_rate={positive_rate*100:.0f}%, adjusting percentile to 40", flush=True)
+            idx = int(len(sorted_scores) * percentile)
             threshold = sorted_scores[idx]
             result = similarity > threshold
+            self._positive_history.append(1.0 if result else 0.0)
             print(f"[signal] step={self.model.step} sim={similarity:.4f} threshold={threshold:.4f} positive={result}", flush=True)
             return result
         print(f"[signal] step={self.model.step} sim={similarity:.4f} threshold=warmup positive=True", flush=True)
+        self._positive_history.append(1.0)
         return True
