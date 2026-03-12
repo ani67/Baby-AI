@@ -1,0 +1,714 @@
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 224 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.0.106:5173/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 184 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 172 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 157 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 172 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 182 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 162 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 162 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 171 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+7:56:51 pm [vite] hmr update /src/components/DialogueFeed.tsx, /src/styles/global.css
+7:57:02 pm [vite] hmr update /src/styles/global.css, /src/App.tsx, /src/components/LatentSpace.tsx
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 173 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+8:08:41 pm [vite] hmr update /src/styles/global.css, /src/components/HumanChat.tsx, /src/components/Controls.tsx
+8:08:56 pm [vite] hmr update /src/components/Controls.tsx, /src/styles/global.css
+8:09:17 pm [vite] hmr update /src/styles/global.css
+8:11:26 pm [vite] hmr update /src/components/Controls.tsx, /src/styles/global.css
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 175 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+8:14:14 pm [vite] page reload src/main.tsx
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+Port 5180 is in use, trying another one...
+
+  VITE v5.4.21  ready in 205 ms
+
+  ➜  Local:   http://localhost:5181/
+  ➜  Network: http://192.168.0.106:5181/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+Port 5180 is in use, trying another one...
+
+  VITE v5.4.21  ready in 424 ms
+
+  ➜  Local:   http://localhost:5181/
+  ➜  Network: http://192.168.0.106:5181/
+8:48:39 pm [vite] hmr update /src/styles/global.css, /src/components/HumanChat.tsx, /src/components/Controls.tsx
+8:48:57 pm [vite] hmr update /src/components/Controls.tsx, /src/styles/global.css
+8:49:04 pm [vite] hmr update /src/styles/global.css
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+Port 5180 is in use, trying another one...
+
+  VITE v5.4.21  ready in 258 ms
+
+  ➜  Local:   http://localhost:5181/
+  ➜  Network: http://192.168.0.106:5181/
+9:03:22 pm [vite] hmr update /src/components/Controls.tsx, /src/styles/global.css
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+Port 5180 is in use, trying another one...
+
+  VITE v5.4.21  ready in 219 ms
+
+  ➜  Local:   http://localhost:5181/
+  ➜  Network: http://192.168.0.106:5181/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+Port 5180 is in use, trying another one...
+
+  VITE v5.4.21  ready in 190 ms
+
+  ➜  Local:   http://localhost:5181/
+  ➜  Network: http://192.168.0.106:5181/
+9:10:28 pm [vite] hmr update /src/styles/global.css, /src/components/HumanChat.tsx, /src/components/Controls.tsx
+9:10:43 pm [vite] hmr update /src/components/Controls.tsx, /src/styles/global.css
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+Port 5180 is in use, trying another one...
+
+  VITE v5.4.21  ready in 177 ms
+
+  ➜  Local:   http://localhost:5181/
+  ➜  Network: http://192.168.0.106:5181/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+Port 5180 is in use, trying another one...
+
+  VITE v5.4.21  ready in 229 ms
+
+  ➜  Local:   http://localhost:5181/
+  ➜  Network: http://192.168.0.106:5181/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+Port 5180 is in use, trying another one...
+
+  VITE v5.4.21  ready in 301 ms
+
+  ➜  Local:   http://localhost:5181/
+  ➜  Network: http://192.168.0.106:5181/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+Port 5180 is in use, trying another one...
+
+  VITE v5.4.21  ready in 237 ms
+
+  ➜  Local:   http://localhost:5181/
+  ➜  Network: http://192.168.0.106:5181/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+Port 5180 is in use, trying another one...
+
+  VITE v5.4.21  ready in 249 ms
+
+  ➜  Local:   http://localhost:5181/
+  ➜  Network: http://192.168.0.106:5181/
+9:48:39 pm [vite] hmr update /src/styles/global.css, /src/components/DialogueFeed.tsx, /src/App.tsx
+9:48:48 pm [vite] hmr update /src/components/DialogueFeed.tsx, /src/styles/global.css
+9:48:54 pm [vite] hmr update /src/components/DialogueFeed.tsx, /src/styles/global.css
+9:48:59 pm [vite] hmr update /src/styles/global.css
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+Port 5180 is in use, trying another one...
+
+  VITE v5.4.21  ready in 224 ms
+
+  ➜  Local:   http://localhost:5181/
+  ➜  Network: http://192.168.0.106:5181/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+Port 5180 is in use, trying another one...
+
+  VITE v5.4.21  ready in 218 ms
+
+  ➜  Local:   http://localhost:5181/
+  ➜  Network: http://192.168.0.106:5181/
+9:55:36 pm [vite] hmr update /src/App.tsx, /src/styles/global.css
+9:55:44 pm [vite] hmr update /src/App.tsx, /src/styles/global.css
+9:56:09 pm [vite] hmr update /src/App.tsx, /src/styles/global.css
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+Port 5180 is in use, trying another one...
+
+  VITE v5.4.21  ready in 226 ms
+
+  ➜  Local:   http://localhost:5181/
+  ➜  Network: http://192.168.0.106:5181/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+Port 5180 is in use, trying another one...
+
+  VITE v5.4.21  ready in 221 ms
+
+  ➜  Local:   http://localhost:5181/
+  ➜  Network: http://192.168.0.106:5181/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 167 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 185 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 186 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 185 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 192 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 189 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+10:21:32 pm [vite] hmr update /src/styles/global.css, /src/components/LatentSpace.tsx
+10:21:38 pm [vite] hmr update /src/components/LatentSpace.tsx, /src/styles/global.css
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 194 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 137 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 175 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+10:42:07 pm [vite] hmr update /src/components/LatentSpace.tsx, /src/styles/global.css
+10:42:16 pm [vite] hmr update /src/App.tsx, /src/styles/global.css
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 187 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+11:17:23 pm [vite] hmr update /src/components/LatentSpace.tsx, /src/styles/global.css
+11:17:35 pm [vite] hmr update /src/components/LatentSpace.tsx, /src/styles/global.css
+11:17:50 pm [vite] hmr update /src/styles/global.css
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 210 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 171 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+12:03:02 am [vite] hmr update /src/styles/global.css, /src/App.tsx, /src/components/DialogueFeed.tsx
+12:03:16 am [vite] hmr update /src/components/DialogueFeed.tsx, /src/styles/global.css
+12:03:23 am [vite] hmr update /src/styles/global.css
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 192 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 193 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+12:52:14 am [vite] hmr update /src/components/DialogueFeed.tsx, /src/styles/global.css
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 176 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+12:55:16 am [vite] hmr update /src/components/DialogueFeed.tsx, /src/styles/global.css
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 168 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 200 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 178 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 183 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 166 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 184 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 218 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 174 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 178 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 195 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 205 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 282 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 176 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 193 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+11:47:04 am [vite] hmr update /src/styles/global.css, /src/App.tsx, /src/components/LatentSpace.tsx
+11:47:15 am [vite] hmr update /src/styles/global.css, /src/App.tsx, /src/components/LatentSpace.tsx
+11:47:21 am [vite] hmr update /src/App.tsx, /src/styles/global.css
+11:47:29 am [vite] hmr update /src/App.tsx, /src/styles/global.css
+11:47:34 am [vite] hmr update /src/App.tsx, /src/styles/global.css
+11:47:52 am [vite] hmr update /src/components/LatentSpace.tsx, /src/styles/global.css
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 219 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 157 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+12:09:26 pm [vite] hmr update /src/styles/global.css, /src/components/HumanChat.tsx, /src/components/Controls.tsx
+12:09:43 pm [vite] hmr update /src/styles/global.css, /src/components/Controls.tsx
+12:09:53 pm [vite] hmr update /src/components/Controls.tsx, /src/styles/global.css
+12:10:06 pm [vite] hmr update /src/components/Controls.tsx, /src/styles/global.css
+12:10:29 pm [vite] hmr update /src/styles/global.css
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 363 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 218 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 193 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 167 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 203 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 201 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 209 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 174 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 188 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 237 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.100:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 177 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.100:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 244 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://192.168.0.106:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 229 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://172.16.16.168:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 217 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://172.16.16.168:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 208 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://172.16.16.168:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 170 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://172.16.16.168:5180/
+
+> dev-ai-frontend@0.0.1 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 214 ms
+
+  ➜  Local:   http://localhost:5180/
+  ➜  Network: http://172.16.16.168:5180/

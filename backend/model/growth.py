@@ -215,7 +215,7 @@ class GrowthMonitor:
         }
 
     def should_prune(self, edge: Edge) -> bool:
-        return edge.strength < 0.05 and edge.steps_since_activation > 150
+        return edge.strength < 0.01 and edge.steps_since_activation > 150
 
     def get_coactivation_candidates(self) -> list[tuple]:
         candidates = []
