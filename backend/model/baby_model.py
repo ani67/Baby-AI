@@ -356,6 +356,9 @@ class BabyModel:
                 if neighbor and not neighbor.dormant and neighbor.id in resonant_ids and neighbor.id not in visited:
                     queue.append(neighbor)
 
+        # Run MPS texture-based forward pass alongside the standard forward
+        mps_scores = self.graph.mps_forward(x)
+
         # Record coactivation pairs BEFORE inhibition — growth monitor needs raw firing patterns
         if self.step % 20 == 0:
             active_ids = [k for k, v in activations.items() if abs(v) > 0.01]
@@ -459,6 +462,10 @@ class BabyModel:
             from_act = self._last_activations.get(edge.from_id, 0.0)
             to_act = self._last_activations.get(edge.to_id, 0.0)
             edge.hebbian_update(from_act, to_act)
+
+        # Maintain quadtree: refresh textures, split/collapse tiles
+        if self.step % 10 == 0:
+            self.graph.maintain_quadtree()
 
         self.step += 1
         return changes

@@ -179,50 +179,55 @@ class LearningLoop:
         )
         self._recent_questions.append(question)
 
-        # ── 5. ASK ──
-        # Load image bytes if available for vision-capable models
-        image_bytes = None
-        if curriculum_item.item_type == "image" and curriculum_item.image_path:
+        # ── 5. ASK + 6. ENCODE ──
+        # Precomputed path: skip Ollama entirely, use cached embeddings
+        if getattr(curriculum_item, "precomputed", False) and curriculum_item.expected_vector is not None:
+            answer_vectors = [curriculum_item.expected_vector]
+            teacher_answer = curriculum_item.description or ""
+        else:
+            # Live path: call Ollama teacher
+            image_bytes = None
+            if curriculum_item.item_type == "image" and curriculum_item.image_path:
+                try:
+                    with open(curriculum_item.image_path, "rb") as f:
+                        image_bytes = f.read()
+                except FileNotFoundError:
+                    pass
+
+            # Strip [IMAGE: ...] from question when sending actual image
+            ask_question = question
+            if image_bytes is not None:
+                import re
+                ask_question = re.sub(r'\s*\[IMAGE:\s*[^\]]*\]', '', question).strip()
+                if not ask_question:
+                    ask_question = f"What is this?"
+
             try:
-                with open(curriculum_item.image_path, "rb") as f:
-                    image_bytes = f.read()
-            except FileNotFoundError:
-                pass
-
-        # Strip [IMAGE: ...] from question when sending actual image
-        ask_question = question
-        if image_bytes is not None:
-            import re
-            ask_question = re.sub(r'\s*\[IMAGE:\s*[^\]]*\]', '', question).strip()
-            if not ask_question:
-                ask_question = f"What is this?"
-
-        try:
-            teacher_response = await self.teacher.ask(
-                question=ask_question,
-                stage=self._stage,
-                context=curriculum_item.context,
-                image_bytes=image_bytes,
-            )
-        except Exception as e:
-            ename = type(e).__name__
-            if "unavailable" in ename.lower():
-                self._state = LoopState.ERROR
-                self._error_message = str(e)
+                teacher_response = await self.teacher.ask(
+                    question=ask_question,
+                    stage=self._stage,
+                    context=curriculum_item.context,
+                    image_bytes=image_bytes,
+                )
+            except Exception as e:
+                ename = type(e).__name__
+                if "unavailable" in ename.lower():
+                    self._state = LoopState.ERROR
+                    self._error_message = str(e)
+                    raise
+                if "timeout" in ename.lower():
+                    return StepResult(skipped=True, reason="teacher_timeout")
                 raise
-            if "timeout" in ename.lower():
-                return StepResult(skipped=True, reason="teacher_timeout")
-            raise
 
-        # Teacher returned None — repetition detected, skip this step
-        if teacher_response is None:
-            return StepResult(skipped=True, reason="teacher_repetition")
+            # Teacher returned None — repetition detected, skip this step
+            if teacher_response is None:
+                return StepResult(skipped=True, reason="teacher_repetition")
 
-        # ── 6. ENCODE ──
-        answer_vectors = self._encode_answer(
-            teacher_response.answer,
-            curriculum_item,
-        )
+            answer_vectors = self._encode_answer(
+                teacher_response.answer,
+                curriculum_item,
+            )
+            teacher_answer = teacher_response.answer
 
         # ── 7. PREDICT ──
         # Always run forward to build activations for growth tracking
@@ -310,7 +315,7 @@ class LearningLoop:
             step=self.model.step,
             stage=self._stage,
             question=question,
-            answer=teacher_response.answer,
+            answer=teacher_answer,
             curiosity_score=curiosity_score,
             clusters_active=list(activations.keys()),
             delta_summary=delta_summary,
@@ -354,7 +359,7 @@ class LearningLoop:
                 graph=self.model.graph,
                 activations=activations,
                 last_question=question,
-                last_answer=teacher_response.answer,
+                last_answer=teacher_answer,
                 model_answer=model_response,
                 is_positive=is_positive,
                 growth_events=growth_events,
@@ -399,12 +404,12 @@ class LearningLoop:
         return StepResult(
             step=self.model.step,
             question=question,
-            answer=teacher_response.answer,
+            answer=teacher_answer,
             curiosity_score=curiosity_score,
             is_positive=is_positive,
             delta_summary=delta_summary,
             growth_events=growth_events,
-            duration_ms=teacher_response.duration_ms,
+            duration_ms=teacher_response.duration_ms if not getattr(curriculum_item, "precomputed", False) else 0,
             skipped=False,
         )
 

@@ -51,3 +51,10 @@ CREATE TABLE IF NOT EXISTS human_chat (
     message         TEXT    NOT NULL,
     clusters_active TEXT
 );
+
+CREATE TABLE IF NOT EXISTS embedding_cache (
+    image_id     INTEGER PRIMARY KEY,
+    image_emb    BLOB    NOT NULL,
+    caption_emb  BLOB    NOT NULL,
+    caption_text TEXT    NOT NULL
+);
