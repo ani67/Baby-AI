@@ -469,6 +469,16 @@ class Graph:
             # Build input texture: tile 512-dim vector into 64×64
             inp = input_vec.to(self._device)
             _check_tensor(inp, "input_vec")
+
+            # Device confirmation logging — first call + every 100 calls
+            if self._forward_step == 1 or self._forward_step % 100 == 0:
+                if inp.device.type != "mps":
+                    print(f"[mps] WARNING: tensor on CPU, expected MPS", flush=True)
+                print(
+                    f"[mps] called — device={inp.device} shape={inp.shape}",
+                    flush=True,
+                )
+
             inp_flat = inp.repeat(TILE_SIZE * TILE_SIZE // inp.shape[0] + 1)[
                 : TILE_SIZE * TILE_SIZE
             ]
@@ -493,6 +503,16 @@ class Graph:
 
             # Batch dot product on device
             batch = torch.stack(textures)  # (N, 64, 64)
+
+            # Verify batch is on correct device
+            if self._forward_step == 1 or self._forward_step % 100 == 0:
+                if batch.device.type != "mps":
+                    print(f"[mps] WARNING: tensor on CPU, expected MPS", flush=True)
+                print(
+                    f"[mps] called — device={batch.device} shape={batch.shape}",
+                    flush=True,
+                )
+
             dots = (batch * input_texture.unsqueeze(0)).sum(dim=(1, 2))
             _check_tensor(dots, "dot_products")
 
@@ -852,3 +872,71 @@ class Graph:
         if tile.is_leaf:
             return tile.depth
         return max(self._max_depth(c) for c in tile.children)
+
+    def to_tree_json(self) -> dict:
+        """Serialize the quadtree as a flat list of nodes with parent pointers.
+
+        Only includes tiles that contain a cluster or are ancestors of one.
+        This keeps the response small even for deep trees.
+
+        Returns::
+
+            {
+                "nodes": [
+                    {
+                        "id": "tile_0",
+                        "parent": null,
+                        "depth": 0,
+                        "cluster_id": "c_00"|null,
+                        "dormant": false,
+                        "cluster_type": "integration"|null,
+                        "child_index": 0,
+                    },
+                    ...
+                ],
+                "max_depth": 7,
+            }
+        """
+        nodes: list[dict] = []
+        self._walk_tree_json(self._root, parent_id=None, child_index=0, nodes=nodes, counter=[0])
+        return {
+            "nodes": nodes,
+            "max_depth": self._max_depth(self._root),
+        }
+
+    def _subtree_has_cluster(self, tile: QuadTile) -> bool:
+        """Return True if this tile or any descendant contains a cluster."""
+        if tile.cluster is not None:
+            return True
+        if tile.children:
+            return any(self._subtree_has_cluster(c) for c in tile.children)
+        return False
+
+    def _walk_tree_json(
+        self,
+        tile: QuadTile,
+        parent_id: str | None,
+        child_index: int,
+        nodes: list[dict],
+        counter: list[int],
+    ) -> None:
+        # Skip entire subtrees that contain no clusters
+        if not self._subtree_has_cluster(tile):
+            return
+        tid = f"tile_{counter[0]}"
+        counter[0] += 1
+        cluster_id = tile.cluster.id if tile.cluster else None
+        dormant = tile.cluster.dormant if tile.cluster else False
+        cluster_type = tile.cluster.cluster_type if tile.cluster else None
+        nodes.append({
+            "id": tid,
+            "parent": parent_id,
+            "depth": tile.depth,
+            "cluster_id": cluster_id,
+            "dormant": dormant,
+            "cluster_type": cluster_type,
+            "child_index": child_index,
+        })
+        if tile.children:
+            for i, child in enumerate(tile.children):
+                self._walk_tree_json(child, tid, i, nodes, counter)

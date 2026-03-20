@@ -30,6 +30,7 @@ class CurriculumItem:
     template_slots: dict = field(default_factory=dict)
     stage_relevance: float = 1.0
     image_path: str | None = None               # path to image on disk (for vision models)
+    image_url: str | None = None                # remote URL for frontend thumbnail
     precomputed: bool = False                    # True when item came from embedding_cache
 
 
@@ -58,6 +59,7 @@ class _EmbeddingCache:
         self._count: int = 0
         self._cursor_idx: int = 0  # sequential position for round-robin
         self._step_times: list[float] = []
+        self._has_image_url: bool = False
 
     def open(self) -> int:
         """Open the database and index image_ids.  Returns count."""
@@ -81,6 +83,9 @@ class _EmbeddingCache:
             ]
             self._count = len(self._ids)
             random.shuffle(self._ids)
+            # Detect image_url column for backwards compat
+            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(embedding_cache)").fetchall()}
+            self._has_image_url = "image_url" in cols
         except Exception as e:
             print(f"[curriculum] embedding_cache open error: {e}", flush=True)
             self._conn = None
@@ -98,16 +103,23 @@ class _EmbeddingCache:
         iid = self._ids[self._cursor_idx]
         self._cursor_idx += 1
 
-        row = self._conn.execute(
-            "SELECT image_emb, caption_emb, caption_text FROM embedding_cache WHERE image_id=?",
-            (iid,),
-        ).fetchone()
+        if self._has_image_url:
+            row = self._conn.execute(
+                "SELECT image_emb, caption_emb, caption_text, image_url FROM embedding_cache WHERE image_id=?",
+                (iid,),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT image_emb, caption_emb, caption_text FROM embedding_cache WHERE image_id=?",
+                (iid,),
+            ).fetchone()
         if row is None:
             return None
 
         image_emb = _bytes_to_tensor(row["image_emb"])
         caption_emb = _bytes_to_tensor(row["caption_emb"])
         caption_text = row["caption_text"]
+        image_url = row["image_url"] if self._has_image_url else None
 
         return CurriculumItem(
             id=f"coco_{iid}",
@@ -121,6 +133,7 @@ class _EmbeddingCache:
             template_slots={"description": caption_text},
             stage_relevance=1.0,
             image_path=None,
+            image_url=image_url,
             precomputed=True,
         )
 
@@ -161,7 +174,8 @@ class Curriculum:
         # Precomputed cache (lazy)
         self._cache: _EmbeddingCache | None = None
         if self._source == "precomputed":
-            resolved_db = db_path or os.getenv("DB_PATH", "backend/state/dev.db")
+            _default_db = str(Path(__file__).resolve().parent.parent / "state" / "dev.db")
+            resolved_db = db_path or os.getenv("DB_PATH", _default_db)
             self._cache = _EmbeddingCache(resolved_db)
             count = self._cache.open()
             if count > 0:

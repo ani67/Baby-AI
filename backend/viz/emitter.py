@@ -1,6 +1,10 @@
 """
 VizEmitter — streams the living graph to the frontend over WebSocket.
+All emit operations are non-blocking — the training loop never waits
+on WebSocket sends or projection.
 """
+
+import asyncio
 
 from .diff import compute_diff
 from .projector import Projector
@@ -200,7 +204,7 @@ class VizEmitter:
         dead = set()
         for ws in list(self._clients):
             try:
-                await ws.send_json(message)
+                await asyncio.wait_for(ws.send_json(message), timeout=2.0)
             except Exception:
                 dead.add(ws)
         self._clients -= dead

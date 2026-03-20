@@ -69,4 +69,27 @@ export const api = {
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       return r.json()
     }),
+
+  clusterLabels: () =>
+    fetch(`${BASE_URL}/clusters/labels`).then(r => r.json()) as Promise<{ labels: Record<string, string[]> }>,
+
+  clusterCofiring: () =>
+    fetch(`${BASE_URL}/clusters/cofiring`).then(r => r.json()) as Promise<{
+      pairs: Array<{ a: string; b: string; count: number; strength: number }>
+    }>,
+
+  clusterTree: () =>
+    fetch(`${BASE_URL}/clusters/tree`).then(r => r.json()) as Promise<{
+      nodes: Array<{
+        id: string
+        parent: string | null
+        depth: number
+        dormant: boolean
+        cluster_type: string | null
+        labels: string[]
+        phantom: boolean
+      }>
+      edges: Array<{ source: string; target: string }>
+      max_depth: number
+    }>,
 }

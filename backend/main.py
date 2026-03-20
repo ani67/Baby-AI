@@ -541,6 +541,203 @@ async def upload_images_bulk(body: BulkImageUrlRequest):
     return BulkImageUploadResponse(total=len(results), added=added, results=results)
 
 
+# ── Cluster labels ──
+
+
+STOPWORDS = {
+    "a", "an", "the", "is", "it", "in", "on", "of", "to", "and", "or",
+    "for", "with", "that", "this", "was", "are", "be", "has", "had",
+    "not", "but", "from", "they", "we", "you", "he", "she", "its",
+    "by", "at", "as", "do", "if", "so", "no", "up", "out", "about",
+    "their", "there", "these", "those", "would", "could", "should",
+    "which", "where", "after", "being", "other", "every", "still",
+    "while", "since", "until", "before", "between", "through", "during",
+    "what", "when", "how", "who", "will", "can", "may", "very", "just",
+    "than", "then", "also", "into", "over", "such", "some", "any",
+    "each", "more", "most", "been", "have", "were", "our", "your",
+    "them", "him", "her", "his", "my", "me", "us", "i",
+}
+
+
+def _compute_cluster_labels(store, graph) -> dict[str, list[str]]:
+    """Shared helper: compute top-5 emergent label words per cluster."""
+    import json
+    from collections import Counter
+
+    active_ids = [c.id for c in graph.clusters if not c.dormant]
+    rows = store.get_recent_dialogues_for_clusters(limit=2000)
+
+    cluster_texts: dict[str, list[str]] = {cid: [] for cid in active_ids}
+    for clusters_json, answer in rows:
+        try:
+            cluster_list = json.loads(clusters_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        top3 = cluster_list[:3]
+        for cid in top3:
+            if cid in cluster_texts and len(cluster_texts[cid]) < 50:
+                cluster_texts[cid].append(answer)
+
+    labels: dict[str, list[str]] = {}
+    for cid in active_ids:
+        texts = cluster_texts[cid]
+        if not texts:
+            labels[cid] = []
+            continue
+        counter: Counter = Counter()
+        for text in texts:
+            for word in text.lower().split():
+                clean = word.strip(".,!?;:\"'()-[]{}").lower()
+                if len(clean) > 2 and clean.isalpha() and clean not in STOPWORDS:
+                    counter[clean] += 1
+        labels[cid] = [word for word, _ in counter.most_common(5)]
+    return labels
+
+
+import re as _re
+_CLUSTER_ID_RE = _re.compile(r'^(c_\d+)([a-z]*)$')
+
+
+def _cluster_parent_id(cid: str) -> str | None:
+    """Derive parent cluster ID from BUD naming convention.
+
+    c_00a  → c_00   (depth-1 parent)
+    c_00ab → c_00a  (strip last suffix letter)
+    c_00   → None   (root — no alphabetic suffix)
+    """
+    m = _CLUSTER_ID_RE.match(cid)
+    if not m:
+        return None
+    base, suffix = m.group(1), m.group(2)
+    if not suffix:
+        return None  # root-level cluster, no parent
+    return base + suffix[:-1]  # strip last letter
+
+
+def _cluster_depth(cid: str) -> int:
+    """Depth = number of BUD suffix letters after the numeric part."""
+    m = _CLUSTER_ID_RE.match(cid)
+    if not m:
+        return 0
+    return len(m.group(2))
+
+
+@app.get("/clusters/labels")
+async def cluster_labels():
+    """
+    For each active cluster, find the 50 most recent dialogue entries where
+    that cluster was in the top 3 activated. Extract text from those entries.
+    Return the 5 most frequent non-stopwords as the cluster's emergent label.
+    """
+    store = app.state.store
+    graph = app.state.loop.model.graph
+    return {"labels": _compute_cluster_labels(store, graph)}
+
+
+@app.get("/clusters/tree")
+async def cluster_tree():
+    """Return cluster parent-child tree derived from BUD naming convention.
+
+    c_00 → children c_00a, c_00b
+    c_00a → children c_00aa, c_00ab
+
+    Since bud() removes parent clusters from the graph, we insert phantom
+    parent nodes when siblings exist but their parent doesn't.  This
+    reconstructs the full BUD lineage tree for visualization.
+    """
+    store = app.state.store
+    loop = app.state.loop
+    graph = loop.model.graph
+
+    try:
+        labels = _compute_cluster_labels(store, graph)
+    except Exception as e:
+        print(f"[tree] labels computation failed: {e}", flush=True)
+        labels = {}
+
+    # Build node map for real clusters
+    node_map: dict[str, dict] = {}
+    for cluster in graph.clusters:
+        cid = cluster.id
+        parent = _cluster_parent_id(cid)
+        node_map[cid] = {
+            "id": cid,
+            "depth": _cluster_depth(cid),
+            "parent": parent,
+            "dormant": cluster.dormant,
+            "cluster_type": cluster.cluster_type,
+            "labels": labels.get(cid, []),
+            "phantom": False,
+        }
+
+    # Insert phantom parents where needed: if c_00a exists but c_00 doesn't,
+    # create a phantom c_00 node so the tree connects.  Walk up recursively.
+    phantoms_needed: set[str] = set()
+    for node in list(node_map.values()):
+        parent = node["parent"]
+        while parent and parent not in node_map and parent not in phantoms_needed:
+            phantoms_needed.add(parent)
+            parent = _cluster_parent_id(parent)
+
+    for pid in phantoms_needed:
+        node_map[pid] = {
+            "id": pid,
+            "depth": _cluster_depth(pid),
+            "parent": _cluster_parent_id(pid),
+            "dormant": True,
+            "cluster_type": None,
+            "labels": [],
+            "phantom": True,
+        }
+
+    # Build edges: link each node to its parent if parent is in node_map
+    edges = []
+    for cid, node in node_map.items():
+        parent = node["parent"]
+        if parent and parent in node_map:
+            edges.append({"source": parent, "target": cid})
+        elif parent:
+            node["parent"] = None
+
+    nodes = list(node_map.values())
+    max_depth = max((n["depth"] for n in nodes), default=0)
+
+    # Debug log — first 20 clusters and their resolved parents
+    sample = sorted(node_map.keys())[:20]
+    print(
+        f"[tree] clusters={len(graph.clusters)} nodes={len(nodes)} "
+        f"edges={len(edges)} phantoms={len(phantoms_needed)} max_depth={max_depth}",
+        flush=True,
+    )
+    for cid in sample:
+        n = node_map[cid]
+        tag = " [phantom]" if n["phantom"] else ""
+        print(f"[tree]   {cid} depth={n['depth']} parent={n['parent']}{tag}", flush=True)
+
+    return {"nodes": nodes, "edges": edges, "max_depth": max_depth}
+
+
+@app.get("/clusters/cofiring")
+async def cluster_cofiring():
+    """Return co-firing pairs with normalized strength."""
+    store = app.state.store
+    pairs = store.get_cofiring_pairs()
+    if not pairs:
+        return {"pairs": []}
+    max_count = max(p["count"] for p in pairs)
+    return {
+        "pairs": [
+            {
+                "a": p["a"],
+                "b": p["b"],
+                "count": p["count"],
+                "strength": p["count"] / max_count if max_count > 0 else 0,
+            }
+            for p in pairs
+        ]
+    }
+
+
 # ── Snapshot ──
 
 

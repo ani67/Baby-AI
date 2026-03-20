@@ -56,8 +56,8 @@ export function Controls() {
           min={0}
           max={2000}
           step={100}
-          defaultValue={500}
-          onChange={e => setSpeed(Number(e.target.value))}
+          defaultValue={1500}
+          onChange={e => setSpeed(2000 - Number(e.target.value))}
         />
       </div>
 

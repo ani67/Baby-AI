@@ -97,6 +97,8 @@ class LearningLoop:
         self._stage0_completion_step: int | None = None
         self._stage1_completion_step: int | None = None
         self._loop_task: asyncio.Task | None = None
+        self._cofiring_buffer: list[tuple[str, str]] = []
+        self._cofiring_steps_since_flush: int = 0
 
     # ── Control ──
 
@@ -310,6 +312,19 @@ class LearningLoop:
             similarity_history=self._similarity_history,
         )
 
+        # ── 10c. CO-FIRING ──
+        # Record which clusters fired together; batch write every 50 step_once() calls
+        active_cids = [cid for cid, v in activations.items() if v > 0.01]
+        for i in range(len(active_cids)):
+            for j in range(i + 1, len(active_cids)):
+                self._cofiring_buffer.append((active_cids[i], active_cids[j]))
+        self._cofiring_steps_since_flush += 1
+        if self._cofiring_steps_since_flush >= 50 and self._cofiring_buffer:
+            print(f"[cofiring] flushed {len(self._cofiring_buffer)} pairs at step {self.model.step}", flush=True)
+            self.store.batch_update_cofiring(self._cofiring_buffer, self.model.step)
+            self._cofiring_buffer = []
+            self._cofiring_steps_since_flush = 0
+
         # ── 11. LOG ──
         self.store.log_dialogue(
             step=self.model.step,
@@ -353,7 +368,7 @@ class LearningLoop:
         model_response = self.decoder.decode(prediction, max_words=15)
 
         if self.viz_emitter is not None:
-            await self.viz_emitter.emit_step(
+            asyncio.ensure_future(self.viz_emitter.emit_step(
                 step=self.model.step,
                 stage=self._stage,
                 graph=self.model.graph,
@@ -363,8 +378,11 @@ class LearningLoop:
                 model_answer=model_response,
                 is_positive=is_positive,
                 growth_events=growth_events,
-                image_url=f"/images/{curriculum_item.image_path}" if curriculum_item.image_path else None,
-            )
+                image_url=(
+                    f"/images/{curriculum_item.image_path}" if curriculum_item.image_path
+                    else getattr(curriculum_item, "image_url", None)
+                ),
+            ))
 
         # ── 13. AUTO-ADVANCE stage 0 → 1 ──
         if self._stage == 0:

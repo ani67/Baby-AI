@@ -6,8 +6,8 @@ and store (image_id, image_emb, caption_emb, caption_text) in the
 embedding_cache table of the existing SQLite database.
 
 Usage:
-    cd backend && python3 -m scripts.download_coco          # default db path
-    cd backend && python3 -m scripts.download_coco --db-path state/dev.db
+    cd backend && python3 -m scripts.download_coco
+    cd backend && python3 -m scripts.download_coco --db-path /path/to/dev.db
     cd backend && python3 -m scripts.download_coco --batch-size 64
 """
 
@@ -109,9 +109,12 @@ CREATE TABLE IF NOT EXISTS embedding_cache (
     image_id     INTEGER PRIMARY KEY,
     image_emb    BLOB    NOT NULL,
     caption_emb  BLOB    NOT NULL,
-    caption_text TEXT    NOT NULL
+    caption_text TEXT    NOT NULL,
+    image_url    TEXT
 );
 """
+
+COCO_VAL_IMAGE_URL = "http://images.cocodataset.org/val2017/"
 
 
 # ---------------------------------------------------------------------------
@@ -120,8 +123,9 @@ CREATE TABLE IF NOT EXISTS embedding_cache (
 
 def main():
     parser = argparse.ArgumentParser(description="Download COCO val2017 & build embedding cache")
-    parser.add_argument("--db-path", default="backend/state/dev.db",
-                        help="Path to SQLite database (default: backend/state/dev.db)")
+    _default_db = str(Path(__file__).resolve().parent.parent / "state" / "dev.db")
+    parser.add_argument("--db-path", default=_default_db,
+                        help="Path to SQLite database")
     parser.add_argument("--data-dir", default=None,
                         help="Directory for COCO downloads (default: temp dir)")
     parser.add_argument("--batch-size", type=int, default=32,
@@ -130,12 +134,7 @@ def main():
                         help="Only process first N images (0 = all)")
     args = parser.parse_args()
 
-    # Resolve db path
     db_path = args.db_path
-    if not os.path.isabs(db_path):
-        # Try relative to cwd, then relative to backend/
-        if not os.path.exists(os.path.dirname(db_path) or "."):
-            db_path = os.path.join("backend", db_path)
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
 
     data_dir = args.data_dir or os.path.join(tempfile.gettempdir(), "coco_cache")
@@ -190,6 +189,13 @@ def main():
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
 
+    # Migrate: add image_url column if missing (for pre-existing tables)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(embedding_cache)").fetchall()}
+    if "image_url" not in cols:
+        conn.execute("ALTER TABLE embedding_cache ADD COLUMN image_url TEXT")
+        conn.commit()
+        print("[coco] migrated: added image_url column", flush=True)
+
     # Check how many already done
     existing = set(
         r[0] for r in conn.execute("SELECT image_id FROM embedding_cache").fetchall()
@@ -231,9 +237,10 @@ def main():
             errors += 1
             continue
 
+        image_url = COCO_VAL_IMAGE_URL + fname
         conn.execute(
-            "INSERT OR REPLACE INTO embedding_cache (image_id, image_emb, caption_emb, caption_text) VALUES (?, ?, ?, ?)",
-            (iid, _emb_to_bytes(img_emb), _emb_to_bytes(cap_emb), best_cap),
+            "INSERT OR REPLACE INTO embedding_cache (image_id, image_emb, caption_emb, caption_text, image_url) VALUES (?, ?, ?, ?, ?)",
+            (iid, _emb_to_bytes(img_emb), _emb_to_bytes(cap_emb), best_cap, image_url),
         )
 
         done += 1
