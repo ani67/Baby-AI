@@ -1,5 +1,5 @@
 import { useRef, useMemo, useState, useCallback, useEffect } from 'react'
-import { Canvas, useFrame, extend } from '@react-three/fiber'
+import { Canvas, useFrame, useThree, extend } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
 import { useGraphStore, GraphNode, GraphEdge, GraphCluster } from '../store/graphStore'
@@ -11,6 +11,21 @@ import { useClusterTree, TreeNode, type TreeStatus } from '../hooks/useClusterTr
 import { api } from '../lib/api'
 
 extend({ Line_: THREE.Line })
+
+// ── Shared geometry — single GPU upload, reused by all spheres ──
+const SHARED_SPHERE = new THREE.SphereGeometry(1, 6, 6)
+const SHARED_SPHERE_LOWPOLY = new THREE.SphereGeometry(1, 4, 4)
+
+// ── Edge culling helpers ──
+const MAX_UMAP_EDGES = 500
+const MAX_LIVE_EDGES = 300
+
+function topEdges(edges: GraphEdge[], max: number): GraphEdge[] {
+  if (edges.length <= max) return edges
+  // Find p75 threshold, then take top N
+  const sorted = [...edges].sort((a, b) => b.strength - a.strength)
+  return sorted.slice(0, max)
+}
 
 // ── Types ──
 
@@ -123,10 +138,7 @@ function ClusterTooltip({ hover, labels }: { hover: HoverInfo; labels: string[] 
   return (
     <div
       className="cluster-tooltip"
-      style={{
-        left: hover.screenX + 14,
-        top: hover.screenY - 10,
-      }}
+      style={{ left: hover.screenX + 14, top: hover.screenY - 10 }}
     >
       <div className="cluster-tooltip-id">
         {hover.clusterId}
@@ -134,9 +146,7 @@ function ClusterTooltip({ hover, labels }: { hover: HoverInfo; labels: string[] 
       </div>
       {labels.length > 0 ? (
         <div className="cluster-tooltip-labels">
-          {labels.map(w => (
-            <span key={w} className="cluster-tooltip-tag">{w}</span>
-          ))}
+          {labels.map(w => <span key={w} className="cluster-tooltip-tag">{w}</span>)}
         </div>
       ) : (
         <div className="cluster-tooltip-empty">no labels yet</div>
@@ -172,15 +182,9 @@ function Legend({ onClose }: { onClose: () => void }) {
         ))}
       </div>
       <div className="legend-section">
-        <div className="legend-title">Layout</div>
-        <div className="legend-desc">Y axis = layer depth (bottom → top)</div>
-        <div className="legend-desc">X/Z = clusters spread per layer</div>
-      </div>
-      <div className="legend-section">
         <div className="legend-title">Nodes</div>
-        <div className="legend-desc">Size = mean activation strength</div>
+        <div className="legend-desc">Size = activation strength</div>
         <div className="legend-desc">Pulse = currently active</div>
-        <div className="legend-desc">Dim = dead / pruned node</div>
       </div>
       <div className="legend-section">
         <div className="legend-title">Edges</div>
@@ -198,77 +202,43 @@ function Legend({ onClose }: { onClose: () => void }) {
 }
 
 function GridPlane() {
-  return (
-    <gridHelper
-      args={[10, 20, '#1a1a1a', '#111111']}
-      position={[0, -1.5, 0]}
-    />
-  )
+  return <gridHelper args={[10, 20, '#1a1a1a', '#111111']} position={[0, -1.5, 0]} />
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  Force-directed simulation state (shared mutable, lives outside React)
+//  Force simulation (singleton, outside React)
 // ═══════════════════════════════════════════════════════════════════════
 
-interface SimBody {
-  x: number; y: number; z: number
-  vx: number; vy: number; vz: number
-}
-
-interface CofiringSpring {
-  a: string
-  b: string
-  strength: number        // current (lerped)
-  targetStrength: number  // from latest fetch
-}
+interface SimBody { x: number; y: number; z: number; vx: number; vy: number; vz: number }
+interface CofiringSpring { a: string; b: string; strength: number; targetStrength: number }
 
 class ForceSimulation {
   bodies: Map<string, SimBody> = new Map()
-  springs: Map<string, CofiringSpring> = new Map()  // key = "a|b" canonical
+  springs: Map<string, CofiringSpring> = new Map()
   damping = 0.85
   maxVelocity = 2
   repulsionStrength = 0.15
   attractionStrength = 0.8
-  springLerpSpeed = 0.0033  // ~5 seconds to converge at 60fps (1 - 0.0033^300)
-
-  private _fetchTimer = 0
+  springLerpSpeed = 0.0033
   private _hasFetched = false
 
-  /** Ensure a body exists for each cluster, remove stale ones. */
   syncClusters(clusterIds: string[]) {
     const idSet = new Set(clusterIds)
-    // Remove bodies for clusters no longer present
-    for (const cid of this.bodies.keys()) {
-      if (!idSet.has(cid)) this.bodies.delete(cid)
-    }
-    // Add new clusters
+    for (const cid of this.bodies.keys()) { if (!idSet.has(cid)) this.bodies.delete(cid) }
     for (const cid of clusterIds) {
       if (!this.bodies.has(cid)) {
-        // Place near best co-firing partner, or random
         const partner = this._bestPartner(cid)
         if (partner) {
           const p = this.bodies.get(partner)!
-          this.bodies.set(cid, {
-            x: p.x + (Math.random() - 0.5) * 0.3,
-            y: p.y + (Math.random() - 0.5) * 0.3,
-            z: p.z + (Math.random() - 0.5) * 0.3,
-            vx: 0, vy: 0, vz: 0,
-          })
+          this.bodies.set(cid, { x: p.x + (Math.random() - 0.5) * 0.3, y: p.y + (Math.random() - 0.5) * 0.3, z: p.z + (Math.random() - 0.5) * 0.3, vx: 0, vy: 0, vz: 0 })
         } else {
-          const angle = Math.random() * Math.PI * 2
-          const r = 0.5 + Math.random() * 0.5
-          this.bodies.set(cid, {
-            x: Math.cos(angle) * r,
-            y: (Math.random() - 0.5) * 0.4,
-            z: Math.sin(angle) * r,
-            vx: 0, vy: 0, vz: 0,
-          })
+          const a = Math.random() * Math.PI * 2, r = 0.5 + Math.random() * 0.5
+          this.bodies.set(cid, { x: Math.cos(a) * r, y: (Math.random() - 0.5) * 0.4, z: Math.sin(a) * r, vx: 0, vy: 0, vz: 0 })
         }
       }
     }
   }
 
-  /** Fetch co-firing data from backend. */
   async fetchCofiring() {
     try {
       const data = await api.clusterCofiring()
@@ -278,115 +248,94 @@ class ForceSimulation {
         const key = p.a < p.b ? `${p.a}|${p.b}` : `${p.b}|${p.a}`
         newKeys.add(key)
         const existing = this.springs.get(key)
-        if (existing) {
-          existing.targetStrength = p.strength
-        } else {
-          this.springs.set(key, {
-            a: p.a < p.b ? p.a : p.b,
-            b: p.a < p.b ? p.b : p.a,
-            strength: this._hasFetched ? 0 : p.strength,  // snap on first load
-            targetStrength: p.strength,
-          })
-        }
+        if (existing) { existing.targetStrength = p.strength }
+        else { this.springs.set(key, { a: p.a < p.b ? p.a : p.b, b: p.a < p.b ? p.b : p.a, strength: this._hasFetched ? 0 : p.strength, targetStrength: p.strength }) }
       }
-      // Remove springs for pairs no longer in data
-      for (const key of this.springs.keys()) {
-        if (!newKeys.has(key)) this.springs.delete(key)
-      }
+      for (const key of this.springs.keys()) { if (!newKeys.has(key)) this.springs.delete(key) }
       this._hasFetched = true
     } catch {}
   }
 
-  /** Run one simulation step. */
   step(dt: number) {
     const ids = [...this.bodies.keys()]
     const n = ids.length
     if (n === 0) return
-
-    // Boundary radius scales with sqrt(cluster count)
     const boundaryR = Math.max(1.5, Math.sqrt(n) * 0.5)
 
-    // Lerp spring strengths toward targets
     for (const spring of this.springs.values()) {
       spring.strength += (spring.targetStrength - spring.strength) * this.springLerpSpeed
     }
 
-    // Accumulate forces
-    const forces = new Map<string, [number, number, number]>()
-    for (const id of ids) forces.set(id, [0, 0, 0])
+    // Flat arrays for force accumulation — avoids Map overhead
+    const fx = new Float32Array(n)
+    const fy = new Float32Array(n)
+    const fz = new Float32Array(n)
 
-    // Repulsion: all pairs, inverse square
+    // Pre-extract positions into flat arrays
+    const px = new Float32Array(n)
+    const py = new Float32Array(n)
+    const pz = new Float32Array(n)
     for (let i = 0; i < n; i++) {
-      const ai = ids[i]
-      const a = this.bodies.get(ai)!
+      const b = this.bodies.get(ids[i])!
+      px[i] = b.x; py[i] = b.y; pz[i] = b.z
+    }
+
+    // Repulsion: nearby pairs only (skip > 2.0 apart)
+    const CUTOFF_SQ = 4.0
+    for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
-        const bi = ids[j]
-        const b = this.bodies.get(bi)!
-        let dx = a.x - b.x
-        let dy = a.y - b.y
-        let dz = a.z - b.z
-        const distSq = dx * dx + dy * dy + dz * dz + 0.001
-        const dist = Math.sqrt(distSq)
-        const force = this.repulsionStrength / distSq
-        const fx = (dx / dist) * force
-        const fy = (dy / dist) * force
-        const fz = (dz / dist) * force
-        const fa = forces.get(ai)!
-        const fb = forces.get(bi)!
-        fa[0] += fx; fa[1] += fy; fa[2] += fz
-        fb[0] -= fx; fb[1] -= fy; fb[2] -= fz
+        const dx = px[i] - px[j]
+        const dy = py[i] - py[j]
+        const dz = pz[i] - pz[j]
+        const distSq = dx * dx + dy * dy + dz * dz
+        if (distSq > CUTOFF_SQ) continue
+        const distSqSafe = distSq + 0.001
+        const dist = Math.sqrt(distSqSafe)
+        const force = this.repulsionStrength / distSqSafe
+        const ffx = (dx / dist) * force
+        const ffy = (dy / dist) * force
+        const ffz = (dz / dist) * force
+        fx[i] += ffx; fy[i] += ffy; fz[i] += ffz
+        fx[j] -= ffx; fy[j] -= ffy; fz[j] -= ffz
       }
     }
 
-    // Attraction: co-firing springs
+    // Attraction: co-firing springs (use index lookup)
+    const idIndex = new Map<string, number>()
+    for (let i = 0; i < n; i++) idIndex.set(ids[i], i)
+
     for (const spring of this.springs.values()) {
-      const a = this.bodies.get(spring.a)
-      const b = this.bodies.get(spring.b)
-      if (!a || !b) continue
-      const dx = b.x - a.x
-      const dy = b.y - a.y
-      const dz = b.z - a.z
+      const ai = idIndex.get(spring.a)
+      const bi = idIndex.get(spring.b)
+      if (ai === undefined || bi === undefined) continue
+      const dx = px[bi] - px[ai]
+      const dy = py[bi] - py[ai]
+      const dz = pz[bi] - pz[ai]
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz + 0.001)
       const force = this.attractionStrength * spring.strength * dist * 0.1
-      const fx = (dx / dist) * force
-      const fy = (dy / dist) * force
-      const fz = (dz / dist) * force
-      const fa = forces.get(spring.a)!
-      const fb = forces.get(spring.b)!
-      fa[0] += fx; fa[1] += fy; fa[2] += fz
-      fb[0] -= fx; fb[1] -= fy; fb[2] -= fz
+      const ffx = (dx / dist) * force
+      const ffy = (dy / dist) * force
+      const ffz = (dz / dist) * force
+      fx[ai] += ffx; fy[ai] += ffy; fz[ai] += ffz
+      fx[bi] -= ffx; fy[bi] -= ffy; fz[bi] -= ffz
     }
 
-    // Boundary: soft push toward center
-    for (const id of ids) {
-      const body = this.bodies.get(id)!
-      const dist = Math.sqrt(body.x * body.x + body.y * body.y + body.z * body.z)
+    // Boundary + integrate
+    for (let i = 0; i < n; i++) {
+      const body = this.bodies.get(ids[i])!
+      const dist = Math.sqrt(px[i] * px[i] + py[i] * py[i] + pz[i] * pz[i])
       if (dist > boundaryR) {
-        const overshoot = dist - boundaryR
-        const pushStrength = overshoot * 0.3
-        const f = forces.get(id)!
-        f[0] -= (body.x / dist) * pushStrength
-        f[1] -= (body.y / dist) * pushStrength
-        f[2] -= (body.z / dist) * pushStrength
+        const push = (dist - boundaryR) * 0.3
+        fx[i] -= (px[i] / dist) * push
+        fy[i] -= (py[i] / dist) * push
+        fz[i] -= (pz[i] / dist) * push
       }
-    }
-
-    // Integrate: apply forces, damp, clamp velocity
-    for (const id of ids) {
-      const body = this.bodies.get(id)!
-      const f = forces.get(id)!
-      body.vx = (body.vx + f[0] * dt) * this.damping
-      body.vy = (body.vy + f[1] * dt) * this.damping
-      body.vz = (body.vz + f[2] * dt) * this.damping
-      // Clamp velocity
+      body.vx = (body.vx + fx[i] * dt) * this.damping
+      body.vy = (body.vy + fy[i] * dt) * this.damping
+      body.vz = (body.vz + fz[i] * dt) * this.damping
       const speed = Math.sqrt(body.vx * body.vx + body.vy * body.vy + body.vz * body.vz)
-      if (speed > this.maxVelocity) {
-        const scale = this.maxVelocity / speed
-        body.vx *= scale; body.vy *= scale; body.vz *= scale
-      }
-      body.x += body.vx * dt
-      body.y += body.vy * dt
-      body.z += body.vz * dt
+      if (speed > this.maxVelocity) { const s = this.maxVelocity / speed; body.vx *= s; body.vy *= s; body.vz *= s }
+      body.x += body.vx * dt; body.y += body.vy * dt; body.z += body.vz * dt
     }
   }
 
@@ -396,25 +345,19 @@ class ForceSimulation {
   }
 
   private _bestPartner(cid: string): string | null {
-    let best: string | null = null
-    let bestStr = 0
+    let best: string | null = null, bestStr = 0
     for (const spring of this.springs.values()) {
-      if (spring.a === cid && spring.strength > bestStr && this.bodies.has(spring.b)) {
-        best = spring.b; bestStr = spring.strength
-      }
-      if (spring.b === cid && spring.strength > bestStr && this.bodies.has(spring.a)) {
-        best = spring.a; bestStr = spring.strength
-      }
+      if (spring.a === cid && spring.strength > bestStr && this.bodies.has(spring.b)) { best = spring.b; bestStr = spring.strength }
+      if (spring.b === cid && spring.strength > bestStr && this.bodies.has(spring.a)) { best = spring.a; bestStr = spring.strength }
     }
     return best
   }
 }
 
-// Singleton simulation — lives across React re-renders
 const _sim = new ForceSimulation()
 
 // ═══════════════════════════════════════════════════════════════════════
-//  LIVE mode renderer — force-directed simulation
+//  LIVE mode — force-directed, capped edges
 // ═══════════════════════════════════════════════════════════════════════
 
 function LiveRenderer({ onHover }: { onHover: (info: HoverInfo | null) => void }) {
@@ -422,69 +365,42 @@ function LiveRenderer({ onHover }: { onHover: (info: HoverInfo | null) => void }
   const nodes = useGraphStore(s => s.nodes)
   const edges = useGraphStore(s => s.edges)
   const activations = useGraphStore(s => s.activations)
-  const lastFetch = useRef(0)
 
-  // Sync cluster set into simulation
   const activeIds = useMemo(() => clusters.filter(c => !c.dormant).map(c => c.id), [clusters])
   useEffect(() => { _sim.syncClusters(activeIds) }, [activeIds])
-
-  // Fetch co-firing on mount + every 60s
   useEffect(() => {
     _sim.fetchCofiring()
     const timer = setInterval(() => _sim.fetchCofiring(), 60_000)
     return () => clearInterval(timer)
   }, [])
 
-  // Mutable positions that update every frame — avoids React re-renders
   const positionsRef = useRef<Record<string, [number, number, number]>>({})
 
+  // Top 300 strongest edges only
+  const visibleEdges = useMemo(() => topEdges(edges, MAX_LIVE_EDGES), [edges])
+
   useFrame((_, delta) => {
-    // Run physics at ~60fps step rate, clamped
-    const dt = Math.min(delta, 1 / 30)
-    _sim.step(dt)
-    // Copy positions out for rendering
-    for (const cid of activeIds) {
-      positionsRef.current[cid] = _sim.getPosition(cid)
-    }
+    _sim.step(Math.min(delta, 1 / 30))
+    for (const cid of activeIds) positionsRef.current[cid] = _sim.getPosition(cid)
   })
 
   return (
     <group>
-      {/* Co-firing edges */}
-      {edges.map(edge => (
-        <LiveEdge
-          key={`${edge.from}-${edge.to}`}
-          edge={edge}
-          positionsRef={positionsRef}
-        />
+      {visibleEdges.map(edge => (
+        <LiveEdge key={`${edge.from}-${edge.to}`} edge={edge} positionsRef={positionsRef} />
       ))}
-
-      {/* Cluster spheres at simulation positions */}
       {clusters.filter(c => !c.dormant).map(cluster => (
-        <LiveClusterSphere
-          key={cluster.id}
-          cluster={cluster}
-          clusterNodes={nodes.filter(n => n.cluster === cluster.id)}
-          activation={activations[cluster.id] ?? 0}
-          positionsRef={positionsRef}
-          onHover={onHover}
-        />
+        <LiveSphere key={cluster.id} cluster={cluster} activation={activations[cluster.id] ?? 0} positionsRef={positionsRef} onHover={onHover} />
       ))}
     </group>
   )
 }
 
-// ── Live cluster sphere — reads position from sim each frame ──
-
-interface LiveClusterSphereProps {
-  cluster: GraphCluster
-  clusterNodes: GraphNode[]
-  activation: number
+function LiveSphere({ cluster, activation, positionsRef, onHover }: {
+  cluster: GraphCluster; activation: number
   positionsRef: React.MutableRefObject<Record<string, [number, number, number]>>
   onHover: (info: HoverInfo | null) => void
-}
-
-function LiveClusterSphere({ cluster, clusterNodes, activation, positionsRef, onHover }: LiveClusterSphereProps) {
+}) {
   const meshRef = useRef<THREE.Mesh>(null)
   const matRef = useRef<THREE.MeshStandardMaterial>(null)
   const color = clusterColor(cluster.cluster_type)
@@ -493,117 +409,52 @@ function LiveClusterSphere({ cluster, clusterNodes, activation, positionsRef, on
 
   useFrame((_, delta) => {
     if (!meshRef.current) return
-    // Move mesh to sim position
     const pos = positionsRef.current[cluster.id]
-    if (pos) {
-      meshRef.current.position.set(pos[0], pos[1], pos[2])
-    }
-
-    // Pulse: faster for recently active
+    if (pos) meshRef.current.position.set(pos[0], pos[1], pos[2])
     const pulseSpeed = activation > 0.1 ? 6 : 1.5
     pulsePhase.current += delta * pulseSpeed
     const pulse = 1 + Math.sin(pulsePhase.current) * 0.15 * (activation > 0.1 ? 1 : 0.3)
-    const targetScale = baseScale * pulse
     const s = meshRef.current.scale.x
-    meshRef.current.scale.setScalar(s + (targetScale - s) * Math.min(delta * ANIMATION.PULSE_LERP_SPEED, 1))
-
-    // Opacity: brighter for more active
+    meshRef.current.scale.setScalar(s + (baseScale * pulse - s) * Math.min(delta * ANIMATION.PULSE_LERP_SPEED, 1))
     if (matRef.current) {
-      const opTarget = Math.max(0.25, 0.3 + activation * 0.7)
-      matRef.current.opacity += (opTarget - matRef.current.opacity) * Math.min(delta * 4, 1)
+      const op = Math.max(0.25, 0.3 + activation * 0.7)
+      matRef.current.opacity += (op - matRef.current.opacity) * Math.min(delta * 4, 1)
     }
   })
 
-  const handlePointerEnter = useCallback((e: any) => {
+  const onEnter = useCallback((e: any) => {
     e.stopPropagation()
     const pos = positionsRef.current[cluster.id] ?? [0, 0, 0]
-    const vec = new THREE.Vector3(pos[0], pos[1], pos[2])
+    const vec = new THREE.Vector3(...pos)
     const canvas = e.target?.ownerDocument?.querySelector('canvas') as HTMLCanvasElement | null
-    if (canvas) {
-      vec.project(e.camera)
-      const rect = canvas.getBoundingClientRect()
-      onHover({
-        clusterId: cluster.id,
-        clusterType: cluster.cluster_type,
-        screenX: ((vec.x + 1) / 2) * rect.width + rect.left,
-        screenY: ((-vec.y + 1) / 2) * rect.height + rect.top,
-      })
-    }
+    if (canvas) { vec.project(e.camera); const r = canvas.getBoundingClientRect(); onHover({ clusterId: cluster.id, clusterType: cluster.cluster_type, screenX: ((vec.x + 1) / 2) * r.width + r.left, screenY: ((-vec.y + 1) / 2) * r.height + r.top }) }
   }, [cluster.id, cluster.cluster_type, positionsRef, onHover])
-
-  const handlePointerLeave = useCallback((e: any) => {
-    e.stopPropagation()
-    onHover(null)
-  }, [onHover])
+  const onLeave = useCallback((e: any) => { e.stopPropagation(); onHover(null) }, [onHover])
 
   return (
-    <mesh
-      ref={meshRef}
-      position={[0, 0, 0]}
-      scale={[baseScale, baseScale, baseScale]}
-      onPointerEnter={handlePointerEnter}
-      onPointerLeave={handlePointerLeave}
-    >
-      <sphereGeometry args={[1, 8, 8]} />
-      <meshStandardMaterial
-        ref={matRef}
-        color={color}
-        emissive={color}
-        emissiveIntensity={0.2 + activation * 1.2}
-        roughness={0.6}
-        metalness={0.2}
-        transparent
-        opacity={0.5}
-      />
+    <mesh ref={meshRef} geometry={SHARED_SPHERE} position={[0, 0, 0]} scale={baseScale} onPointerEnter={onEnter} onPointerLeave={onLeave}>
+      <meshStandardMaterial ref={matRef} color={color} emissive={color} emissiveIntensity={0.2 + activation * 1.2} roughness={0.6} metalness={0.2} transparent opacity={0.5} />
     </mesh>
   )
 }
 
-// ── Live edge — position updates each frame from sim ──
-
-interface LiveEdgeProps {
-  edge: GraphEdge
-  positionsRef: React.MutableRefObject<Record<string, [number, number, number]>>
-}
-
-function LiveEdge({ edge, positionsRef }: LiveEdgeProps) {
-  const lineRef = useRef<THREE.Line>(null)
+function LiveEdge({ edge, positionsRef }: { edge: GraphEdge; positionsRef: React.MutableRefObject<Record<string, [number, number, number]>> }) {
   const opacityRef = useRef(0)
   const targetOpacity = edgeOpacity(edge.strength)
-
-  const geometry = useMemo(() => {
-    const geo = new THREE.BufferGeometry()
-    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3))
-    return geo
-  }, [])
-
-  const material = useMemo(() => {
-    return new THREE.LineBasicMaterial({
-      color: '#4effa0',
-      transparent: true,
-      opacity: 0,
-    })
-  }, [])
-
+  const geometry = useMemo(() => { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3)); return g }, [])
+  const material = useMemo(() => new THREE.LineBasicMaterial({ color: '#4effa0', transparent: true, opacity: 0 }), [])
   useFrame((_, delta) => {
-    // Update line endpoints from simulation positions
-    const a = positionsRef.current[edge.from] ?? [0, 0, 0]
-    const b = positionsRef.current[edge.to] ?? [0, 0, 0]
-    const posAttr = geometry.getAttribute('position') as THREE.BufferAttribute
-    posAttr.setXYZ(0, a[0], a[1], a[2])
-    posAttr.setXYZ(1, b[0], b[1], b[2])
-    posAttr.needsUpdate = true
-
-    const tgt = Math.min(targetOpacity * 1.5, 1)
-    opacityRef.current += (tgt - opacityRef.current) * Math.min(delta * 3, 1)
+    const a = positionsRef.current[edge.from] ?? [0, 0, 0], b = positionsRef.current[edge.to] ?? [0, 0, 0]
+    const p = geometry.getAttribute('position') as THREE.BufferAttribute
+    p.setXYZ(0, a[0], a[1], a[2]); p.setXYZ(1, b[0], b[1], b[2]); p.needsUpdate = true
+    opacityRef.current += (Math.min(targetOpacity * 1.5, 1) - opacityRef.current) * Math.min(delta * 3, 1)
     material.opacity = opacityRef.current
   })
-
-  return <primitive ref={lineRef} object={new THREE.Line(geometry, material)} />
+  return <primitive object={new THREE.Line(geometry, material)} />
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  UMAP mode renderer (original, unchanged)
+//  UMAP mode — top 500 edges, shared geometry
 // ═══════════════════════════════════════════════════════════════════════
 
 function UmapRenderer({ onHover }: { onHover: (info: HoverInfo | null) => void }) {
@@ -612,25 +463,16 @@ function UmapRenderer({ onHover }: { onHover: (info: HoverInfo | null) => void }
   const edges = useGraphStore(s => s.edges)
   const activations = useGraphStore(s => s.activations)
 
+  // Top 500 strongest edges only
+  const visibleEdges = useMemo(() => topEdges(edges, MAX_UMAP_EDGES), [edges])
+
   return (
     <group>
-      {edges.map(edge => (
-        <UmapEdge
-          key={`${edge.from}-${edge.to}`}
-          edge={edge}
-          fromPos={clusterCentroid(nodes, edge.from)}
-          toPos={clusterCentroid(nodes, edge.to)}
-        />
+      {visibleEdges.map(edge => (
+        <UmapEdge key={`${edge.from}-${edge.to}`} edge={edge} fromPos={clusterCentroid(nodes, edge.from)} toPos={clusterCentroid(nodes, edge.to)} />
       ))}
-
       {clusters.map(cluster => (
-        <UmapClusterGroup
-          key={cluster.id}
-          cluster={cluster}
-          nodes={nodes.filter(n => n.cluster === cluster.id)}
-          activation={activations[cluster.id] ?? 0}
-          onHover={onHover}
-        />
+        <UmapClusterGroup key={cluster.id} cluster={cluster} nodes={nodes.filter(n => n.cluster === cluster.id)} activation={activations[cluster.id] ?? 0} onHover={onHover} />
       ))}
     </group>
   )
@@ -643,15 +485,7 @@ function UmapClusterGroup({ cluster, nodes, activation, onHover }: {
   return (
     <group>
       {nodes.map(node => (
-        <UmapNodeSphere
-          key={node.id}
-          node={node}
-          clusterId={cluster.id}
-          clusterType={cluster.cluster_type}
-          color={color}
-          activation={activation}
-          onHover={onHover}
-        />
+        <UmapNodeSphere key={node.id} node={node} clusterId={cluster.id} clusterType={cluster.cluster_type} color={color} activation={activation} onHover={onHover} />
       ))}
     </group>
   )
@@ -668,34 +502,23 @@ function UmapNodeSphere({ node, clusterId, clusterType, color, activation, onHov
   useFrame((_, delta) => {
     if (!meshRef.current) return
     const target = activation > 0.1 ? baseScale * 1.5 : baseScale
-    const current = meshRef.current.scale.x
-    meshRef.current.scale.setScalar(current + (target - current) * Math.min(delta * ANIMATION.PULSE_LERP_SPEED, 1))
-    if (matRef.current) {
-      matRef.current.opacity += (dormantTarget - matRef.current.opacity) * Math.min(delta * 4, 1)
-    }
+    const s = meshRef.current.scale.x
+    meshRef.current.scale.setScalar(s + (target - s) * Math.min(delta * ANIMATION.PULSE_LERP_SPEED, 1))
+    if (matRef.current) matRef.current.opacity += (dormantTarget - matRef.current.opacity) * Math.min(delta * 4, 1)
   })
 
-  const handlePointerEnter = useCallback((e: any) => {
+  const onEnter = useCallback((e: any) => {
     e.stopPropagation()
     const pos = node.pos ?? [0, 0, 0]
-    const vec = new THREE.Vector3(pos[0], pos[1], pos[2])
+    const vec = new THREE.Vector3(...pos)
     const canvas = e.target?.ownerDocument?.querySelector('canvas') as HTMLCanvasElement | null
-    if (canvas) {
-      vec.project(e.camera)
-      const rect = canvas.getBoundingClientRect()
-      onHover({ clusterId, clusterType, screenX: ((vec.x + 1) / 2) * rect.width + rect.left, screenY: ((-vec.y + 1) / 2) * rect.height + rect.top })
-    }
+    if (canvas) { vec.project(e.camera); const r = canvas.getBoundingClientRect(); onHover({ clusterId, clusterType, screenX: ((vec.x + 1) / 2) * r.width + r.left, screenY: ((-vec.y + 1) / 2) * r.height + r.top }) }
   }, [node.pos, clusterId, clusterType, onHover])
-
-  const handlePointerLeave = useCallback((e: any) => { e.stopPropagation(); onHover(null) }, [onHover])
+  const onLeave = useCallback((e: any) => { e.stopPropagation(); onHover(null) }, [onHover])
 
   return (
-    <mesh ref={meshRef} position={node.pos ?? [0, 0, 0]} scale={[baseScale, baseScale, baseScale]}
-      onPointerEnter={handlePointerEnter} onPointerLeave={handlePointerLeave}>
-      <sphereGeometry args={[1, 8, 8]} />
-      <meshStandardMaterial ref={matRef} color={node.alive ? color : '#2a2a2a'}
-        emissive={node.alive ? color : '#2a2a2a'} emissiveIntensity={0.4 + activation * 0.6}
-        roughness={0.6} metalness={0.2} transparent opacity={dormantTarget} />
+    <mesh ref={meshRef} geometry={SHARED_SPHERE} position={node.pos ?? [0, 0, 0]} scale={baseScale} onPointerEnter={onEnter} onPointerLeave={onLeave}>
+      <meshStandardMaterial ref={matRef} color={node.alive ? color : '#2a2a2a'} emissive={node.alive ? color : '#2a2a2a'} emissiveIntensity={0.4 + activation * 0.6} roughness={0.6} metalness={0.2} transparent opacity={dormantTarget} />
     </mesh>
   )
 }
@@ -704,17 +527,12 @@ function UmapEdge({ edge, fromPos, toPos }: { edge: GraphEdge; fromPos: [number,
   const opacityRef = useRef(0)
   const targetOpacity = edgeOpacity(edge.strength)
   const geometry = useMemo(() => {
-    const geo = new THREE.BufferGeometry()
-    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
-      fromPos[0], fromPos[1], fromPos[2], toPos[0], toPos[1], toPos[2],
-    ]), 3))
-    return geo
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([fromPos[0], fromPos[1], fromPos[2], toPos[0], toPos[1], toPos[2]]), 3))
+    return g
   }, [fromPos[0], fromPos[1], fromPos[2], toPos[0], toPos[1], toPos[2]])
   const material = useMemo(() => new THREE.LineBasicMaterial({ color: '#4effa0', transparent: true, opacity: 0 }), [])
-  useFrame((_, delta) => {
-    opacityRef.current += (targetOpacity - opacityRef.current) * Math.min(delta * 3, 1)
-    material.opacity = opacityRef.current
-  })
+  useFrame((_, delta) => { opacityRef.current += (targetOpacity - opacityRef.current) * Math.min(delta * 3, 1); material.opacity = opacityRef.current })
   return <primitive object={new THREE.Line(geometry, material)} />
 }
 
@@ -726,129 +544,149 @@ function edgeOpacity(strength: number): number {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  TREE mode renderer — radial BUD-tree layout
+//  TREE mode — stacked horizontal planes, layout computed once
 // ═══════════════════════════════════════════════════════════════════════
 
-interface TreeRendererProps {
+const PLANE_SPACING = 2.0
+const TREE_REPULSION_ITERS = 60
+const TREE_REPULSION_STRENGTH = 0.08
+
+function TreeRenderer({ treeData, onHover }: {
   treeData: { nodes: TreeNode[]; edges: { source: string; target: string }[]; max_depth: number }
   onHover: (info: HoverInfo | null) => void
-}
-
-function TreeRenderer({ treeData, onHover }: TreeRendererProps) {
+}) {
   const activations = useGraphStore(s => s.activations)
 
-  const layout = useMemo(() => {
-    const empty = { positions: new Map<string, [number, number, number]>() }
-    if (treeData.nodes.length === 0) return empty
-
-    const childrenOf = new Map<string, TreeNode[]>()
+  const childCount = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const n of treeData.nodes) counts.set(n.id, 0)
     for (const n of treeData.nodes) {
-      if (n.parent) {
-        const list = childrenOf.get(n.parent) ?? []
-        list.push(n)
-        childrenOf.set(n.parent, list)
-      }
+      if (n.parent && counts.has(n.parent)) counts.set(n.parent, (counts.get(n.parent) ?? 0) + 1)
     }
+    return counts
+  }, [treeData.nodes])
 
-    const roots = treeData.nodes.filter(n => n.parent === null)
+  // Layout computed ONCE when treeData changes — not every frame
+  const layout = useMemo(() => {
+    if (treeData.nodes.length === 0) return new Map<string, [number, number, number]>()
     const positions = new Map<string, [number, number, number]>()
-    const maxDepth = Math.max(treeData.max_depth, 1)
-    const radiusScale = 3 / maxDepth
-
-    if (roots.length === 1) {
-      positions.set(roots[0].id, [0, 0, 0])
-    } else {
-      for (let i = 0; i < roots.length; i++) {
-        const angle = (i / roots.length) * Math.PI * 2
-        const r = Math.min(0.5, radiusScale * 0.3)
-        positions.set(roots[i].id, [Math.cos(angle) * r, 0, Math.sin(angle) * r])
+    const posById = new Map<string, { x: number; y: number }>()
+    const byDepth = new Map<number, TreeNode[]>()
+    for (const n of treeData.nodes) {
+      const list = byDepth.get(n.depth) ?? []; list.push(n); byDepth.set(n.depth, list)
+    }
+    const depths = [...byDepth.keys()].sort((a, b) => a - b)
+    for (const depth of depths) {
+      const nodesAtDepth = byDepth.get(depth)!
+      const count = nodesAtDepth.length
+      const xy: { x: number; y: number }[] = nodesAtDepth.map((node, i) => {
+        if (node.parent && posById.has(node.parent)) {
+          const pp = posById.get(node.parent)!
+          return { x: pp.x + (Math.random() - 0.5) * 0.5, y: pp.y + (Math.random() - 0.5) * 0.5 }
+        }
+        const spread = Math.max(count - 1, 1)
+        return { x: (i / spread - 0.5) * Math.min(count * 0.4, 3), y: (Math.random() - 0.5) * 0.3 }
+      })
+      for (let iter = 0; iter < TREE_REPULSION_ITERS; iter++) {
+        const temp = 1 - iter / TREE_REPULSION_ITERS
+        for (let i = 0; i < count; i++) {
+          let ffx = 0, ffy = 0
+          for (let j = 0; j < count; j++) {
+            if (i === j) continue
+            const dx = xy[i].x - xy[j].x, dy = xy[i].y - xy[j].y
+            const distSq = dx * dx + dy * dy + 0.001
+            if (distSq < 2.25) { // 1.5² cutoff
+              const dist = Math.sqrt(distSq)
+              ffx += (dx / dist) * TREE_REPULSION_STRENGTH / distSq
+              ffy += (dy / dist) * TREE_REPULSION_STRENGTH / distSq
+            }
+          }
+          xy[i].x += ffx * temp; xy[i].y += ffy * temp
+        }
+      }
+      if (count > 0) {
+        const cx = xy.reduce((s, p) => s + p.x, 0) / count
+        const cy = xy.reduce((s, p) => s + p.y, 0) / count
+        for (const p of xy) { p.x -= cx; p.y -= cy }
+      }
+      const z = depth * PLANE_SPACING
+      for (let i = 0; i < count; i++) {
+        posById.set(nodesAtDepth[i].id, xy[i])
+        positions.set(nodesAtDepth[i].id, [xy[i].x, xy[i].y, z])
       }
     }
-
-    interface QueueItem { node: TreeNode; angleStart: number; angleEnd: number }
-    const queue: QueueItem[] = roots.map((root, i) => ({
-      node: root,
-      angleStart: (i / Math.max(roots.length, 1)) * Math.PI * 2,
-      angleEnd: ((i + 1) / Math.max(roots.length, 1)) * Math.PI * 2,
-    }))
-
-    while (queue.length > 0) {
-      const { node, angleStart, angleEnd } = queue.shift()!
-      const children = childrenOf.get(node.id) ?? []
-      if (children.length === 0) continue
-      const angleStep = (angleEnd - angleStart) / children.length
-      for (let i = 0; i < children.length; i++) {
-        const child = children[i]
-        const angle = angleStart + angleStep * (i + 0.5)
-        const radius = child.depth * radiusScale
-        positions.set(child.id, [Math.cos(angle) * radius, child.depth * 0.1, Math.sin(angle) * radius])
-        queue.push({ node: child, angleStart: angleStart + angleStep * i, angleEnd: angleStart + angleStep * (i + 1) })
-      }
-    }
-
-    return { positions }
+    return positions
   }, [treeData])
+
+  const maxZ = treeData.max_depth * PLANE_SPACING
+  const camTarget = useMemo<[number, number, number]>(() => [0, 0, maxZ / 2], [maxZ])
 
   return (
     <group>
+      <TreeCamera target={camTarget} distance={Math.max(4, maxZ * 0.8 + 2)} />
+      {Array.from({ length: treeData.max_depth + 1 }, (_, d) => (
+        <gridHelper key={`plane-${d}`} args={[6, 8, '#111111', '#0c0c0c']} position={[0, 0, d * PLANE_SPACING]} rotation={[Math.PI / 2, 0, 0]} />
+      ))}
       {treeData.edges.map(edge => {
-        const from = layout.positions.get(edge.source) ?? [0, 0, 0]
-        const to = layout.positions.get(edge.target) ?? [0, 0, 0]
-        return <TreeEdgeLine key={`${edge.source}-${edge.target}`} from={from as [number, number, number]} to={to as [number, number, number]} />
+        const from = layout.get(edge.source) ?? [0, 0, 0], to = layout.get(edge.target) ?? [0, 0, 0]
+        return <TreeEdgeLine key={`${edge.source}-${edge.target}`} from={from} to={to} />
       })}
       {treeData.nodes.map(node => {
-        const pos = layout.positions.get(node.id) ?? [0, 0, 0]
-        return <TreeClusterSphere key={node.id} node={node} position={pos as [number, number, number]} activation={activations[node.id] ?? 0} onHover={onHover} />
+        const pos = layout.get(node.id) ?? [0, 0, 0]
+        return <TreeSphere key={node.id} node={node} position={pos} activation={activations[node.id] ?? 0} childCount={childCount.get(node.id) ?? 0} onHover={onHover} />
       })}
     </group>
   )
 }
 
-function TreeClusterSphere({ node, position, activation, onHover }: {
-  node: TreeNode; position: [number, number, number]; activation: number; onHover: (info: HoverInfo | null) => void
+function TreeCamera({ target, distance }: { target: [number, number, number]; distance: number }) {
+  const { camera } = useThree()
+  useFrame((_, delta) => {
+    const tx = 3, ty = distance * 0.5, tz = target[2] - distance * 0.3
+    const speed = Math.min(delta * 2, 1)
+    camera.position.x += (tx - camera.position.x) * speed
+    camera.position.y += (ty - camera.position.y) * speed
+    camera.position.z += (tz - camera.position.z) * speed
+    camera.lookAt(new THREE.Vector3(target[0], target[1], target[2]))
+  })
+  return null
+}
+
+function TreeSphere({ node, position, activation, childCount, onHover }: {
+  node: TreeNode; position: [number, number, number]; activation: number; childCount: number; onHover: (info: HoverInfo | null) => void
 }) {
   const meshRef = useRef<THREE.Mesh>(null)
   const matRef = useRef<THREE.MeshStandardMaterial>(null)
   const isPhantom = node.phantom
   const isActive = !node.dormant && !isPhantom
-  const baseScale = isPhantom ? 0.06 : 0.12 + activation * 0.06
+  const baseScale = isPhantom ? 0.05 : 0.08 + Math.min(childCount, 8) * 0.03 + activation * 0.04
   const color = node.cluster_type ? clusterColor(node.cluster_type) : (isPhantom ? '#333333' : '#888888')
+  const geo = isPhantom ? SHARED_SPHERE_LOWPOLY : SHARED_SPHERE
 
   useFrame((_, delta) => {
     if (!meshRef.current) return
-    const cur = meshRef.current.position
-    const speed = Math.min(delta * 3, 1)
-    cur.x += (position[0] - cur.x) * speed
-    cur.y += (position[1] - cur.y) * speed
-    cur.z += (position[2] - cur.z) * speed
-    const pulseTarget = isActive ? baseScale * (1 + activation * 0.4) : baseScale * 0.6
+    const cur = meshRef.current.position, speed = Math.min(delta * 3, 1)
+    cur.x += (position[0] - cur.x) * speed; cur.y += (position[1] - cur.y) * speed; cur.z += (position[2] - cur.z) * speed
+    const pt = isActive ? baseScale * (1 + activation * 0.3) : baseScale * 0.6
     const s = meshRef.current.scale.x
-    meshRef.current.scale.setScalar(s + (pulseTarget - s) * Math.min(delta * 6, 1))
+    meshRef.current.scale.setScalar(s + (pt - s) * Math.min(delta * 6, 1))
     if (matRef.current) {
-      const opTarget = isActive ? 0.5 + activation * 0.5 : 0.15
-      matRef.current.opacity += (opTarget - matRef.current.opacity) * Math.min(delta * 4, 1)
+      const op = isPhantom ? 0.12 : (isActive ? 0.5 + activation * 0.5 : 0.2)
+      matRef.current.opacity += (op - matRef.current.opacity) * Math.min(delta * 4, 1)
     }
   })
 
-  const handlePointerEnter = useCallback((e: any) => {
+  const onEnter = useCallback((e: any) => {
     e.stopPropagation()
-    const vec = new THREE.Vector3(position[0], position[1], position[2])
+    const vec = new THREE.Vector3(...position)
     const canvas = e.target?.ownerDocument?.querySelector('canvas') as HTMLCanvasElement | null
-    if (canvas) {
-      vec.project(e.camera)
-      const rect = canvas.getBoundingClientRect()
-      onHover({ clusterId: node.id, clusterType: node.cluster_type ?? 'unknown', screenX: ((vec.x + 1) / 2) * rect.width + rect.left, screenY: ((-vec.y + 1) / 2) * rect.height + rect.top })
-    }
+    if (canvas) { vec.project(e.camera); const r = canvas.getBoundingClientRect(); onHover({ clusterId: node.id, clusterType: node.cluster_type ?? 'unknown', screenX: ((vec.x + 1) / 2) * r.width + r.left, screenY: ((-vec.y + 1) / 2) * r.height + r.top }) }
   }, [position, node, onHover])
-  const handlePointerLeave = useCallback((e: any) => { e.stopPropagation(); onHover(null) }, [onHover])
+  const onLeave = useCallback((e: any) => { e.stopPropagation(); onHover(null) }, [onHover])
 
   return (
-    <mesh ref={meshRef} position={position} scale={[baseScale, baseScale, baseScale]}
-      onPointerEnter={handlePointerEnter} onPointerLeave={handlePointerLeave}>
-      <sphereGeometry args={[1, 8, 8]} />
-      <meshStandardMaterial ref={matRef} color={color} emissive={isActive ? color : '#111111'}
-        emissiveIntensity={isActive ? 0.3 + activation * 0.9 : 0.05}
-        roughness={0.6} metalness={0.2} transparent opacity={isActive ? 0.8 : 0.15} />
+    <mesh ref={meshRef} geometry={geo} position={position} scale={baseScale} onPointerEnter={onEnter} onPointerLeave={onLeave}>
+      <meshStandardMaterial ref={matRef} color={color} emissive={isActive ? color : '#111111'} emissiveIntensity={isActive ? 0.3 + activation * 0.9 : 0.05} roughness={0.6} metalness={0.2} transparent opacity={isPhantom ? 0.12 : (isActive ? 0.8 : 0.2)} />
     </mesh>
   )
 }
@@ -856,14 +694,11 @@ function TreeClusterSphere({ node, position, activation, onHover }: {
 function TreeEdgeLine({ from, to }: { from: [number, number, number]; to: [number, number, number] }) {
   const opacityRef = useRef(0)
   const geometry = useMemo(() => {
-    const geo = new THREE.BufferGeometry()
-    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([from[0], from[1], from[2], to[0], to[1], to[2]]), 3))
-    return geo
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([from[0], from[1], from[2], to[0], to[1], to[2]]), 3))
+    return g
   }, [from[0], from[1], from[2], to[0], to[1], to[2]])
   const material = useMemo(() => new THREE.LineBasicMaterial({ color: '#2a4a3a', transparent: true, opacity: 0 }), [])
-  useFrame((_, delta) => {
-    opacityRef.current += (0.3 - opacityRef.current) * Math.min(delta * 3, 1)
-    material.opacity = opacityRef.current
-  })
+  useFrame((_, delta) => { opacityRef.current += (0.35 - opacityRef.current) * Math.min(delta * 3, 1); material.opacity = opacityRef.current })
   return <primitive object={new THREE.Line(geometry, material)} />
 }
