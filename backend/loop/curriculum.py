@@ -137,6 +137,16 @@ class _EmbeddingCache:
             precomputed=True,
         )
 
+    def sample_batch(self, n: int) -> list[CurriculumItem]:
+        """Return up to n items from the cache."""
+        items: list[CurriculumItem] = []
+        for _ in range(n):
+            item = self.sample()
+            if item is None:
+                break
+            items.append(item)
+        return items
+
     def record_step_time(self, ms: float) -> None:
         self._step_times.append(ms)
 
@@ -223,6 +233,17 @@ class Curriculum:
             print(f"[curriculum] step={self._step_count} avg_step_ms={ms:.2f}", flush=True)
 
         return item
+
+    def next_batch(self, n: int, stage: int, model_state: dict) -> list[CurriculumItem]:
+        """Return up to n curriculum items at once. Precomputed uses bulk cache read."""
+        if self._source == "precomputed" and self._cache is not None:
+            items = self._cache.sample_batch(n)
+            if items:
+                self._step_count += len(items)
+                return items
+
+        # Live fallback: sample n items individually
+        return [self.next_item(stage, model_state) for _ in range(n)]
 
     def add_item(self, item: CurriculumItem) -> None:
         self._pools[item.stage].append(item)

@@ -99,6 +99,8 @@ class LearningLoop:
         self._loop_task: asyncio.Task | None = None
         self._cofiring_buffer: list[tuple[str, str]] = []
         self._cofiring_steps_since_flush: int = 0
+        self._batch_count: int = 0
+        self._batch_total_ms: float = 0.0
 
     # ── Control ──
 
@@ -153,7 +155,27 @@ class LearningLoop:
                 await asyncio.sleep(0)
 
     async def step_once(self) -> StepResult:
-        """Executes one full learning cycle."""
+        """Executes one full learning cycle. Delegates to step_batch for precomputed."""
+        # Route based on the curriculum instance's actual source, not the module constant.
+        # The instance may have fallen back to "live" if the cache was empty at startup.
+        is_precomputed = getattr(self.curriculum, '_source', 'live') == 'precomputed'
+        has_batch = hasattr(self.curriculum, 'next_batch')
+        use_batch = is_precomputed and has_batch
+
+        if not hasattr(self, '_logged_routing'):
+            self._logged_routing = True
+            print(
+                f"[batch] routing: precomputed={is_precomputed} "
+                f"has_next_batch={has_batch} batch_path={use_batch}",
+                flush=True,
+            )
+
+        if use_batch:
+            return await self._step_batch(32)
+        return await self._step_single()
+
+    async def _step_single(self) -> StepResult:
+        """Single-sample learning step (original path)."""
 
         # ── 1. OBSERVE ──
         graph_summary = self.model.graph.summary()
@@ -430,6 +452,184 @@ class LearningLoop:
             duration_ms=teacher_response.duration_ms if not getattr(curriculum_item, "precomputed", False) else 0,
             skipped=False,
         )
+
+    async def _step_batch(self, batch_size: int = 32) -> StepResult:
+        """Batched learning step for precomputed curriculum.
+        Runs CPU-heavy computation in a thread pool so FastAPI stays responsive."""
+        import time as _time
+
+        graph_summary = self.model.graph.summary()
+        items = self.curriculum.next_batch(batch_size, stage=self._stage, model_state=graph_summary)
+        if not items:
+            return StepResult(skipped=True, reason="empty_batch")
+
+        # ── Saturation check: if >20% of clusters are near-saturated,
+        # reduce batch to 8 to prevent weight explosion ──
+        active_clusters = [c for c in self.model.graph.clusters if not c.dormant]
+        saturated = sum(1 for c in active_clusters if c.mean_activation > 0.85)
+        saturation_ratio = saturated / max(len(active_clusters), 1)
+        effective_size = len(items)
+        if saturation_ratio > 0.2:
+            effective_size = min(8, len(items))
+            items = items[:effective_size]
+            if self._batch_count % 10 == 0:
+                print(
+                    f"[batch] saturation cap: {saturated}/{len(active_clusters)} clusters > 0.85, "
+                    f"reduced batch to {effective_size}",
+                    flush=True,
+                )
+
+        # ── Run heavy computation in thread pool ──
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, self._batch_compute, items)
+
+        # Unpack results from the sync computation
+        changes, prediction, activations, growth_events, elapsed_ms = result
+
+        # ── Async-only work: co-firing, logging, viz emit ──
+
+        # Co-firing
+        active_cids = [cid for cid, v in activations.items() if v > 0.01]
+        for i in range(len(active_cids)):
+            for j in range(i + 1, len(active_cids)):
+                self._cofiring_buffer.append((active_cids[i], active_cids[j]))
+        self._cofiring_steps_since_flush += 1
+        if self._cofiring_steps_since_flush >= 50 and self._cofiring_buffer:
+            print(f"[cofiring] flushed {len(self._cofiring_buffer)} pairs at step {self.model.step}", flush=True)
+            self.store.batch_update_cofiring(self._cofiring_buffer, self.model.step)
+            self._cofiring_buffer = []
+            self._cofiring_steps_since_flush = 0
+
+        # Log
+        teacher_answer = items[-1].description or ""
+        delta_summary = {
+            "weight_change_magnitude": sum(changes.values()),
+            "edges_formed": [], "edges_pruned": [],
+            "clusters_budded": [], "layers_inserted": [],
+            "is_positive": True, "curiosity_score": 0.0,
+            "batch_size": len(items),
+        }
+        self.store.log_dialogue(
+            step=self.model.step, stage=self._stage,
+            question=f"[batch {len(items)}]", answer=teacher_answer,
+            curiosity_score=0.0,
+            clusters_active=list(activations.keys()),
+            delta_summary=delta_summary,
+        )
+
+        # Periodic snapshot/checkpoint
+        if self.model.step % self.model.snapshot_interval == 0:
+            graph_json = self.model.graph.to_json()
+            self.store.log_latent_snapshot(step=self.model.step, graph_json=graph_json)
+        if self.model.step > 0 and self.model.step % 100 == 0:
+            state_dict = {}
+            for cluster in self.model.graph.clusters:
+                for node in cluster.nodes:
+                    state_dict[f"{node.id}.weights"] = node.weights
+                    state_dict[f"{node.id}.bias"] = node.bias
+            graph_json = self.model.graph.to_json()
+            self.store.save_checkpoint(
+                step=self.model.step, stage=self._stage,
+                model_state_dict=state_dict, graph_json=graph_json,
+            )
+            self.store.prune_old_snapshots()
+
+        # Emit viz (non-blocking)
+        model_response = self.decoder.decode(prediction, max_words=15)
+        if self.viz_emitter is not None:
+            asyncio.ensure_future(self.viz_emitter.emit_step(
+                step=self.model.step, stage=self._stage,
+                graph=self.model.graph, activations=activations,
+                last_question=f"[batch {len(items)}]", last_answer=teacher_answer,
+                model_answer=model_response, is_positive=True,
+                growth_events=growth_events,
+                image_url=getattr(items[-1], "image_url", None),
+            ))
+
+        # Batch logging
+        self._batch_count += 1
+        self._batch_total_ms += elapsed_ms
+        if self._batch_count % 100 == 0:
+            avg = self._batch_total_ms / self._batch_count
+            print(
+                f"[batch] size={len(items)} avg_ms_per_sample={avg / len(items):.2f} "
+                f"batches={self._batch_count} step={self.model.step}",
+                flush=True,
+            )
+
+        # Auto-advance
+        if self._stage == 0:
+            ac = sum(1 for c in self.model.graph.clusters if not c.dormant)
+            if self.model.step >= 800 and ac >= 60 and self._stage0_completion_step is None:
+                self._stage0_completion_step = self.model.step + 100
+            if self._stage0_completion_step is not None and self.model.step >= self._stage0_completion_step:
+                self.set_stage(1); self.model.stage = 1
+                print(f"[stage] auto-advanced to stage 1 at step={self.model.step}", flush=True)
+        if self._stage == 1:
+            ac = sum(1 for c in self.model.graph.clusters if not c.dormant)
+            pr = sum(self._positive_history) / len(self._positive_history) if len(self._positive_history) >= 20 else 0.0
+            if self.model.step >= 3000 and ac > 120 and pr > 0.55 and self._stage1_completion_step is None:
+                self._stage1_completion_step = self.model.step + 100
+            if self._stage1_completion_step is not None and self.model.step >= self._stage1_completion_step:
+                self.set_stage(2); self.model.stage = 2
+                print(f"[stage] auto-advanced to stage 2 at step={self.model.step}", flush=True)
+
+        return StepResult(
+            step=self.model.step,
+            question=f"[batch {len(items)}]",
+            answer=teacher_answer,
+            curiosity_score=0.0,
+            is_positive=True,
+            delta_summary=delta_summary,
+            growth_events=growth_events,
+            duration_ms=int(elapsed_ms),
+            skipped=False,
+        )
+
+    def _batch_compute(self, items) -> tuple:
+        """Synchronous CPU-heavy batch computation. Runs in thread pool."""
+        import time as _time
+        t0 = _time.perf_counter()
+
+        # Build (vector, is_positive) pairs
+        samples: list[tuple[torch.Tensor, bool]] = []
+        for item in items:
+            vec = item.expected_vector if item.expected_vector is not None else torch.randn(self.model.input_dim)
+            if self._stage == 0:
+                is_positive = (self.model.step + len(samples)) % 3 != 0
+            else:
+                prediction, _ = self.model.forward(vec, return_activations=False)
+                if item.expected_vector is not None:
+                    sim = torch.dot(prediction, F.normalize(item.expected_vector, dim=0)).item()
+                    is_positive = sim > 0.0
+                else:
+                    is_positive = True
+            if not is_positive:
+                vec = F.normalize(torch.randn(self.model.input_dim), dim=0)
+            samples.append((vec, is_positive))
+
+        # Batched forward+update
+        changes = self.model.update_batch(samples)
+
+        # Final forward for activations (viz/growth)
+        last_vec = items[-1].expected_vector if items[-1].expected_vector is not None else torch.randn(self.model.input_dim)
+        prediction, activations = self.model.forward(last_vec, return_activations=True)
+
+        # Growth check
+        growth_events = self.model.growth_check(self.store)
+
+        # Health monitor
+        active_count = sum(1 for c in self.model.graph.clusters if not c.dormant)
+        total_clusters = len(self.model.graph.clusters)
+        self.health_monitor.record_step(active_count, total_clusters)
+        self.health_monitor.check(
+            step=self.model.step, stage=self._stage, model=self.model,
+            positive_history=self._positive_history,
+            similarity_history=self._similarity_history,
+        )
+
+        elapsed_ms = (_time.perf_counter() - t0) * 1000
+        return (changes, prediction, activations, growth_events, elapsed_ms)
 
     # ── Speed / stage ──
 

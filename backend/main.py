@@ -738,6 +738,110 @@ async def cluster_cofiring():
     }
 
 
+# ── Debug ──
+
+
+@app.get("/debug/cluster/{cluster_id}")
+async def debug_cluster(cluster_id: str):
+    """Deep inspection of a single cluster's internal state."""
+    import json
+
+    loop = app.state.loop
+    graph = loop.model.graph
+    store = app.state.store
+
+    cluster = graph.get_cluster(cluster_id)
+    if cluster is None:
+        raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
+
+    # Identity texture variance
+    tile = graph._tile_index.get(cluster_id)
+    texture_variance = tile.compute_variance() if tile and tile._texture is not None else None
+
+    # Mean activation over last 100 steps (from node activation histories)
+    node_activations = []
+    for node in cluster.nodes:
+        if node.alive and node.activation_history:
+            node_activations.extend(list(node.activation_history)[-100:])
+    mean_activation_100 = sum(node_activations) / len(node_activations) if node_activations else 0.0
+
+    # Per-node weight norms (proxy for FF update magnitude)
+    node_details = []
+    for node in cluster.nodes:
+        node_details.append({
+            "id": node.id,
+            "alive": node.alive,
+            "weight_norm": node.weights.norm().item(),
+            "bias": node.bias.item() if node.bias.numel() == 1 else 0.0,
+            "mean_activation": node.mean_activation,
+            "activation_variance": node.activation_variance,
+            "age": node.age,
+            "plasticity": node.plasticity,
+        })
+
+    # Positive/negative step counts from recent dialogues
+    rows = store.get_recent_dialogues_for_clusters(limit=500)
+    positive_count = 0
+    negative_count = 0
+    total_appearances = 0
+    for clusters_json, answer in rows:
+        try:
+            cluster_list = json.loads(clusters_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if cluster_id in cluster_list:
+            total_appearances += 1
+
+    # Also check delta_summary for is_positive
+    raw_rows = store._conn.execute(
+        "SELECT clusters_active, delta_summary FROM dialogues ORDER BY id DESC LIMIT 500"
+    ).fetchall()
+    for row in raw_rows:
+        try:
+            clist = json.loads(row[0])
+            if cluster_id not in clist:
+                continue
+            ds = json.loads(row[1])
+            if ds.get("is_positive"):
+                positive_count += 1
+            else:
+                negative_count += 1
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+    # BUD tree: parent and children
+    all_ids = {c.id for c in graph.clusters}
+    parent = _cluster_parent_id(cluster_id)
+    if parent and parent not in all_ids:
+        parent = f"{parent} (phantom)"
+    children = []
+    for c in graph.clusters:
+        cp = _cluster_parent_id(c.id)
+        if cp == cluster_id:
+            children.append(c.id)
+
+    return {
+        "id": cluster_id,
+        "cluster_type": cluster.cluster_type,
+        "layer_index": cluster.layer_index,
+        "dormant": cluster.dormant,
+        "age": cluster.age,
+        "plasticity": cluster.plasticity,
+        "node_count": len(cluster.nodes),
+        "texture_variance": texture_variance,
+        "mean_activation_100": round(mean_activation_100, 4),
+        "activation_bimodality": round(cluster.activation_bimodality, 4),
+        "output_coherence": round(cluster.output_coherence, 4),
+        "positive_steps": positive_count,
+        "negative_steps": negative_count,
+        "total_appearances_last500": total_appearances,
+        "bud_parent": parent,
+        "bud_children": children,
+        "bud_depth": _cluster_depth(cluster_id),
+        "nodes": node_details,
+    }
+
+
 # ── Snapshot ──
 
 

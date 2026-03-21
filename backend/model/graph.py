@@ -29,24 +29,19 @@ from .node import Node
 # ---------------------------------------------------------------------------
 
 _PHI = 0.618033988749895  # golden ratio conjugate for hashing
-_MAX_QUADTREE_DEPTH = 16  # prevent infinite recursion on hash collisions
+_MAX_QUADTREE_DEPTH = 32  # prevent infinite recursion on hash collisions
 
 
-def _get_device() -> torch.device:
-    """Return MPS device if available, else CPU.  Never raise on absence."""
+def _mps_available() -> bool:
+    """Check if MPS is available without selecting it."""
     try:
         if torch.backends.mps.is_available():
             print("[mps] device available: True", flush=True)
-            try:
-                allocated = torch.mps.current_allocated_memory() / (1024 * 1024)
-                print(f"[mps] memory allocated: {allocated:.1f}MB", flush=True)
-            except Exception:
-                print("[mps] memory allocated: <unavailable>", flush=True)
-            return torch.device("mps")
+            return True
     except Exception:
         pass
-    print("[mps] device available: False — falling back to cpu", flush=True)
-    return torch.device("cpu")
+    print("[mps] device available: False", flush=True)
+    return False
 
 
 def _check_tensor(t: torch.Tensor, label: str) -> torch.Tensor:
@@ -237,7 +232,7 @@ class QuadTile:
 class Graph:
     """Registry for all clusters and edges, backed by a quadtree of tiles."""
 
-    def __init__(self, split_variance_threshold: float = 0.3):
+    def __init__(self, split_variance_threshold: float = 0.1):
         # Public state — same contract as the old flat Graph
         self.clusters: list[Cluster] = []
         self.edges: list[Edge] = []
@@ -252,8 +247,10 @@ class Graph:
         self._tile_index: dict[str, QuadTile] = {}  # cluster_id → tile
         self._split_threshold: float = split_variance_threshold
 
-        # Device (MPS if available, else CPU)
-        self._device: torch.device = _get_device()
+        # Device (MPS if available, else CPU — benchmarked on first forward)
+        self._mps_available: bool = _mps_available()
+        self._device: torch.device = torch.device("cpu")  # start on CPU, benchmark picks winner
+        self._device_benchmarked: bool = False
         self._forward_step: int = 0
         self._latency_history: deque = deque(maxlen=10)
         self._slow_consecutive: int = 0
@@ -452,6 +449,64 @@ class Graph:
         return f"c_{cid:02d}"
 
     # ------------------------------------------------------------------ #
+    #  Device benchmark — run on first forward, pick faster device        #
+    # ------------------------------------------------------------------ #
+
+    def _benchmark_device(self, tile_count: int) -> None:
+        """Run mps_forward-equivalent on both CPU and MPS with synthetic
+        data matching current tile count. Pick whichever is faster."""
+        if not self._mps_available:
+            self._device = torch.device("cpu")
+            self._device_benchmarked = True
+            print(f"[mps] using device=cpu (MPS not available)", flush=True)
+            return
+
+        WARMUP = 2
+        TRIALS = 5
+        n = max(tile_count, 4)
+        input_vec = torch.randn(TILE_SIZE * TILE_SIZE)
+
+        results: dict[str, float] = {}
+        for dev_name in ("cpu", "mps"):
+            dev = torch.device(dev_name)
+            inp = input_vec.to(dev).reshape(TILE_SIZE, TILE_SIZE)
+            tiles = [torch.randn(TILE_SIZE, TILE_SIZE, device=dev) for _ in range(n)]
+
+            # Warmup
+            for _ in range(WARMUP):
+                for start in range(0, n, 32):
+                    chunk = torch.stack(tiles[start:start + 32])
+                    _ = (chunk * inp.unsqueeze(0)).sum(dim=(1, 2))
+                if dev_name == "mps":
+                    torch.mps.synchronize()
+
+            # Timed trials
+            times = []
+            for _ in range(TRIALS):
+                t0 = time.perf_counter()
+                for start in range(0, n, 32):
+                    chunk = torch.stack(tiles[start:start + 32])
+                    dots = (chunk * inp.unsqueeze(0)).sum(dim=(1, 2))
+                    norms = chunk.reshape(chunk.shape[0], -1).norm(dim=1)
+                    _ = dots / (norms * inp.reshape(-1).norm() + 1e-8)
+                if dev_name == "mps":
+                    torch.mps.synchronize()
+                times.append((time.perf_counter() - t0) * 1000)
+
+            median = sorted(times)[len(times) // 2]
+            results[dev_name] = median
+            print(f"[mps] benchmark {dev_name}: {median:.2f}ms (tiles={n})", flush=True)
+
+        if results["mps"] < results["cpu"]:
+            self._device = torch.device("mps")
+            print(f"[mps] using device=mps (faster for {n} tiles)", flush=True)
+        else:
+            self._device = torch.device("cpu")
+            print(f"[mps] using device=cpu (faster for {n} tiles)", flush=True)
+
+        self._device_benchmarked = True
+
+    # ------------------------------------------------------------------ #
     #  MPS forward pass — dot product on identity textures                #
     # ------------------------------------------------------------------ #
 
@@ -463,6 +518,15 @@ class Graph:
         Returns dict of cluster_id → similarity score.
         """
         self._forward_step += 1
+
+        # Benchmark on first call to pick fastest device for current tile count
+        if not self._device_benchmarked:
+            active_count = sum(1 for c in self.clusters if not c.dormant)
+            self._benchmark_device(active_count)
+            # Rebuild textures on chosen device
+            for tile in self._tile_index.values():
+                tile.invalidate_texture()
+
         t0 = time.perf_counter()
 
         try:
@@ -470,12 +534,9 @@ class Graph:
             inp = input_vec.to(self._device)
             _check_tensor(inp, "input_vec")
 
-            # Device confirmation logging — first call + every 100 calls
             if self._forward_step == 1 or self._forward_step % 100 == 0:
-                if inp.device.type != "mps":
-                    print(f"[mps] WARNING: tensor on CPU, expected MPS", flush=True)
                 print(
-                    f"[mps] called — device={inp.device} shape={inp.shape}",
+                    f"[mps] called — device={self._device} step={self._forward_step}",
                     flush=True,
                 )
 
@@ -501,30 +562,32 @@ class Graph:
             if not textures:
                 return {}
 
-            # Batch dot product on device
-            batch = torch.stack(textures)  # (N, 64, 64)
+            # Chunked dot product — process tiles in batches of 32
+            # to keep individual MPS dispatches small and avoid memory pressure
+            CHUNK = 32
+            norm_input = input_texture.reshape(-1).norm()
+            input_flat = input_texture.unsqueeze(0)  # (1, 64, 64)
 
-            # Verify batch is on correct device
             if self._forward_step == 1 or self._forward_step % 100 == 0:
-                if batch.device.type != "mps":
-                    print(f"[mps] WARNING: tensor on CPU, expected MPS", flush=True)
                 print(
-                    f"[mps] called — device={batch.device} shape={batch.shape}",
+                    f"[mps] called — device={input_texture.device} "
+                    f"tiles={len(textures)} chunks={(len(textures) + CHUNK - 1) // CHUNK}",
                     flush=True,
                 )
 
-            dots = (batch * input_texture.unsqueeze(0)).sum(dim=(1, 2))
-            _check_tensor(dots, "dot_products")
-
-            # Normalise to [-1, 1] range
-            norms_batch = batch.reshape(batch.shape[0], -1).norm(dim=1)
-            norm_input = input_texture.reshape(-1).norm()
-            denom = norms_batch * norm_input + 1e-8
-            similarities = (dots / denom).cpu()
-            _check_tensor(similarities, "similarities")
+            all_sims: list[float] = []
+            for start in range(0, len(textures), CHUNK):
+                chunk = torch.stack(textures[start : start + CHUNK])  # (<=32, 64, 64)
+                dots = (chunk * input_flat).sum(dim=(1, 2))
+                _check_tensor(dots, "dot_products")
+                norms_chunk = chunk.reshape(chunk.shape[0], -1).norm(dim=1)
+                denom = norms_chunk * norm_input + 1e-8
+                sims = (dots / denom).cpu()
+                _check_tensor(sims, "similarities")
+                all_sims.extend(sims.tolist())
 
             result = {
-                cid: similarities[i].item() for i, cid in enumerate(active_ids)
+                cid: all_sims[i] for i, cid in enumerate(active_ids)
             }
 
         except RuntimeError as exc:
@@ -598,6 +661,20 @@ class Graph:
           - collapse interior nodes whose children have been similar 500+ steps
         """
         self._maintain_subtree(self._root)
+
+        # Every 500 forward steps, log the 5 clusters closest to splitting
+        if self._forward_step > 0 and self._forward_step % 500 == 0:
+            variances: list[tuple[str, float]] = []
+            for cid, tile in self._tile_index.items():
+                if tile.cluster is not None and tile._texture is not None:
+                    variances.append((cid, tile.compute_variance()))
+            variances.sort(key=lambda t: t[1], reverse=True)
+            top5 = variances[:5]
+            print(
+                f"[variance] step={self._forward_step} threshold={self._split_threshold} "
+                f"top5={[(cid, round(v, 4)) for cid, v in top5]}",
+                flush=True,
+            )
 
     def _maintain_subtree(self, tile: QuadTile) -> None:
         if tile.is_leaf:

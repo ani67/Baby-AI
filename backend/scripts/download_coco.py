@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-Download MS-COCO 2017 validation set (5K images, 5 captions each),
-pick the best caption per image, compute CLIP ViT-B/32 embeddings,
-and store (image_id, image_emb, caption_emb, caption_text) in the
-embedding_cache table of the existing SQLite database.
+Download MS-COCO 2017 images + captions, compute CLIP ViT-B/32 embeddings,
+and store (image_id, image_emb, caption_emb, caption_text, image_url) in
+the embedding_cache table of the existing SQLite database.
+
+Supports val2017 (5K images, ~1GB) and train2017 (118K images, ~18GB).
 
 Usage:
-    cd backend && python3 -m scripts.download_coco
+    cd backend && python3 -m scripts.download_coco                         # val2017 (default)
+    cd backend && python3 -m scripts.download_coco --split train2017       # train2017, first 20K
+    cd backend && python3 -m scripts.download_coco --split train2017 --limit 50000
     cd backend && python3 -m scripts.download_coco --db-path /path/to/dev.db
-    cd backend && python3 -m scripts.download_coco --batch-size 64
 """
 
 from __future__ import annotations
@@ -32,11 +34,31 @@ import torch.nn.functional as F
 from PIL import Image
 
 # ---------------------------------------------------------------------------
-# URLs
+# Split configuration
 # ---------------------------------------------------------------------------
 
-COCO_VAL_IMAGES = "http://images.cocodataset.org/zips/val2017.zip"
-COCO_VAL_ANNOTS = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
+SPLITS = {
+    "val2017": {
+        "images_url": "http://images.cocodataset.org/zips/val2017.zip",
+        "images_zip": "val2017.zip",
+        "images_dir": "val2017",                        # path inside zip
+        "annots_url": "http://images.cocodataset.org/annotations/annotations_trainval2017.zip",
+        "annots_zip": "annotations_trainval2017.zip",
+        "annots_json": "annotations/captions_val2017.json",
+        "image_url_prefix": "http://images.cocodataset.org/val2017/",
+        "default_limit": 0,                             # 0 = all (5K)
+    },
+    "train2017": {
+        "images_url": "http://images.cocodataset.org/zips/train2017.zip",
+        "images_zip": "train2017.zip",
+        "images_dir": "train2017",
+        "annots_url": "http://images.cocodataset.org/annotations/annotations_trainval2017.zip",
+        "annots_zip": "annotations_trainval2017.zip",
+        "annots_json": "annotations/captions_train2017.json",
+        "image_url_prefix": "http://images.cocodataset.org/train2017/",
+        "default_limit": 20000,                         # 18GB is big — default to 20K
+    },
+}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -72,7 +94,6 @@ def _pick_best_caption(captions: list[str], clip_model, clip_proc, image: Image.
     Pick the caption with the highest CLIP similarity to the image.
     Returns (best_caption_text, image_emb, caption_emb).
     """
-    # Encode image once
     img_inputs = clip_proc(images=[image], return_tensors="pt")
     with torch.no_grad():
         img_feat = clip_model.get_image_features(**img_inputs)
@@ -80,7 +101,6 @@ def _pick_best_caption(captions: list[str], clip_model, clip_proc, image: Image.
             img_feat = img_feat.pooler_output
     img_emb = F.normalize(img_feat, dim=-1).cpu()
 
-    # Encode all captions
     txt_inputs = clip_proc(text=captions, return_tensors="pt",
                            padding=True, truncation=True, max_length=77)
     with torch.no_grad():
@@ -89,7 +109,6 @@ def _pick_best_caption(captions: list[str], clip_model, clip_proc, image: Image.
             txt_feat = txt_feat.pooler_output
     txt_embs = F.normalize(txt_feat, dim=-1).cpu()
 
-    # Cosine similarity
     sims = (img_emb @ txt_embs.T).squeeze(0)
     best_idx = sims.argmax().item()
 
@@ -114,25 +133,28 @@ CREATE TABLE IF NOT EXISTS embedding_cache (
 );
 """
 
-COCO_VAL_IMAGE_URL = "http://images.cocodataset.org/val2017/"
-
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Download COCO val2017 & build embedding cache")
+    parser = argparse.ArgumentParser(description="Download COCO 2017 & build embedding cache")
     _default_db = str(Path(__file__).resolve().parent.parent / "state" / "dev.db")
     parser.add_argument("--db-path", default=_default_db,
                         help="Path to SQLite database")
+    parser.add_argument("--split", default="val2017", choices=list(SPLITS.keys()),
+                        help="COCO split to download (default: val2017)")
     parser.add_argument("--data-dir", default=None,
                         help="Directory for COCO downloads (default: temp dir)")
     parser.add_argument("--batch-size", type=int, default=32,
                         help="Images per CLIP batch")
-    parser.add_argument("--limit", type=int, default=0,
-                        help="Only process first N images (0 = all)")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="Only process first N images (default: split-dependent)")
     args = parser.parse_args()
+
+    split = SPLITS[args.split]
+    limit = args.limit if args.limit is not None else split["default_limit"]
 
     db_path = args.db_path
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
@@ -140,22 +162,25 @@ def main():
     data_dir = args.data_dir or os.path.join(tempfile.gettempdir(), "coco_cache")
     os.makedirs(data_dir, exist_ok=True)
 
+    print(f"[coco] split: {args.split}")
     print(f"[coco] db: {db_path}")
     print(f"[coco] cache: {data_dir}")
+    if limit > 0:
+        print(f"[coco] limit: {limit} images")
 
     # ── 1. Download ──
-    images_zip = os.path.join(data_dir, "val2017.zip")
-    annots_zip = os.path.join(data_dir, "annotations_trainval2017.zip")
+    images_zip = os.path.join(data_dir, split["images_zip"])
+    annots_zip = os.path.join(data_dir, split["annots_zip"])
 
     print("[coco] step 1/4: downloading images...")
-    _download(COCO_VAL_IMAGES, images_zip)
+    _download(split["images_url"], images_zip)
     print("[coco] step 2/4: downloading annotations...")
-    _download(COCO_VAL_ANNOTS, annots_zip)
+    _download(split["annots_url"], annots_zip)
 
     # ── 2. Parse annotations ──
     print("[coco] step 3/4: parsing annotations...")
     with zipfile.ZipFile(annots_zip) as zf:
-        with zf.open("annotations/captions_val2017.json") as f:
+        with zf.open(split["annots_json"]) as f:
             annots = json.load(f)
 
     # Build image_id → list of captions
@@ -170,8 +195,8 @@ def main():
         id_to_file[img_info["id"]] = img_info["file_name"]
 
     image_ids = sorted(id_to_captions.keys())
-    if args.limit > 0:
-        image_ids = image_ids[: args.limit]
+    if limit > 0:
+        image_ids = image_ids[:limit]
     total = len(image_ids)
     print(f"[coco] {total} images with captions")
 
@@ -208,6 +233,9 @@ def main():
         conn.close()
         return
 
+    images_dir = split["images_dir"]
+    image_url_prefix = split["image_url_prefix"]
+
     zf = zipfile.ZipFile(images_zip)
     t0 = time.time()
     done = 0
@@ -220,7 +248,7 @@ def main():
             continue
 
         try:
-            with zf.open(f"val2017/{fname}") as f:
+            with zf.open(f"{images_dir}/{fname}") as f:
                 img = Image.open(io.BytesIO(f.read())).convert("RGB")
         except Exception as e:
             print(f"  [skip] image {iid}: {e}")
@@ -237,7 +265,7 @@ def main():
             errors += 1
             continue
 
-        image_url = COCO_VAL_IMAGE_URL + fname
+        image_url = image_url_prefix + fname
         conn.execute(
             "INSERT OR REPLACE INTO embedding_cache (image_id, image_emb, caption_emb, caption_text, image_url) VALUES (?, ?, ?, ?, ?)",
             (iid, _emb_to_bytes(img_emb), _emb_to_bytes(cap_emb), best_cap, image_url),
