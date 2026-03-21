@@ -21,15 +21,27 @@ class Projector:
     def __init__(self):
         self._last_positions: dict[str, list[float]] = {}
         self._cluster_positions: dict[str, np.ndarray] = {}
+        self._pending_node_positions: dict[str, list[float]] = {}
 
     async def reproject(self, graph) -> None:
         try:
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, self._compute_positions, graph)
+            self.apply_pending_positions(graph)
         except Exception as e:
             print(f"[projector] ERROR: {e}", flush=True)
             import traceback
             traceback.print_exc()
+
+    def apply_pending_positions(self, graph) -> None:
+        """Apply buffered positions to nodes. Must be called from main thread."""
+        if not self._pending_node_positions:
+            return
+        for cluster in graph.clusters:
+            for node in cluster.nodes:
+                if node.id in self._pending_node_positions:
+                    node.pos = self._pending_node_positions[node.id]
+        self._pending_node_positions = {}
 
     def _compute_positions(self, graph) -> None:
         active_clusters = [c for c in graph.clusters if not c.dormant]
@@ -82,8 +94,8 @@ class Projector:
                 continue
 
             if len(living) == 1:
-                living[0].pos = [float(cx), float(cy), float(cz)]
-                self._last_positions[living[0].id] = living[0].pos
+                self._pending_node_positions[living[0].id] = [float(cx), float(cy), float(cz)]
+                self._last_positions[living[0].id] = self._pending_node_positions[living[0].id]
                 continue
 
             weights = torch.stack([nd.weights for nd in living]).detach().numpy()
@@ -93,12 +105,12 @@ class Projector:
                 ox = offset[0] if len(offset) > 0 else 0.0
                 oy = offset[1] if len(offset) > 1 else 0.0
                 oz = offset[2] if len(offset) > 2 else 0.0
-                node.pos = [
+                self._pending_node_positions[node.id] = [
                     float(cx + ox),
                     float(cy + oy),
                     float(cz + oz),
                 ]
-                self._last_positions[node.id] = node.pos
+                self._last_positions[node.id] = self._pending_node_positions[node.id]
 
         # Clean up dead clusters from cache
         active_ids = {c.id for c in active_clusters}

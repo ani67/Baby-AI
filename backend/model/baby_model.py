@@ -2,6 +2,8 @@
 BabyModel — the assembled growing neural architecture.
 """
 
+import math
+
 import torch
 import torch.nn.functional as F
 
@@ -182,9 +184,9 @@ class BabyModel:
 
     def _compute_resonance(self, input_vec: torch.Tensor) -> dict[str, float]:
         """
-        Pre-screen clusters by cosine similarity to input.
-        Returns {cluster_id: resonance_score} for clusters passing threshold.
-        Guarantees at least 12 clusters pass (takes top 12 if fewer qualify).
+        Pre-screen clusters by cosine similarity to input using z-score filtering.
+        Returns {cluster_id: resonance_score} for clusters above mean + 1.0*std.
+        Guarantees at least resonance_min_pass clusters pass (takes top N by score).
         """
         input_norm = F.normalize(input_vec, dim=0)
         scores = {}
@@ -194,8 +196,16 @@ class BabyModel:
             sim = torch.dot(c.identity, input_norm).item()
             scores[c.id] = sim
 
-        # Filter by threshold
-        passed = {cid: s for cid, s in scores.items() if s > self.resonance_threshold}
+        if not scores:
+            return {}
+
+        # Z-score filtering: pass clusters above mean + 1.0 * std
+        vals = list(scores.values())
+        mean_s = sum(vals) / len(vals)
+        std_s = (sum((v - mean_s) ** 2 for v in vals) / len(vals)) ** 0.5
+        z_threshold = mean_s + 1.0 * std_s
+
+        passed = {cid: s for cid, s in scores.items() if s > z_threshold}
 
         # Guarantee minimum clusters pass
         min_pass = self.resonance_min_pass
@@ -204,11 +214,10 @@ class BabyModel:
             for cid, s in top_n:
                 passed[cid] = s
         elif len(passed) < min_pass:
-            # Fewer than min_pass active clusters total — let them all through
             passed = scores
 
         if self.step % 20 == 0:
-            print(f"[resonance] step={self.step} screened={len(scores)} passed={len(passed)} threshold={self.resonance_threshold:.2f}", flush=True)
+            print(f"[resonance] step={self.step} screened={len(scores)} passed={len(passed)} z_threshold={z_threshold:.2f}", flush=True)
 
         return passed
 
@@ -384,22 +393,6 @@ class BabyModel:
         self._last_visited = visited
         self._last_activations = activations
         self._last_outputs = outputs
-
-        # Soft saturation decay — continuous gentle scaling instead of harsh cliff.
-        # Clusters with high activation get weights scaled by 0.99 every step,
-        # preventing the oscillation of 0.7x snap + immediate re-saturation.
-        for cid, act in activations.items():
-            if act > 0.8:
-                cluster = self.graph.get_cluster(cid)
-                if cluster:
-                    # Stronger decay for higher saturation: 0.99 at 0.8, 0.97 at 0.95+
-                    decay = 0.99 - (act - 0.8) * 0.1
-                    decay = max(decay, 0.97)
-                    for node in cluster.nodes:
-                        if node.alive:
-                            node.weights *= decay
-                    if self.step % 100 == 0 and act > 0.9:
-                        print(f"[saturate] cluster={cid} act={act:.3f} decay={decay:.3f} step={self.step}", flush=True)
 
         # Final output = from highest-layer visited clusters
         if not visited:
@@ -747,7 +740,7 @@ class BabyModel:
         return events
 
     def _cluster_weight_snapshot(self, cluster: Cluster) -> torch.Tensor:
-        """Flatten all node weights in a cluster into a single tensor."""
+        """Flatten all node weights in a cluster into a single tensor, normalized by sqrt(n)."""
         if not cluster.nodes:
             return torch.zeros(self.input_dim)
-        return torch.cat([n.weights.detach().clone() for n in cluster.nodes])
+        return torch.cat([n.weights.detach().clone() for n in cluster.nodes]) / math.sqrt(len(cluster.nodes))

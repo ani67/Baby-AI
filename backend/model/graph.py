@@ -84,7 +84,7 @@ class Edge:
         to_activation: float,
         decay: float = 0.001,
     ) -> None:
-        delta = 0.01 * from_activation * to_activation - decay
+        delta = 0.01 * to_activation * (from_activation - self.strength * to_activation)
         self.strength = max(0.0, min(1.0, self.strength + delta))
         if from_activation > 0.1 and to_activation > 0.1:
             self.steps_since_activation = 0

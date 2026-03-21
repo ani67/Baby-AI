@@ -341,7 +341,7 @@ class LearningLoop:
             for j in range(i + 1, len(active_cids)):
                 self._cofiring_buffer.append((active_cids[i], active_cids[j]))
         self._cofiring_steps_since_flush += 1
-        if self._cofiring_steps_since_flush >= 50 and self._cofiring_buffer:
+        if (self._cofiring_steps_since_flush >= 50 or len(self._cofiring_buffer) >= 50000) and self._cofiring_buffer:
             print(f"[cofiring] flushed {len(self._cofiring_buffer)} pairs at step {self.model.step}", flush=True)
             self.store.batch_update_cofiring(self._cofiring_buffer, self.model.step)
             self._cofiring_buffer = []
@@ -410,6 +410,10 @@ class LearningLoop:
         if self._stage == 0:
             active_count = sum(1 for c in self.model.graph.clusters if not c.dormant)
 
+            if self.model.step >= 1600 and self._stage0_completion_step is None:
+                self._stage0_completion_step = self.model.step
+                print(f"[stage] timeout force-advance to stage 1 at step={self.model.step}", flush=True)
+
             if (self.model.step >= 800
                     and active_count >= 60
                     and self._stage0_completion_step is None):
@@ -428,6 +432,10 @@ class LearningLoop:
                 sum(self._positive_history) / len(self._positive_history)
                 if len(self._positive_history) >= 20 else 0.0
             )
+
+            if self.model.step >= 6000 and self._stage1_completion_step is None:
+                self._stage1_completion_step = self.model.step
+                print(f"[stage] timeout force-advance to stage 2 at step={self.model.step}", flush=True)
 
             if (self.model.step >= 3000
                     and active_count > 120
@@ -494,7 +502,7 @@ class LearningLoop:
             for j in range(i + 1, len(active_cids)):
                 self._cofiring_buffer.append((active_cids[i], active_cids[j]))
         self._cofiring_steps_since_flush += 1
-        if self._cofiring_steps_since_flush >= 50 and self._cofiring_buffer:
+        if (self._cofiring_steps_since_flush >= 50 or len(self._cofiring_buffer) >= 50000) and self._cofiring_buffer:
             print(f"[cofiring] flushed {len(self._cofiring_buffer)} pairs at step {self.model.step}", flush=True)
             self.store.batch_update_cofiring(self._cofiring_buffer, self.model.step)
             self._cofiring_buffer = []
@@ -560,6 +568,9 @@ class LearningLoop:
         # Auto-advance
         if self._stage == 0:
             ac = sum(1 for c in self.model.graph.clusters if not c.dormant)
+            if self.model.step >= 1600 and self._stage0_completion_step is None:
+                self._stage0_completion_step = self.model.step
+                print(f"[stage] timeout force-advance to stage 1 at step={self.model.step}", flush=True)
             if self.model.step >= 800 and ac >= 60 and self._stage0_completion_step is None:
                 self._stage0_completion_step = self.model.step + 100
             if self._stage0_completion_step is not None and self.model.step >= self._stage0_completion_step:
@@ -568,6 +579,9 @@ class LearningLoop:
         if self._stage == 1:
             ac = sum(1 for c in self.model.graph.clusters if not c.dormant)
             pr = sum(self._positive_history) / len(self._positive_history) if len(self._positive_history) >= 20 else 0.0
+            if self.model.step >= 6000 and self._stage1_completion_step is None:
+                self._stage1_completion_step = self.model.step
+                print(f"[stage] timeout force-advance to stage 2 at step={self.model.step}", flush=True)
             if self.model.step >= 3000 and ac > 120 and pr > 0.55 and self._stage1_completion_step is None:
                 self._stage1_completion_step = self.model.step + 100
             if self._stage1_completion_step is not None and self.model.step >= self._stage1_completion_step:
@@ -599,11 +613,10 @@ class LearningLoop:
                 is_positive = (self.model.step + len(samples)) % 3 != 0
             else:
                 prediction, _ = self.model.forward(vec, return_activations=False)
-                if item.expected_vector is not None:
-                    sim = torch.dot(prediction, F.normalize(item.expected_vector, dim=0)).item()
-                    is_positive = sim > 0.0
-                else:
-                    is_positive = True
+                is_positive = self._compute_is_positive(
+                    prediction=prediction,
+                    answer_vectors=[item.expected_vector] if item.expected_vector is not None else [],
+                )
             if not is_positive:
                 vec = F.normalize(torch.randn(self.model.input_dim), dim=0)
             samples.append((vec, is_positive))
