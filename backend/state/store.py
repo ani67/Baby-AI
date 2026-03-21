@@ -6,7 +6,7 @@ import time
 
 
 class StateStore:
-    def __init__(self, path: str = "backend/state/dev.db"):
+    def __init__(self, path: str = "data/dev.db"):
         self._path = path
         self._conn = sqlite3.connect(path)
         self._conn.row_factory = sqlite3.Row

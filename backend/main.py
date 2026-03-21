@@ -153,7 +153,7 @@ def _build_components_real(config):
     else:
         print("No checkpoint found, starting fresh.")
 
-    curriculum = Curriculum(data_dir=config.data_dir)
+    curriculum = Curriculum(data_dir=config.data_dir, db_path=config.db_path)
 
     emitter = VizEmitter(
         snapshot_interval=config.snapshot_interval,

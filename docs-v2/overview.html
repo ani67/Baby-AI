@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Baby AI</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #000; color: #999; font-size: 16px; line-height: 1.8;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 740px; margin: 0 auto; padding: 0 24px; }
+  .spacer { height: 100px; }
+
+  /* Typography */
+  .mega { font-size: clamp(34px, 5.5vw, 52px); font-weight: 700; color: #fff; letter-spacing: -0.03em; line-height: 1.15; }
+  .mega span { background: linear-gradient(135deg, #4effa0, #3b7fff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+  .title { font-size: clamp(22px, 3.5vw, 30px); font-weight: 600; color: #fff; letter-spacing: -0.02em; line-height: 1.3; }
+  .sub { font-size: 17px; color: #666; line-height: 1.7; margin-top: 14px; }
+  .label { font-size: 11px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: #4effa0; margin-bottom: 10px; display: block; }
+  p { margin-bottom: 14px; } strong { color: #ccc; font-weight: 500; }
+  code { color: #4effa0; background: rgba(78,255,160,0.06); padding: 1px 6px; border-radius: 4px; font-size: 0.9em; font-family: 'SF Mono', 'Fira Code', monospace; }
+  .caption { font-size: 12px; color: #444; margin-top: 10px; }
+  hr { border: none; height: 1px; background: rgba(255,255,255,0.05); margin: 0; }
+
+  /* Hero */
+  .hero { text-align: center; padding: 120px 0 80px; }
+  .hero .sub { max-width: 500px; margin-left: auto; margin-right: auto; }
+  .chips { display: flex; gap: 8px; justify-content: center; margin-top: 28px; flex-wrap: wrap; }
+  .chip { padding: 5px 14px; border-radius: 100px; font-size: 12px; font-weight: 500; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); color: #777; }
+
+  /* Section */
+  .sec { padding: 72px 0; }
+
+  /* Cards */
+  .cards { display: grid; gap: 12px; margin-top: 20px; }
+  .c2 { grid-template-columns: 1fr 1fr; } .c3 { grid-template-columns: 1fr 1fr 1fr; } .c4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+  @media(max-width:700px){.c2,.c3,.c4{grid-template-columns:1fr 1fr;}}
+  @media(max-width:480px){.c2,.c3,.c4{grid-template-columns:1fr;}}
+  .card { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); border-radius: 14px; padding: 20px; }
+  .card-i { font-size: 24px; margin-bottom: 10px; }
+  .card-t { font-size: 14px; font-weight: 600; color: #ddd; margin-bottom: 5px; }
+  .card p { font-size: 13px; color: #777; line-height: 1.6; margin: 0; }
+  .card-hi { border-color: rgba(78,255,160,0.12); }
+
+  /* Stats */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: rgba(255,255,255,0.05); border-radius: 16px; overflow: hidden; margin-top: 24px; }
+  .st { background: #000; padding: 24px 12px; text-align: center; }
+  .st-n { font-size: 28px; font-weight: 700; color: #fff; letter-spacing: -0.02em; }
+  .st-l { font-size: 11px; color: #444; margin-top: 2px; letter-spacing: 0.04em; text-transform: uppercase; }
+  @media(max-width:640px){.stats{grid-template-columns:1fr 1fr;}}
+
+  /* Callout */
+  .co { background: rgba(255,255,255,0.015); border: 1px solid rgba(255,255,255,0.05); border-radius: 14px; padding: 24px; margin: 20px 0; }
+  .co-g { border-color: rgba(78,255,160,0.12); background: rgba(78,255,160,0.02); }
+  .co-y { border-color: rgba(255,204,68,0.12); background: rgba(255,204,68,0.02); }
+  .co-r { border-color: rgba(255,107,78,0.12); background: rgba(255,107,78,0.02); }
+
+  /* Flow */
+  .flow { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin: 20px 0; justify-content: center; }
+  .pill { padding: 7px 14px; border-radius: 100px; font-size: 12px; font-weight: 500; background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.06); color: #aaa; white-space: nowrap; }
+  .pill-a { background: rgba(78,255,160,0.06); border-color: rgba(78,255,160,0.15); color: #4effa0; }
+  .pill-b { border-color: rgba(59,127,255,0.15); color: #3b7fff; }
+  .pill-o { border-color: rgba(230,126,34,0.15); color: #e67e22; }
+  .dot { width: 3px; height: 3px; border-radius: 50%; background: #333; }
+
+  /* Compare */
+  .vs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 20px 0; }
+  .vs > div { border-radius: 14px; padding: 20px; }
+  .vs-old { background: rgba(255,107,78,0.03); border: 1px solid rgba(255,107,78,0.1); }
+  .vs-new { background: rgba(78,255,160,0.03); border: 1px solid rgba(78,255,160,0.1); }
+  .vs-lbl { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 8px; }
+  .vs-old .vs-lbl { color: #ff6b4e; } .vs-new .vs-lbl { color: #4effa0; }
+  .vs p { font-size: 13px; color: #777; margin: 0; line-height: 1.6; }
+  @media(max-width:640px){.vs{grid-template-columns:1fr;}}
+
+  /* Timeline */
+  .tl { padding-left: 30px; position: relative; margin: 28px 0; }
+  .tl::before { content:''; position: absolute; left: 10px; top: 6px; bottom: 6px; width: 1px; background: rgba(255,255,255,0.06); }
+  .tl-s { position: relative; padding-bottom: 24px; }
+  .tl-s:last-child { padding-bottom: 0; }
+  .tl-d { position: absolute; left: -26px; top: 5px; width: 12px; height: 12px; border-radius: 50%; background: #000; border: 2px solid #4effa0; }
+  .tl-t { font-size: 15px; font-weight: 600; color: #ddd; }
+  .tl-p { font-size: 13px; color: #666; margin-top: 4px; line-height: 1.6; }
+
+  /* Detail / expand */
+  details { margin: 16px 0; }
+  summary { cursor: pointer; font-size: 13px; font-weight: 500; color: #4effa0; padding: 10px 0; list-style: none; }
+  summary::before { content: '▸ '; }
+  details[open] summary::before { content: '▾ '; }
+  summary::-webkit-details-marker { display: none; }
+  details .inner { padding: 12px 0 8px; font-size: 13px; color: #777; line-height: 1.7; }
+  details .inner table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0; }
+  details .inner th { text-align: left; color: #555; font-weight: 500; padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,0.06); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
+  details .inner td { padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,0.03); color: #888; }
+  details .inner .badge { display: inline-block; padding: 1px 7px; border-radius: 3px; font-size: 10px; font-weight: 600; letter-spacing: 0.04em; }
+  details .inner .b-ok { background: rgba(78,255,160,0.1); color: #4effa0; }
+  details .inner .b-warn { background: rgba(255,204,68,0.1); color: #ffcc44; }
+  details .inner .b-err { background: rgba(255,107,78,0.1); color: #ff6b4e; }
+  details .inner pre { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); border-radius: 8px; padding: 14px; overflow-x: auto; font-family: 'SF Mono','Fira Code',monospace; font-size: 11px; color: #888; line-height: 1.5; margin: 10px 0; }
+  details .inner pre .g { color: #4effa0; } details .inner pre .b { color: #3b7fff; }
+  details .inner pre .o { color: #e67e22; } details .inner pre .r { color: #ff6b4e; }
+  details .inner pre .w { color: #ddd; }
+
+  /* SVG shared */
+  .dia { margin: 28px 0; text-align: center; overflow-x: auto; }
+  .dia svg { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<!-- ════════════ HERO ════════════ -->
+<div class="hero">
+  <div class="mega">An AI that <span>grows<br>its own brain.</span></div>
+  <div class="sub">No blueprints. No backpropagation. A teacher, a learning rule, and the freedom to build whatever structure it needs.</div>
+  <div class="chips">
+    <div class="chip">Forward-Forward Learning</div>
+    <div class="chip">Self-Growing Graph</div>
+    <div class="chip">Real-Time 3D Viz</div>
+    <div class="chip">CLIP ViT-B/32</div>
+  </div>
+</div>
+<hr>
+
+<!-- ════════════ THE IDEA ════════════ -->
+<div class="sec">
+  <span class="label">The Idea</span>
+  <div class="title">What if a neural network could decide its own shape?</div>
+  <div class="sub">It starts with 4 tiny clusters. A teacher shows it things. Over thousands of steps, clusters split, connect, and die. Structure emerges from learning.</div>
+
+  <div class="dia">
+    <svg width="680" height="160" viewBox="0 0 680 160">
+      <defs><linearGradient id="g1" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#4effa0" stop-opacity="0.5"/><stop offset="1" stop-color="#3b7fff" stop-opacity="0.5"/></linearGradient></defs>
+      <rect x="0" y="20" width="140" height="110" rx="16" fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.05)"/>
+      <circle cx="50" cy="65" r="14" fill="#e67e22" opacity="0.4"/><circle cx="90" cy="65" r="14" fill="#e67e22" opacity="0.4"/>
+      <circle cx="50" cy="95" r="14" fill="#e67e22" opacity="0.4"/><circle cx="90" cy="95" r="14" fill="#e67e22" opacity="0.4"/>
+      <text x="70" y="14" text-anchor="middle" fill="#555" font-size="11" font-weight="500" font-family="Inter">birth</text>
+      <text x="70" y="145" text-anchor="middle" fill="#444" font-size="11" font-family="Inter">4 clusters</text>
+      <line x1="155" y1="78" x2="195" y2="78" stroke="url(#g1)" stroke-width="1.5"/><circle cx="198" cy="78" r="2" fill="#4effa0"/>
+      <rect x="210" y="20" width="180" height="110" rx="16" fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.05)"/>
+      <circle cx="255" cy="60" r="10" fill="#3b7fff" opacity="0.6"/><circle cx="280" cy="55" r="7" fill="#3b7fff" opacity="0.4"/>
+      <circle cx="260" cy="85" r="12" fill="#e67e22" opacity="0.5"/><circle cx="300" cy="80" r="8" fill="#9b59b6" opacity="0.5"/>
+      <circle cx="340" cy="65" r="9" fill="#1abc9c" opacity="0.5"/><circle cx="330" cy="95" r="6" fill="#e67e22" opacity="0.3"/>
+      <line x1="260" y1="85" x2="300" y2="80" stroke="rgba(78,255,160,0.2)" stroke-width="1"/>
+      <text x="300" y="14" text-anchor="middle" fill="#555" font-size="11" font-weight="500" font-family="Inter">2,000 steps</text>
+      <text x="300" y="145" text-anchor="middle" fill="#444" font-size="11" font-family="Inter">~60 clusters</text>
+      <line x1="405" y1="78" x2="445" y2="78" stroke="url(#g1)" stroke-width="1.5"/><circle cx="448" cy="78" r="2" fill="#3b7fff"/>
+      <rect x="460" y="10" width="220" height="130" rx="16" fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.05)"/>
+      <circle cx="505" cy="45" r="7" fill="#3b7fff" opacity="0.7"/><circle cx="520" cy="38" r="4" fill="#3b7fff" opacity="0.4"/>
+      <circle cx="555" cy="65" r="9" fill="#e67e22" opacity="0.6"/><circle cx="575" cy="58" r="5" fill="#e67e22" opacity="0.4"/>
+      <circle cx="620" cy="45" r="8" fill="#9b59b6" opacity="0.6"/><circle cx="640" cy="55" r="4" fill="#9b59b6" opacity="0.3"/>
+      <circle cx="520" cy="100" r="6" fill="#1abc9c" opacity="0.5"/><circle cx="540" cy="108" r="4" fill="#1abc9c" opacity="0.3"/>
+      <line x1="505" y1="45" x2="520" y2="38" stroke="rgba(78,255,160,0.3)" stroke-width="0.5"/>
+      <text x="570" y="6" text-anchor="middle" fill="#555" font-size="11" font-weight="500" font-family="Inter">7,000 steps</text>
+      <text x="570" y="155" text-anchor="middle" fill="#4effa0" font-size="11" font-weight="500" font-family="Inter">334 clusters · 13 layers</text>
+    </svg>
+  </div>
+
+  <details>
+    <summary>System architecture — all the pieces</summary>
+    <div class="inner">
+      <pre><span class="w">┌─────────────────────────────────────────────────────────────────┐</span>
+<span class="w">│                        BABY AI ENGINE                           │</span>
+<span class="w">│                                                                 │</span>
+<span class="w">│  ┌──────────────┐   ┌────────────────┐   ┌─────────────────┐   │</span>
+<span class="w">│  │</span><span class="b"> Ollama Teacher </span><span class="w">│──▶│</span><span class="g"> Learning Loop  </span><span class="w">│──▶│</span><span class="o"> Baby Model      </span><span class="w">│   │</span>
+<span class="w">│  │</span> LLaVA / Llama  <span class="w">│   │</span> orchestrator   <span class="w">│   │</span> growing graph   <span class="w">│   │</span>
+<span class="w">│  └──────────────┘   └───────┬────────┘   └────────┬────────┘   │</span>
+<span class="w">│         │                   │                     │            │</span>
+<span class="w">│  ┌──────▼──────┐   ┌────────▼────────┐   ┌────────▼────────┐   │</span>
+<span class="w">│  │</span> CLIP Encoder  <span class="w">│   │</span> SQLite Store    <span class="w">│   │</span><span class="g"> Viz Emitter     </span><span class="w">│   │</span>
+<span class="w">│  │</span> ViT-B/32 512d <span class="w">│   │</span> 7 tables + ckpt <span class="w">│   │</span> WS → Three.js   <span class="w">│   │</span>
+<span class="w">│  └─────────────┘   └─────────────────┘   └─────────────────┘   │</span>
+<span class="w">│                                                                 │</span>
+<span class="w">│  ┌─────────────┐   ┌─────────────────┐   ┌─────────────────┐   │</span>
+<span class="w">│  │</span> Curriculum    <span class="w">│   │</span> Health Monitor  <span class="w">│   │</span> Frontend        <span class="w">│   │</span>
+<span class="w">│  │</span> COCO / live   <span class="w">│   │</span> auto-tune       <span class="w">│   │</span> React+Three.js  <span class="w">│   │</span>
+<span class="w">│  └─────────────┘   └─────────────────┘   └─────────────────┘   │</span>
+<span class="w">└─────────────────────────────────────────────────────────────────┘</span></pre>
+    </div>
+  </details>
+</div>
+<hr>
+
+<!-- ════════════ THE BRAIN ════════════ -->
+<div class="sec">
+  <span class="label">The Brain</span>
+  <div class="title">Four building blocks, one growing structure.</div>
+
+  <div class="cards c2" style="margin-top:24px;">
+    <div class="card"><div class="card-i">⚡</div><div class="card-t">Node (neuron)</div><p>512 numbers = its personality. Fires via tanh(dot(weights, input)). After each update, weights are L2-normalized so they can't explode.</p></div>
+    <div class="card"><div class="card-i">🧩</div><div class="card-t">Cluster (concept)</div><p>8 nodes that work together. Has an "identity" = the average direction all its nodes point. Types: Integration, Transformation, Routing, Arbitration.</p></div>
+    <div class="card"><div class="card-i">🔗</div><div class="card-t">Edge (connection)</div><p>Links two clusters. Strength 0–1. Updates via Oja's rule: self-normalizing, edges settle at the true correlation instead of all drifting to 1.0.</p></div>
+    <div class="card"><div class="card-i">🌳</div><div class="card-t">Quadtree (spatial index)</div><p>Organizes clusters in 2D space. Each tile is 64×64. Splits when internal variance gets high. O(log n) lookup instead of scanning everything.</p></div>
+  </div>
+
+  <details>
+    <summary>BUD naming — how clusters form a family tree</summary>
+    <div class="inner">
+      <pre><span class="w">c_00</span>  <span class="g">← original cluster</span>
+  ├── <span class="w">c_00a</span>  <span class="g">← first split, child A</span>
+  │     ├── <span class="w">c_00aa</span>  <span class="g">← second split of A</span>
+  │     └── <span class="w">c_00ab</span>
+  └── <span class="w">c_00b</span>  <span class="g">← first split, child B</span>
+
+depth = number of suffix letters (c_00=0, c_00a=1, c_00ab=2)
+parent = ID with last letter removed
+<span class="r">Note: BUD removes the parent from the graph</span></pre>
+    </div>
+  </details>
+</div>
+<hr>
+
+<!-- ════════════ LEARNING ════════════ -->
+<div class="sec">
+  <span class="label">Learning</span>
+  <div class="title">Each neuron only knows one thing: did the last signal feel good or bad?</div>
+  <div class="sub">Forward-Forward learning. No backpropagation. Each neuron adjusts itself locally.</div>
+
+  <div class="flow" style="margin-top:28px;">
+    <div class="pill">Image/text</div><div class="dot"></div><div class="dot"></div><div class="dot"></div>
+    <div class="pill">CLIP → 512 numbers</div><div class="dot"></div><div class="dot"></div><div class="dot"></div>
+    <div class="pill pill-a">Brain processes it</div><div class="dot"></div><div class="dot"></div><div class="dot"></div>
+    <div class="pill">Compare to teacher</div><div class="dot"></div><div class="dot"></div><div class="dot"></div>
+    <div class="pill pill-a">✓ or ✗</div>
+  </div>
+
+  <div class="cards c2">
+    <div class="card" style="border-color:rgba(78,255,160,0.12);"><div class="card-i">✓</div><div class="card-t">Positive</div><p>Weights shift toward the input. "I liked that — more things like this."</p></div>
+    <div class="card" style="border-color:rgba(255,107,78,0.12);"><div class="card-i">✗</div><div class="card-t">Negative</div><p>Weights shift away. "That was noise — less like that."</p></div>
+  </div>
+
+  <details>
+    <summary>The actual math</summary>
+    <div class="inner">
+      <pre><span class="g">Positive:</span> weights += lr × plasticity × |activation| × input × (1 − activation²)
+<span class="r">Negative:</span> weights −= lr × plasticity × |activation| × input × (1 − activation²)
+<span class="b">Then:</span>     weights = L2_normalize(weights)   ← prevents saturation</pre>
+      <p>The <code>(1 − activation²)</code> term is the tanh derivative. It naturally reduces updates when the neuron is already confident (near ±1), and allows larger updates when uncertain (near 0).</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Stage-aware learning rate</summary>
+    <div class="inner">
+      <table>
+        <tr><th>Stage</th><th>Multiplier</th><th>Why</th></tr>
+        <tr><td>Stage 0 (sensory)</td><td>1.0×</td><td>Full speed — building initial structure</td></tr>
+        <tr><td>Stage 1 (association)</td><td>0.5×</td><td>Refining — don't overwrite what's learned</td></tr>
+        <tr><td>Stage 2+ (concept)</td><td>0.1×</td><td>Fine-tuning — subtle adjustments only</td></tr>
+      </table>
+      <p>Base rate decays exponentially: <code>0.01 × exp(−0.0003 × step)</code>. At step 7000, Stage 2: effective LR ≈ 0.0002.</p>
+      <p>In batch mode (32 samples), LR is divided by batch size so total weight movement matches a single step.</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How positive/negative is determined</summary>
+    <div class="inner">
+      <table>
+        <tr><th>Stage</th><th>Method</th></tr>
+        <tr><td>Stage 0</td><td>Every 3rd step is negative (deterministic schedule)</td></tr>
+        <tr><td>Stage 1+</td><td>Cosine similarity between model output and teacher answer, compared against adaptive median threshold over last 25 steps. If positive rate drops below 40%, threshold lowers.</td></tr>
+      </table>
+    </div>
+  </details>
+
+  <div class="co co-g" style="margin-top:24px;">
+    <span class="label">Two training modes</span>
+    <div class="cards c2" style="margin-top:4px;">
+      <div class="card"><div class="card-t">🗣 Live Mode</div><p>Ollama (LLaVA) answers in real time. ~2 steps/sec. Rich signal, slow.</p></div>
+      <div class="card"><div class="card-t">⚡ Precomputed Mode</div><p>25K COCO CLIP embeddings. Batches of 32. ~500 steps/sec. No Ollama.</p></div>
+    </div>
+    <p class="caption" style="margin-top:12px;">Switch: <code>CURRICULUM_SOURCE=precomputed bash start.sh</code></p>
+  </div>
+</div>
+<hr>
+
+<!-- ════════════ GROWTH ════════════ -->
+<div class="sec">
+  <span class="label">Growth</span>
+  <div class="title">The brain doesn't just learn. It builds new parts of itself.</div>
+  <div class="sub">Confused cluster? Split it. Clusters firing together? Wire them. Useless connection? Cut it.</div>
+
+  <div class="dia" style="margin:32px 0;">
+    <svg width="600" height="130" viewBox="0 0 600 130">
+      <rect x="0" y="10" width="170" height="110" rx="14" fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.05)"/>
+      <circle cx="85" cy="60" r="30" fill="rgba(230,126,34,0.12)" stroke="rgba(230,126,34,0.25)"/>
+      <text x="85" y="55" text-anchor="middle" fill="#888" font-size="12" font-family="Inter">🐕 + 🚗</text>
+      <text x="85" y="72" text-anchor="middle" fill="#555" font-size="10" font-family="Inter">confused</text>
+      <text x="85" y="6" text-anchor="middle" fill="#555" font-size="11" font-family="Inter">before</text>
+      <text x="200" y="62" fill="#4effa0" font-size="12" font-weight="600" font-family="Inter">BUD →</text>
+      <rect x="260" y="10" width="340" height="110" rx="14" fill="rgba(255,255,255,0.02)" stroke="rgba(78,255,160,0.08)"/>
+      <circle cx="355" cy="60" r="24" fill="rgba(59,127,255,0.12)" stroke="rgba(59,127,255,0.25)"/>
+      <text x="355" y="58" text-anchor="middle" fill="#888" font-size="14" font-family="Inter">🐕</text>
+      <line x1="383" y1="60" x2="460" y2="60" stroke="rgba(78,255,160,0.12)" stroke-width="1"/>
+      <circle cx="490" cy="60" r="24" fill="rgba(155,89,182,0.12)" stroke="rgba(155,89,182,0.25)"/>
+      <text x="490" y="58" text-anchor="middle" fill="#888" font-size="14" font-family="Inter">🚗</text>
+      <text x="430" y="6" text-anchor="middle" fill="#4effa0" font-size="11" font-family="Inter">after — specialized</text>
+    </svg>
+  </div>
+
+  <div class="cards c3">
+    <div class="card"><div class="card-i" style="color:#4effa0">✂</div><div class="card-t">BUD</div><p>Split confused cluster into two children.</p></div>
+    <div class="card"><div class="card-i" style="color:#3b7fff">🔗</div><div class="card-t">CONNECT</div><p>Wire clusters that fire together.</p></div>
+    <div class="card"><div class="card-i" style="color:#ff6b4e">✕</div><div class="card-t">PRUNE</div><p>Cut weak, unused connections.</p></div>
+    <div class="card"><div class="card-i" style="color:#9b59b6">◈</div><div class="card-t">INSERT</div><p>New cluster between two existing.</p></div>
+    <div class="card"><div class="card-i" style="color:#1abc9c">↑</div><div class="card-t">EXTEND</div><p>Add a new layer on top.</p></div>
+    <div class="card"><div class="card-i" style="color:#555">💤</div><div class="card-t">DORMANT</div><p>Put useless clusters to sleep.</p></div>
+  </div>
+
+  <details>
+    <summary>Exact trigger conditions for each operation</summary>
+    <div class="inner">
+      <table>
+        <tr><th>Operation</th><th>Trigger</th><th>Rate Limit</th></tr>
+        <tr><td>BUD</td><td>bimodality > 0.05, coherence < 0.4, age > 200</td><td>max clusters//50 per check</td></tr>
+        <tr><td>CONNECT</td><td>co-fire > 30% of recent steps</td><td>unlimited</td></tr>
+        <tr><td>PRUNE</td><td>strength < 0.01, unused 150+ steps</td><td>min edges = 2 × active clusters</td></tr>
+        <tr><td>INSERT</td><td>PCA of residuals explains > 40%</td><td>max 2 per check</td></tr>
+        <tr><td>EXTEND</td><td>top layer coherence < 0.2 (Stage 2+)</td><td>1 per check</td></tr>
+        <tr><td>DORMANT</td><td>mean activation < 0.05 for 500+ steps</td><td>unlimited</td></tr>
+      </table>
+      <p>Growth checked every <code>50 + (clusters / 10)</code> steps. Stage 0 hard cap: 80 clusters.</p>
+    </div>
+  </details>
+</div>
+<hr>
+
+<!-- ════════════ TRAINING LOOP ════════════ -->
+<div class="sec">
+  <span class="label">The Engine</span>
+  <div class="title">Every training step is a cycle. Here's the loop.</div>
+
+  <div class="flow" style="margin-top:24px;">
+    <div class="pill">① Pick</div><div class="dot"></div>
+    <div class="pill">② Ask teacher</div><div class="dot"></div>
+    <div class="pill">③ Encode</div><div class="dot"></div>
+    <div class="pill pill-a">④ Think</div><div class="dot"></div>
+    <div class="pill pill-a">⑤ Judge</div><div class="dot"></div>
+    <div class="pill pill-a">⑥ Learn</div><div class="dot"></div>
+    <div class="pill">⑦ Grow</div><div class="dot"></div>
+    <div class="pill">⑧ Health</div><div class="dot"></div>
+    <div class="pill">⑨ Save</div><div class="dot"></div>
+    <div class="pill">⑩ Show</div>
+  </div>
+  <p class="caption" style="text-align:center;">Batch mode: ①–⑥ run for 32 samples, ⑦–⑩ run once per batch. ~2ms total.</p>
+
+  <details>
+    <summary>Stage transitions and timeouts</summary>
+    <div class="inner">
+      <table>
+        <tr><th>Transition</th><th>Condition</th><th>Timeout</th></tr>
+        <tr><td>Stage 0 → 1</td><td>step ≥ 800 AND ≥ 60 active clusters</td><td>Force at step 1600</td></tr>
+        <tr><td>Stage 1 → 2</td><td>step ≥ 3000 AND > 120 clusters AND positive rate > 55%</td><td>Force at step 6000</td></tr>
+      </table>
+    </div>
+  </details>
+</div>
+<hr>
+
+<!-- ════════════ DATA PIPELINE ════════════ -->
+<div class="sec">
+  <span class="label">Data</span>
+  <div class="title">Where the training data comes from — and why there are two databases.</div>
+
+  <div class="co" style="margin-top:24px;">
+    <div class="cards c2" style="margin:0;">
+      <div class="card" style="background:rgba(59,127,255,0.03); border-color:rgba(59,127,255,0.1);">
+        <div class="card-t" style="color:#3b7fff">📦 state/dev.db</div>
+        <p>Pre-encoded COCO images + captions. 25K entries. Created once by <code>download_coco.py</code>. This is the <strong>training data</strong> for precomputed mode.</p>
+      </div>
+      <div class="card" style="background:rgba(230,126,34,0.03); border-color:rgba(230,126,34,0.1);">
+        <div class="card-t" style="color:#e67e22">📊 data/dev.db</div>
+        <p>Training history: dialogues, checkpoints, graph events, co-firing counts. Created by the app. This is the <strong>model's memory</strong>.</p>
+      </div>
+    </div>
+    <p class="caption" style="margin-top:14px;">⚠ These are separate files. Resetting the model (clearing data/dev.db) doesn't touch your pre-encoded training data.</p>
+  </div>
+
+  <div class="flow" style="margin-top:20px;">
+    <div class="pill pill-b">COCO images</div><div class="dot"></div>
+    <div class="pill">CLIP encode</div><div class="dot"></div>
+    <div class="pill pill-b">state/dev.db</div>
+    <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+    <div class="pill pill-a">Baby's brain</div><div class="dot"></div>
+    <div class="pill pill-o">data/dev.db</div>
+  </div>
+  <p class="caption" style="text-align:center;">Left = prepared once. Right = grows during training.</p>
+</div>
+<hr>
+
+<!-- ════════════ VISUALIZATION ════════════ -->
+<div class="sec">
+  <span class="label">Visualization</span>
+  <div class="title">Watch the brain grow in real time. Three views.</div>
+
+  <div class="cards c3" style="margin-top:20px;">
+    <div class="card"><div class="card-t" style="color:#4effa0">UMAP</div><p>Point cloud from force-directed layout. Standard spatial view. Top 500 edges rendered.</p></div>
+    <div class="card"><div class="card-t" style="color:#3b7fff">LIVE</div><p>Physics simulation driven by co-firing data. Clusters that fire together drift together. Islands form over time.</p></div>
+    <div class="card"><div class="card-t" style="color:#9b59b6">TREE</div><p>BUD lineage as stacked planes. Each depth = one plane. Parent-child vertical lines. Cluster size = children count.</p></div>
+  </div>
+
+  <details>
+    <summary>Performance optimizations</summary>
+    <div class="inner">
+      <ul style="margin-left:16px;">
+        <li>Shared SphereGeometry(1, 6, 6) — single GPU upload for all spheres</li>
+        <li>Edge culling: UMAP top 500, LIVE top 300 (from 11K+ / 148K+)</li>
+        <li>Force sim uses Float32Array with 2.0-unit repulsion cutoff</li>
+        <li>Tree layout computed once per data fetch, not every frame</li>
+        <li>Viz emit is non-blocking (asyncio.ensure_future)</li>
+        <li>WebSocket broadcast timeout: 2s per client</li>
+      </ul>
+    </div>
+  </details>
+</div>
+<hr>
+
+<!-- ════════════ CURRENT STATE ════════════ -->
+<div class="sec">
+  <span class="label">Current State</span>
+  <div class="title">7,000+ steps. Stage 2. Here's where we are.</div>
+
+  <div class="stats">
+    <div class="st"><div class="st-n">334</div><div class="st-l">Clusters</div></div>
+    <div class="st"><div class="st-n">2.5K</div><div class="st-l">Neurons</div></div>
+    <div class="st"><div class="st-n">5K+</div><div class="st-l">Connections</div></div>
+    <div class="st"><div class="st-n">13</div><div class="st-l">Layers</div></div>
+  </div>
+  <div class="stats" style="margin-top:1px;">
+    <div class="st"><div class="st-n" style="font-size:22px;">0.0002</div><div class="st-l">Learning Rate</div></div>
+    <div class="st"><div class="st-n">32</div><div class="st-l">Batch Size</div></div>
+    <div class="st"><div class="st-n" style="font-size:22px;">z-score</div><div class="st-l">Resonance</div></div>
+    <div class="st"><div class="st-n">0.1</div><div class="st-l">Split Threshold</div></div>
+  </div>
+
+  <details>
+    <summary>What's working — full status</summary>
+    <div class="inner">
+      <table>
+        <tr><th>Component</th><th>Status</th><th>Notes</th></tr>
+        <tr><td>Forward-Forward learning</td><td><span class="badge b-ok">Solid</span></td><td>Similarities 0.39 → 0.65+</td></tr>
+        <tr><td>Weight normalization</td><td><span class="badge b-ok">Fixed</span></td><td>L2-normalize after each update</td></tr>
+        <tr><td>Oja's edge rule</td><td><span class="badge b-ok">Fixed</span></td><td>Self-normalizing, no edge saturation</td></tr>
+        <tr><td>Z-score resonance</td><td><span class="badge b-ok">Fixed</span></td><td>Adaptive mean+1σ filtering</td></tr>
+        <tr><td>Batched training</td><td><span class="badge b-ok">Working</span></td><td>32/batch, ~500 steps/sec</td></tr>
+        <tr><td>Non-blocking viz</td><td><span class="badge b-ok">Working</span></td><td>ensure_future, thread-safe projector</td></tr>
+        <tr><td>Stage auto-advance</td><td><span class="badge b-ok">Fixed</span></td><td>Timeout fallbacks at 2× target</td></tr>
+        <tr><td>Checkpoint/restore</td><td><span class="badge b-ok">Working</span></td><td>Every 100 steps, 200-step prune cooldown</td></tr>
+        <tr><td>CLIP encoding</td><td><span class="badge b-ok">Solid</span></td><td>ViT-B/32, 512-d, image + text</td></tr>
+        <tr><td>3D visualization</td><td><span class="badge b-ok">Working</span></td><td>3 modes, tooltips, 60fps at 300+ clusters</td></tr>
+      </table>
+    </div>
+  </details>
+
+  <details>
+    <summary>Code bugs found and fixed — 8 issues</summary>
+    <div class="inner">
+      <table>
+        <tr><th>#</th><th>Issue</th><th>Fix</th><th>Status</th></tr>
+        <tr><td>1</td><td>Batch used sim>0.0 instead of adaptive threshold</td><td>Unified _compute_is_positive()</td><td><span class="badge b-ok">Fixed</span></td></tr>
+        <tr><td>2</td><td>Saturation oscillation (0.7× cliff)</td><td>L2-normalize + remove decay</td><td><span class="badge b-ok">Fixed</span></td></tr>
+        <tr><td>3</td><td>Resonance lets 35% of graph through</td><td>Z-score filtering</td><td><span class="badge b-ok">Fixed</span></td></tr>
+        <tr><td>4</td><td>All edges drift to 1.0</td><td>Oja's rule</td><td><span class="badge b-ok">Fixed</span></td></tr>
+        <tr><td>5</td><td>Co-firing buffer OOM (2M+ tuples)</td><td>Cap at 50K + size flush</td><td><span class="badge b-ok">Fixed</span></td></tr>
+        <tr><td>6</td><td>Projector race condition</td><td>Pending position buffer</td><td><span class="badge b-ok">Fixed</span></td></tr>
+        <tr><td>7</td><td>Stage transition stuck forever</td><td>Timeout at 2× target</td><td><span class="badge b-ok">Fixed</span></td></tr>
+        <tr><td>8</td><td>Weight snapshot biased by cluster size</td><td>÷ √(node_count)</td><td><span class="badge b-ok">Fixed</span></td></tr>
+      </table>
+    </div>
+  </details>
+</div>
+<hr>
+
+<!-- ════════════ PROBLEMS ════════════ -->
+<div class="sec">
+  <span class="label">The Problem</span>
+  <div class="title">It learns, but it doesn't specialize.</div>
+  <div class="sub">All 334 clusters fire for almost everything. They should form distinct islands. Instead: one uniform blob.</div>
+
+  <div class="vs" style="margin-top:28px;">
+    <div class="vs-old"><div class="vs-lbl">What we have: the blob</div><p>Every cluster responds to every input roughly equally. No "dog region" or "car region." Just a uniform mass.</p></div>
+    <div class="vs-new"><div class="vs-lbl">What we want: islands</div><p>Dog detectors, car detectors, nature integrators. Distinct regions with sparse bridges between them.</p></div>
+  </div>
+
+  <div class="cards c2" style="margin-top:24px;">
+    <div class="card"><div class="card-i">🎯</div><div class="card-t">One-direction learning</div><p>Each cluster points one way. Learns "average of dogs" — not "the category of dogs." Can't represent groups.</p></div>
+    <div class="card"><div class="card-i">🪞</div><div class="card-t">Clone army</div><p>Every cluster is identical. Same rules, same shape. Like a football team where everyone plays midfielder.</p></div>
+    <div class="card"><div class="card-i">🩹</div><div class="card-t">Band-aid growth</div><p>Growth only fires when something breaks. Never scouts ahead. Never builds toward unknown territory.</p></div>
+    <div class="card"><div class="card-i">🎲</div><div class="card-t">Random curriculum</div><p>Training samples are random. Brain never gets targeted practice on its weaknesses.</p></div>
+    <div class="card"><div class="card-i">🔗</div><div class="card-t">Dumb connections</div><p>Edges are just a number. Can't say "only fire in this context." Dog→frisbee always fires.</p></div>
+    <div class="card"><div class="card-i">🐟</div><div class="card-t">Goldfish memory</div><p>Each step is independent. Forgets everything between inputs. Can't learn sequences.</p></div>
+  </div>
+
+  <details>
+    <summary>The failure equilibria — why the blob is stable</summary>
+    <div class="inner">
+      <p><strong>The Blob:</strong> All clusters converge to similar directions → all co-fire → all edges strengthen → inhibition applies equally → no differentiation. Stable because any specialist gets fewer activations → lower Hebbian reinforcement → gets pruned. Generalists survive.</p>
+      <p><strong>The Fossil:</strong> After memorizing the curriculum, growth stops. No new BUDs (low bimodality). No new INSERTs (small residuals). Graph fossilizes. New concepts can't form.</p>
+      <p>Both are stable because the mechanism rewards convergence: FF → mean direction, Hebbian → strengthen co-firing, Resonance → activate similar, Growth → only split if confused.</p>
+    </div>
+  </details>
+</div>
+<hr>
+
+<!-- ════════════ THE PLAN ════════════ -->
+<div class="sec">
+  <span class="label">The Plan</span>
+  <div class="title">Six changes that turn the blob into a real brain.</div>
+  <div class="sub">One at a time. Verify each before moving on. Safest changes first.</div>
+
+  <div class="tl" style="margin-top:32px;">
+    <div class="tl-s"><div class="tl-d"></div><div class="tl-t">1. Adversarial Curriculum</div><div class="tl-p">Track what the brain is bad at. Show it more of that. Add hard negatives — things that look similar but aren't (dog vs wolf). Target the weakness.</div></div>
+    <div class="tl-s"><div class="tl-d"></div><div class="tl-t">2. Memory Buffer</div><div class="tl-p">Short-term memory: "I just saw a dog" lingers for a few steps. "Leash" and "park" become more likely. Context makes everything smarter.</div></div>
+    <div class="tl-s"><div class="tl-d"></div><div class="tl-t">3. Multi-Prototype Clusters</div><div class="tl-p">3 directions per cluster instead of 1. A cluster can mean "dogs AND cats AND birds" = animals. Categories instead of single points.</div></div>
+    <div class="tl-s"><div class="tl-d"></div><div class="tl-t">4. Curiosity Growth</div><div class="tl-p">When nothing recognizes an input, create a new cluster for it. Build toward the unknown. Explore, don't just patch.</div></div>
+    <div class="tl-s"><div class="tl-d"></div><div class="tl-t">5. Cluster Roles</div><div class="tl-p">Three jobs: Detectors (spot patterns), Integrators (combine signals), Predictors (anticipate). Different roles → specialization.</div></div>
+    <div class="tl-s"><div class="tl-d"></div><div class="tl-t">6. Smart Edges</div><div class="tl-p">Connections that know when to fire. Excitatory, inhibitory, modulatory. "Dog→frisbee" only in outdoor context.</div></div>
+  </div>
+
+  <details>
+    <summary>Solution comparison — effort, risk, impact</summary>
+    <div class="inner">
+      <table>
+        <tr><th>Change</th><th>Effort</th><th>Risk</th><th>Impact</th></tr>
+        <tr><td>Adversarial curriculum</td><td><span class="badge b-ok">Low</span></td><td><span class="badge b-ok">Low</span></td><td><span class="badge b-ok">High</span></td></tr>
+        <tr><td>Memory buffer</td><td><span class="badge b-ok">Low</span></td><td><span class="badge b-warn">Medium</span></td><td><span class="badge b-warn">Medium</span></td></tr>
+        <tr><td>Multi-prototype</td><td><span class="badge b-warn">Medium</span></td><td><span class="badge b-ok">Low</span></td><td><span class="badge b-ok">High</span></td></tr>
+        <tr><td>Curiosity growth</td><td><span class="badge b-ok">Low</span></td><td><span class="badge b-ok">Low</span></td><td><span class="badge b-warn">Medium</span></td></tr>
+        <tr><td>Cluster roles</td><td><span class="badge b-warn">High</span></td><td><span class="badge b-warn">Medium</span></td><td><span class="badge b-ok">High</span></td></tr>
+        <tr><td>Smart edges</td><td><span class="badge b-warn">High</span></td><td><span class="badge b-warn">Medium</span></td><td><span class="badge b-warn">Medium</span></td></tr>
+      </table>
+    </div>
+  </details>
+
+  <details>
+    <summary>Expected evolution — what we should see over time</summary>
+    <div class="inner">
+      <table>
+        <tr><th>Phase</th><th>Steps</th><th>What Happens</th><th>What You See</th></tr>
+        <tr><td style="color:#4effa0">Detector Forests</td><td>0–2K</td><td>Multi-prototype clusters spread across CLIP space. Adversarial curriculum drives specialization.</td><td>Point cloud differentiating, colors separating.</td></tr>
+        <tr><td style="color:#3b7fff">Integrator Bridges</td><td>2K–8K</td><td>INSERT creates integrators at junctions. "Animal" integrator between "dog" and "cat."</td><td>Islands with bridges. Typed edges visible.</td></tr>
+        <tr><td style="color:#9b59b6">Prediction Chains</td><td>8K–20K</td><td>Predictors emerge from EXTEND. Buffer enables context-sensitive activation.</td><td>Temporal flows through the graph.</td></tr>
+        <tr><td style="color:#e67e22">Conceptual Regions</td><td>20K+</td><td>Dense areas = well-trained concepts. Sparse = rare categories.</td><td>A map. Urban = familiar. Rural = unknown.</td></tr>
+      </table>
+    </div>
+  </details>
+</div>
+<hr>
+
+<!-- ════════════ NEXT STEPS ════════════ -->
+<div class="sec">
+  <span class="label">Next Steps</span>
+  <div class="title">Three phases. Each one builds on the last.</div>
+
+  <div class="cards c3" style="margin-top:24px;">
+    <div class="card" style="border-color:rgba(78,255,160,0.12);"><div class="card-t" style="color:#4effa0">Phase A</div><p><strong>Curriculum + Memory.</strong> Low risk, high impact. Changes what goes in, not the brain itself.</p><p class="caption">Run 2,000 steps. Verify.</p></div>
+    <div class="card" style="border-color:rgba(59,127,255,0.12);"><div class="card-t" style="color:#3b7fff">Phase B</div><p><strong>Prototypes + Curiosity.</strong> Changes cluster internals. Multi-direction identity. Growth toward the unknown.</p><p class="caption">Run 2,000 steps. Verify.</p></div>
+    <div class="card" style="border-color:rgba(155,89,182,0.12);"><div class="card-t" style="color:#9b59b6">Phase C</div><p><strong>Roles + Smart edges.</strong> Deepest structural changes. Functional differentiation. Conditional connections.</p><p class="caption">Run 2,000 steps. Verify.</p></div>
+  </div>
+
+  <details>
+    <summary>How we verify each phase — metrics table</summary>
+    <div class="inner">
+      <table>
+        <tr><th>Metric</th><th>Healthy</th><th>Failure</th></tr>
+        <tr><td>Unique activation patterns / 100 steps</td><td>50+ (diverse)</td><td>&lt; 15 (blob)</td></tr>
+        <tr><td>Worst-category similarity improvement</td><td>Rising over 3K steps</td><td>Flat</td></tr>
+        <tr><td>Consecutive-output similarity (same category)</td><td>+0.1 above random pairs</td><td>No difference</td></tr>
+        <tr><td>Role distribution entropy</td><td>~1.0 bits</td><td>Near 0</td></tr>
+        <tr><td>Input coverage (resonance > 0.3)</td><td>> 80%</td><td>&lt; 50%</td></tr>
+      </table>
+    </div>
+  </details>
+
+  <details>
+    <summary>Risks to watch</summary>
+    <div class="inner">
+      <ul style="margin-left:16px; color:#888;">
+        <li><strong style="color:#ffcc44;">Interaction explosion</strong> — 6 new mechanisms × 6 existing = 36 interactions. Implement one phase at a time.</li>
+        <li><strong style="color:#ffcc44;">Hyperparameter sensitivity</strong> — 8 new parameters. Start with defaults, only tune what matters.</li>
+        <li><strong style="color:#ffcc44;">Catastrophic forgetting</strong> — New mechanisms shift the training distribution. Ramp up gradually over 500 steps.</li>
+        <li><strong style="color:#ffcc44;">Buffer hallucination</strong> — Memory too strong → model sees what it expects, not what's there. Monitor output similarity to current vs previous input.</li>
+      </ul>
+    </div>
+  </details>
+
+  <div class="co co-g" style="margin-top:32px;">
+    <span class="label">The Bet</span>
+    <p style="font-size:17px; color:#aaa; margin:0;">The learning rule works. The growth operations work. What's missing is the <strong style="color:#ddd">game design</strong> — the rules that incentivize clusters to specialize, edges to carry meaning, and growth to explore instead of patch. We're not rebuilding the engine. We're changing the game it plays.</p>
+  </div>
+</div>
+
+<div class="spacer"></div>
+<div style="text-align:center; padding-bottom:40px;"><p style="color:#222; font-size:12px;">Baby AI · docs v2 · March 2026</p></div>
+
+</div>
+</body>
+</html>

@@ -184,8 +184,8 @@ class Curriculum:
         # Precomputed cache (lazy)
         self._cache: _EmbeddingCache | None = None
         if self._source == "precomputed":
-            _default_db = str(Path(__file__).resolve().parent.parent / "state" / "dev.db")
-            resolved_db = db_path or os.getenv("DB_PATH", _default_db)
+            _default_db = os.getenv("DB_PATH", "data/dev.db")
+            resolved_db = db_path or _default_db
             self._cache = _EmbeddingCache(resolved_db)
             count = self._cache.open()
             if count > 0:

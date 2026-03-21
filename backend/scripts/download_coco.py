@@ -140,7 +140,7 @@ CREATE TABLE IF NOT EXISTS embedding_cache (
 
 def main():
     parser = argparse.ArgumentParser(description="Download COCO 2017 & build embedding cache")
-    _default_db = str(Path(__file__).resolve().parent.parent / "state" / "dev.db")
+    _default_db = str(Path(__file__).resolve().parent.parent / "data" / "dev.db")
     parser.add_argument("--db-path", default=_default_db,
                         help="Path to SQLite database")
     parser.add_argument("--split", default="val2017", choices=list(SPLITS.keys()),
