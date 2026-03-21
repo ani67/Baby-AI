@@ -240,7 +240,8 @@ class GrowthMonitor:
         return explained.item() > 0.4
 
     def should_extend(self, stage: int) -> bool:
-        if stage < 2:
+        # Allow EXTEND after sufficient structure has formed (replaces stage gate)
+        if len(self._graph.clusters) < 30:
             return False
         top_clusters = self._graph.top_layer_clusters()
         if not top_clusters:

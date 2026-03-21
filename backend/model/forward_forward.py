@@ -10,33 +10,21 @@ import math
 
 from .cluster import Cluster
 
-# Stage-aware LR multipliers: later stages need lower rates
-# because the graph is larger and updates have wider impact.
-STAGE_LR_SCALE = {
-    0: 1.0,
-    1: 0.5,
-    2: 0.1,
-    3: 0.1,
-    4: 0.1,
-}
-
 
 class PlasticitySchedule:
     """
-    Controls the global learning rate over time and by stage.
-    Early stages: high plasticity.
-    Later stages: lower plasticity.
+    Controls the global learning rate over time.
+    Pure exponential decay — no stage gating.
+    The model self-regulates through weight normalization and Oja's rule.
     """
 
     def current_rate(self, step: int, stage: int = 0) -> float:
         # Exponential decay from 0.01 to 0.001 over 10,000 steps
+        # Stage parameter kept for API compat but ignored
         base = 0.01
         floor = 0.001
         decay = 0.0003
-        time_rate = max(floor, base * math.exp(-decay * step))
-        # Apply stage scaling
-        stage_scale = STAGE_LR_SCALE.get(stage, 0.1)
-        return time_rate * stage_scale
+        return max(floor, base * math.exp(-decay * step))
 
     def cluster_rate(self, cluster: Cluster, global_rate: float) -> float:
         # Young clusters learn faster regardless of global rate

@@ -584,13 +584,10 @@ class BabyModel:
         if len(active_clusters) > self.growth_warning_threshold:
             print(f"[growth] WARNING: {len(active_clusters)} active clusters exceeds soft threshold {self.growth_warning_threshold}", flush=True)
 
-        # Check BUD — hardcoded to 1, and zero in Stage 0 above 80 clusters
+        # Check BUD — rate scales with cluster count, no stage-based cap
         bud_count = 0
         bud_skipped = 0
         max_buds_per_check = max(1, len(active_clusters) // 50)
-        if self.stage == 0 and len(active_clusters) >= 80:
-            max_buds_per_check = 0
-            print(f"[growth] step={self.step} Stage 0 hard cap: {len(active_clusters)} >= 80, BUD disabled", flush=True)
         for cluster in list(self.graph.clusters):
             if monitor.should_bud(cluster):
                 if bud_count >= max_buds_per_check:
@@ -672,8 +669,8 @@ class BabyModel:
         if pruned_count > 0:
             print(f"[prune] step={self.step} removed {pruned_count} edges (strength<0.05), total={len(self.graph.edges)}", flush=True)
 
-        # Check INSERT — respect Stage 0 hard cap
-        growth_allowed = not (self.stage == 0 and len(active_clusters) >= 80)
+        # Check INSERT — no stage-based cap, growth scales naturally
+        growth_allowed = True
         insert_count = 0
         max_inserts_per_check = 2
         if growth_allowed:
@@ -702,8 +699,8 @@ class BabyModel:
                     )
                     events.append(event)
 
-        # Check EXTEND — respect Stage 0 hard cap
-        if growth_allowed and monitor.should_extend(self.stage):
+        # Check EXTEND — allowed when top layer collapses
+        if growth_allowed and monitor.should_extend(0):
             new_cluster = extend_top(self.graph)
             event = {
                 "event_type": "EXTEND",

@@ -259,21 +259,11 @@ class LearningLoop:
         prediction, activations = self.model.forward(
             input_vec, return_activations=True,
         )
-        if self._stage >= 1:
-            is_positive = self._compute_is_positive(
-                prediction=prediction,
-                answer_vectors=answer_vectors,
-            )
-        else:
-            # Stage 0: every 3rd step is a negative example (random vector)
-            is_positive = (self.model.step % 3 != 0)
-            if answer_vectors:
-                mean_answer = torch.stack(answer_vectors).mean(dim=0)
-                mean_answer = F.normalize(mean_answer, dim=0)
-                stage0_sim = torch.dot(prediction, mean_answer).item()
-            else:
-                stage0_sim = 0.0
-            print(f"[signal] step={self.model.step} sim={stage0_sim:.4f} stage0 positive={is_positive}", flush=True)
+        # Adaptive threshold from step 0 — no stage gating
+        is_positive = self._compute_is_positive(
+            prediction=prediction,
+            answer_vectors=answer_vectors,
+        )
 
         # ── 8. UPDATE ──
         changes = {}
@@ -406,48 +396,7 @@ class LearningLoop:
                 ),
             ))
 
-        # ── 13. AUTO-ADVANCE stage 0 → 1 ──
-        if self._stage == 0:
-            active_count = sum(1 for c in self.model.graph.clusters if not c.dormant)
-
-            if self.model.step >= 1600 and self._stage0_completion_step is None:
-                self._stage0_completion_step = self.model.step
-                print(f"[stage] timeout force-advance to stage 1 at step={self.model.step}", flush=True)
-
-            if (self.model.step >= 800
-                    and active_count >= 60
-                    and self._stage0_completion_step is None):
-                self._stage0_completion_step = self.model.step + 100
-                print(f"[stage] advance condition met: step>=800 clusters={active_count}, advancing in 100 steps", flush=True)
-
-            if self._stage0_completion_step is not None and self.model.step >= self._stage0_completion_step:
-                self.set_stage(1)
-                self.model.stage = 1
-                print(f"[stage] auto-advanced to stage 1 at step={self.model.step}", flush=True)
-
-        # ── 14. AUTO-ADVANCE stage 1 → 2 ──
-        if self._stage == 1:
-            active_count = sum(1 for c in self.model.graph.clusters if not c.dormant)
-            positive_rate = (
-                sum(self._positive_history) / len(self._positive_history)
-                if len(self._positive_history) >= 20 else 0.0
-            )
-
-            if self.model.step >= 6000 and self._stage1_completion_step is None:
-                self._stage1_completion_step = self.model.step
-                print(f"[stage] timeout force-advance to stage 2 at step={self.model.step}", flush=True)
-
-            if (self.model.step >= 3000
-                    and active_count > 120
-                    and positive_rate > 0.55
-                    and self._stage1_completion_step is None):
-                self._stage1_completion_step = self.model.step + 100
-                print(f"[stage] advance 1→2 condition met: step>=3000 clusters={active_count} positive_rate={positive_rate*100:.0f}%, advancing in 100 steps", flush=True)
-
-            if self._stage1_completion_step is not None and self.model.step >= self._stage1_completion_step:
-                self.set_stage(2)
-                self.model.stage = 2
-                print(f"[stage] auto-advanced to stage 2 at step={self.model.step}", flush=True)
+        # Stages collapsed — no auto-advance. LR decays naturally.
 
         return StepResult(
             step=self.model.step,
@@ -565,28 +514,7 @@ class LearningLoop:
                 flush=True,
             )
 
-        # Auto-advance
-        if self._stage == 0:
-            ac = sum(1 for c in self.model.graph.clusters if not c.dormant)
-            if self.model.step >= 1600 and self._stage0_completion_step is None:
-                self._stage0_completion_step = self.model.step
-                print(f"[stage] timeout force-advance to stage 1 at step={self.model.step}", flush=True)
-            if self.model.step >= 800 and ac >= 60 and self._stage0_completion_step is None:
-                self._stage0_completion_step = self.model.step + 100
-            if self._stage0_completion_step is not None and self.model.step >= self._stage0_completion_step:
-                self.set_stage(1); self.model.stage = 1
-                print(f"[stage] auto-advanced to stage 1 at step={self.model.step}", flush=True)
-        if self._stage == 1:
-            ac = sum(1 for c in self.model.graph.clusters if not c.dormant)
-            pr = sum(self._positive_history) / len(self._positive_history) if len(self._positive_history) >= 20 else 0.0
-            if self.model.step >= 6000 and self._stage1_completion_step is None:
-                self._stage1_completion_step = self.model.step
-                print(f"[stage] timeout force-advance to stage 2 at step={self.model.step}", flush=True)
-            if self.model.step >= 3000 and ac > 120 and pr > 0.55 and self._stage1_completion_step is None:
-                self._stage1_completion_step = self.model.step + 100
-            if self._stage1_completion_step is not None and self.model.step >= self._stage1_completion_step:
-                self.set_stage(2); self.model.stage = 2
-                print(f"[stage] auto-advanced to stage 2 at step={self.model.step}", flush=True)
+        # Stages collapsed — no auto-advance. LR decays naturally.
 
         return StepResult(
             step=self.model.step,
@@ -609,14 +537,12 @@ class LearningLoop:
         samples: list[tuple[torch.Tensor, bool]] = []
         for item in items:
             vec = item.expected_vector if item.expected_vector is not None else torch.randn(self.model.input_dim)
-            if self._stage == 0:
-                is_positive = (self.model.step + len(samples)) % 3 != 0
-            else:
-                prediction, _ = self.model.forward(vec, return_activations=False)
-                is_positive = self._compute_is_positive(
-                    prediction=prediction,
-                    answer_vectors=[item.expected_vector] if item.expected_vector is not None else [],
-                )
+            # Adaptive threshold from step 0 — no stage gating
+            prediction, _ = self.model.forward(vec, return_activations=False)
+            is_positive = self._compute_is_positive(
+                prediction=prediction,
+                answer_vectors=[item.expected_vector] if item.expected_vector is not None else [],
+            )
             if not is_positive:
                 vec = F.normalize(torch.randn(self.model.input_dim), dim=0)
             samples.append((vec, is_positive))
