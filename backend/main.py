@@ -714,12 +714,129 @@ async def cluster_tree():
 
 @app.get("/dashboard")
 async def dashboard():
+    import json
+    import math
+    from collections import Counter, defaultdict
+
     store = app.state.store
     loop = app.state.loop
     graph = loop.model.graph
 
     gs = graph.summary()
     categories = store.get_category_performance()
+
+    # ── Structure metrics ──
+
+    # 1. Spatial clustering (silhouette-like score)
+    # For each category, compute mean intra-category distance vs inter-category distance.
+    # Uses cluster identity vectors as positions (512-d, more reliable than 3D projections).
+    labels_data = _compute_cluster_labels(store, graph)
+    category_clusters: dict[str, list] = defaultdict(list)
+    cluster_identities: dict[str, list[float]] = {}
+    for cluster in graph.clusters:
+        if cluster.dormant:
+            continue
+        identity = cluster.identity
+        cluster_identities[cluster.id] = identity
+        words = labels_data.get(cluster.id, [])
+        for word in words[:1]:  # primary label only
+            category_clusters[word].append(cluster.id)
+
+    spatial_score = None
+    if len(category_clusters) >= 3:
+        import torch
+        intra_dists = []
+        inter_dists = []
+        cats_with_multiple = {cat: cids for cat, cids in category_clusters.items() if len(cids) >= 2}
+        for cat, cids in list(cats_with_multiple.items())[:10]:
+            ids_list = list(cluster_identities.keys())
+            for i in range(len(cids)):
+                ci = cluster_identities.get(cids[i])
+                if ci is None:
+                    continue
+                for j in range(i + 1, len(cids)):
+                    cj = cluster_identities.get(cids[j])
+                    if cj is None:
+                        continue
+                    intra_dists.append(torch.dot(ci, cj).item())
+                # Compare to random other-category cluster
+                for other_cid in ids_list[:5]:
+                    if other_cid not in cids:
+                        co = cluster_identities.get(other_cid)
+                        if co is not None:
+                            inter_dists.append(torch.dot(ci, co).item())
+        if intra_dists and inter_dists:
+            avg_intra = sum(intra_dists) / len(intra_dists)
+            avg_inter = sum(inter_dists) / len(inter_dists)
+            # Higher = better separation (intra similar, inter different)
+            spatial_score = round(avg_intra - avg_inter, 4)
+
+    # 2. Sibling label coherence
+    # For BUD siblings (c_05a, c_05b), how many label words do they share?
+    all_ids = {c.id for c in graph.clusters}
+    sibling_pairs = 0
+    shared_words_total = 0
+    for cluster in graph.clusters:
+        parent = _cluster_parent_id(cluster.id)
+        if parent is None:
+            continue
+        # Find sibling
+        sibling_suffix = cluster.id[-1]
+        other_suffix = 'b' if sibling_suffix == 'a' else 'a'
+        sibling_id = cluster.id[:-1] + other_suffix
+        if sibling_id in all_ids and sibling_id > cluster.id:  # avoid double-counting
+            words_a = set(labels_data.get(cluster.id, []))
+            words_b = set(labels_data.get(sibling_id, []))
+            if words_a and words_b:
+                shared = len(words_a & words_b)
+                shared_words_total += shared
+                sibling_pairs += 1
+    sibling_coherence = round(shared_words_total / max(sibling_pairs, 1), 2)
+
+    # 3. Layer abstraction gradient
+    # Do higher layers have more general labels? Measure label word frequency by layer.
+    layer_labels: dict[float, list[str]] = defaultdict(list)
+    for cluster in graph.clusters:
+        if not cluster.dormant:
+            words = labels_data.get(cluster.id, [])
+            layer_labels[cluster.layer_index].extend(words)
+    layer_diversity = {}
+    for layer_idx in sorted(layer_labels.keys()):
+        words = layer_labels[layer_idx]
+        if words:
+            unique_ratio = len(set(words)) / len(words)
+            layer_diversity[int(layer_idx)] = round(unique_ratio, 3)
+
+    # 4. Co-firing communities
+    # Cluster the co-firing pairs into groups using connected components.
+    cofiring_pairs = store.get_cofiring_pairs()
+    strong_pairs = [p for p in cofiring_pairs if p["count"] > 10]
+    if strong_pairs:
+        # Simple union-find for connected components
+        parent_map: dict[str, str] = {}
+        def find(x):
+            while parent_map.get(x, x) != x:
+                parent_map[x] = parent_map.get(parent_map[x], parent_map[x])
+                x = parent_map[x]
+            return x
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent_map[ra] = rb
+        for p in strong_pairs[:2000]:  # cap for speed
+            union(p["a"], p["b"])
+        components: dict[str, list] = defaultdict(list)
+        all_cofired = set()
+        for p in strong_pairs[:2000]:
+            all_cofired.add(p["a"])
+            all_cofired.add(p["b"])
+        for cid in all_cofired:
+            components[find(cid)].append(cid)
+        community_sizes = sorted([len(v) for v in components.values()], reverse=True)
+        num_communities = len([s for s in community_sizes if s >= 3])
+    else:
+        community_sizes = []
+        num_communities = 0
 
     return {
         "step": loop.model.step,
@@ -733,6 +850,13 @@ async def dashboard():
             "best": categories[-5:] if len(categories) >= 5 else categories,
             "worst": categories[:5],
             "total_tracked": len(categories),
+        },
+        "structure": {
+            "spatial_score": spatial_score,  # >0 = clusters of same category are closer than different
+            "sibling_coherence": sibling_coherence,  # avg shared label words between BUD siblings
+            "layer_diversity": layer_diversity,  # unique/total label ratio per layer (higher layers should be lower = more general)
+            "cofiring_communities": num_communities,  # number of distinct co-firing groups (>= 3 members)
+            "community_sizes": community_sizes[:10],  # top 10 community sizes
         },
     }
 
