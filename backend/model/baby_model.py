@@ -699,7 +699,7 @@ class BabyModel:
                     )
                     events.append(event)
 
-        # Check EXTEND — allowed when top layer collapses
+        # Check EXTEND — allowed when top layer has diverse activation
         if growth_allowed and monitor.should_extend(0):
             new_cluster = extend_top(self.graph)
             event = {
