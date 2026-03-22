@@ -441,9 +441,22 @@ class LearningLoop:
         result = await loop.run_in_executor(None, self._batch_compute, items)
 
         # Unpack results from the sync computation
-        changes, prediction, activations, growth_events, elapsed_ms = result
+        changes, prediction, activations, elapsed_ms = result
 
-        # ── Async-only work: co-firing, logging, viz emit ──
+        # ── Main-thread work: growth, health, co-firing, logging, viz ──
+
+        # Growth check (must run on main thread — uses SQLite store)
+        growth_events = self.model.growth_check(self.store)
+
+        # Health monitor
+        active_count = sum(1 for c in self.model.graph.clusters if not c.dormant)
+        total_clusters = len(self.model.graph.clusters)
+        self.health_monitor.record_step(active_count, total_clusters)
+        self.health_monitor.check(
+            step=self.model.step, stage=self._stage, model=self.model,
+            positive_history=self._positive_history,
+            similarity_history=self._similarity_history,
+        )
 
         # Co-firing
         active_cids = [cid for cid, v in activations.items() if v > 0.01]
@@ -560,25 +573,15 @@ class LearningLoop:
         # Batched forward+update
         changes = self.model.update_batch(samples)
 
-        # Final forward for activations (viz/growth)
+        # Final forward for activations (viz)
         last_vec = items[-1].expected_vector if items[-1].expected_vector is not None else torch.randn(self.model.input_dim)
         prediction, activations = self.model.forward(last_vec, return_activations=True)
 
-        # Growth check
-        growth_events = self.model.growth_check(self.store)
-
-        # Health monitor
-        active_count = sum(1 for c in self.model.graph.clusters if not c.dormant)
-        total_clusters = len(self.model.graph.clusters)
-        self.health_monitor.record_step(active_count, total_clusters)
-        self.health_monitor.check(
-            step=self.model.step, stage=self._stage, model=self.model,
-            positive_history=self._positive_history,
-            similarity_history=self._similarity_history,
-        )
+        # NOTE: growth_check and health_monitor moved to _step_batch (main thread)
+        # because they call store.log_graph_event() which requires same-thread SQLite access.
 
         elapsed_ms = (_time.perf_counter() - t0) * 1000
-        return (changes, prediction, activations, growth_events, elapsed_ms)
+        return (changes, prediction, activations, elapsed_ms)
 
     # ── Speed / stage ──
 
