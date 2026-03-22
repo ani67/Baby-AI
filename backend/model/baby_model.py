@@ -701,8 +701,13 @@ class BabyModel:
                     events.append(event)
 
         # Check EXTEND — allowed when top layer has diverse activation
-        if growth_allowed and monitor.should_extend(0):
+        _should_ext = monitor.should_extend(0)
+        if not _should_ext:
+            top = self.graph.top_layer_clusters()
+            print(f"[extend-debug] clusters={len(self.graph.clusters)} top_layer={len(top)} should_extend=False", flush=True)
+        if growth_allowed and _should_ext:
             new_cluster = extend_top(self.graph)
+            print(f"[extend] FIRED! new_cluster={new_cluster.id} layer={new_cluster.layer_index}", flush=True)
             event = {
                 "event_type": "EXTEND",
                 "metadata": {
