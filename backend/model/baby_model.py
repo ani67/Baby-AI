@@ -653,14 +653,14 @@ class BabyModel:
         if prune_allowed and len(self.graph.edges) > min_edges:
             # Sort edges by strength ascending — weakest first
             sorted_edges = sorted(self.graph.edges, key=lambda e: e.strength)
-            # Prune bottom 5%, but also require should_prune condition
+            # Prune bottom 5% by strength — no additional condition.
+            # If you're in the weakest 5%, you get cut.
             max_prune = max(1, len(sorted_edges) // 20)
             for edge in sorted_edges[:max_prune]:
                 if len(self.graph.edges) <= min_edges:
                     break
-                if monitor.should_prune(edge):
-                    self.graph.remove_edge(edge)
-                    pruned_count += 1
+                self.graph.remove_edge(edge)
+                pruned_count += 1
         if pruned_count > 0:
             print(f"[prune] step={self.step} removed {pruned_count} edges, total={len(self.graph.edges)}", flush=True)
 
