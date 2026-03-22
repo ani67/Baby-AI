@@ -564,8 +564,8 @@ class BabyModel:
         if self.step - getattr(self, '_last_growth_check_step', -check_every) < check_every:
             return []
         self._last_growth_check_step = self.step
-        if self.step - self._last_bud_step < 20:
-            return []
+        # BUD cooldown: skip BUD but still evaluate INSERT/EXTEND/PRUNE/DORMANT
+        bud_on_cooldown = self.step - self._last_bud_step < 20
         total_clusters = len(self.graph.clusters)
 
         events = []
@@ -585,10 +585,10 @@ class BabyModel:
         if len(active_clusters) > self.growth_warning_threshold:
             print(f"[growth] WARNING: {len(active_clusters)} active clusters exceeds soft threshold {self.growth_warning_threshold}", flush=True)
 
-        # Check BUD — rate scales with cluster count, no stage-based cap
+        # Check BUD — rate scales with cluster count, skip if on cooldown
         bud_count = 0
         bud_skipped = 0
-        max_buds_per_check = max(1, len(active_clusters) // 50)
+        max_buds_per_check = 0 if bud_on_cooldown else max(1, len(active_clusters) // 50)
         for cluster in list(self.graph.clusters):
             if monitor.should_bud(cluster):
                 if bud_count >= max_buds_per_check:
@@ -701,13 +701,9 @@ class BabyModel:
                     events.append(event)
 
         # Check EXTEND — allowed when top layer has diverse activation
-        _should_ext = monitor.should_extend(0)
-        if not _should_ext:
-            top = self.graph.top_layer_clusters()
-            print(f"[extend-debug] clusters={len(self.graph.clusters)} top_layer={len(top)} should_extend=False", flush=True)
-        if growth_allowed and _should_ext:
+        if growth_allowed and monitor.should_extend(0):
             new_cluster = extend_top(self.graph)
-            print(f"[extend] FIRED! new_cluster={new_cluster.id} layer={new_cluster.layer_index}", flush=True)
+            print(f"[extend] new layer: {new_cluster.id} at layer={new_cluster.layer_index}", flush=True)
             event = {
                 "event_type": "EXTEND",
                 "metadata": {
