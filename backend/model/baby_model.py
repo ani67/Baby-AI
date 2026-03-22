@@ -561,8 +561,9 @@ class BabyModel:
         # Dynamic growth check interval: slows as model scales
         active_clusters = [c for c in self.graph.clusters if not c.dormant]
         check_every = 50 + (len(active_clusters) // 10)
-        if self.step % check_every != 0:
+        if self.step - getattr(self, '_last_growth_check_step', -check_every) < check_every:
             return []
+        self._last_growth_check_step = self.step
         if self.step - self._last_bud_step < 20:
             return []
         total_clusters = len(self.graph.clusters)
