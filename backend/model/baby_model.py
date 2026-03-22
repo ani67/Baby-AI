@@ -644,35 +644,25 @@ class BabyModel:
                     )
                     events.append(event)
 
-        # Check PRUNE — protect minimum edge density + 200-step post-restore cooldown
+        # Check PRUNE — percentage-based: remove bottom 5% of edges each check.
+        # Self-scaling: 98K edges → prune 4900. 500 edges → prune 25.
+        # Protects minimum of 2 edges per cluster.
         min_edges = len(active_clusters) * 2
         pruned_count = 0
         prune_allowed = self.step - self._restore_step >= 200
-        if prune_allowed:
-            for edge in list(self.graph.edges):
+        if prune_allowed and len(self.graph.edges) > min_edges:
+            # Sort edges by strength ascending — weakest first
+            sorted_edges = sorted(self.graph.edges, key=lambda e: e.strength)
+            # Prune bottom 5%, but also require should_prune condition
+            max_prune = max(1, len(sorted_edges) // 20)
+            for edge in sorted_edges[:max_prune]:
                 if len(self.graph.edges) <= min_edges:
                     break
                 if monitor.should_prune(edge):
                     self.graph.remove_edge(edge)
                     pruned_count += 1
-                    event = {
-                        "event_type": "PRUNE",
-                        "cluster_a": edge.from_id,
-                        "cluster_b": edge.to_id,
-                        "metadata": {
-                            "reason": "disuse",
-                            "steps_unused": edge.steps_since_activation,
-                            "final_strength": edge.strength,
-                        },
-                    }
-                    store.log_graph_event(
-                        step=self.step, event_type="PRUNE",
-                        cluster_a=edge.from_id, cluster_b=edge.to_id,
-                        metadata=event["metadata"],
-                    )
-                    events.append(event)
         if pruned_count > 0:
-            print(f"[prune] step={self.step} removed {pruned_count} edges (strength<0.05), total={len(self.graph.edges)}", flush=True)
+            print(f"[prune] step={self.step} removed {pruned_count} edges, total={len(self.graph.edges)}", flush=True)
 
         # Check INSERT — no stage-based cap, growth scales naturally
         growth_allowed = True
