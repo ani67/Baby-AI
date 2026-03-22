@@ -49,14 +49,8 @@ class HealthMonitor:
             return
         self._last_check_step = step
 
-        # Emergency: cluster explosion in Stage 0
-        active = sum(1 for c in model.graph.clusters if not c.dormant)
-        if stage == 0 and active > 100:
-            monitor = model._growth_monitor
-            monitor.bud_cooldown_steps = 1000
-            model.growth_check_interval = 200
-            print(f"[health] EMERGENCY: clusters={active} > 100 in Stage 0, freezing growth", flush=True)
-            return
+        # Stages collapsed — no emergency freeze. Growth self-regulates via
+        # z-score resonance, Oja's rule, and BUD rate limiting (clusters//50).
 
         metrics = self._compute_metrics(model, positive_history, similarity_history)
         issues = []
