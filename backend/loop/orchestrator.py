@@ -533,16 +533,26 @@ class LearningLoop:
         import time as _time
         t0 = _time.perf_counter()
 
-        # Build (vector, is_positive) pairs
+        # Build (vector, is_positive) pairs.
+        # Use ONE forward pass to get model's current output direction,
+        # then determine positive/negative for each sample via cosine
+        # similarity — avoids 32 forward passes per batch.
+        anchor_vec = items[0].expected_vector if items[0].expected_vector is not None else torch.randn(self.model.input_dim)
+        anchor_pred, _ = self.model.forward(anchor_vec, return_activations=False)
+
         samples: list[tuple[torch.Tensor, bool]] = []
         for item in items:
             vec = item.expected_vector if item.expected_vector is not None else torch.randn(self.model.input_dim)
-            # Adaptive threshold from step 0 — no stage gating
-            prediction, _ = self.model.forward(vec, return_activations=False)
-            is_positive = self._compute_is_positive(
-                prediction=prediction,
-                answer_vectors=[item.expected_vector] if item.expected_vector is not None else [],
-            )
+            # Cheap signal: cosine similarity between model's anchor prediction and this sample
+            sim = torch.dot(anchor_pred, F.normalize(vec, dim=0)).item()
+            self._similarity_history.append(sim)
+            if len(self._similarity_history) >= 10:
+                sorted_sims = sorted(self._similarity_history)
+                threshold = sorted_sims[len(sorted_sims) // 2]
+                is_positive = sim > threshold
+            else:
+                is_positive = True
+            self._positive_history.append(1.0 if is_positive else 0.0)
             if not is_positive:
                 vec = F.normalize(torch.randn(self.model.input_dim), dim=0)
             samples.append((vec, is_positive))
