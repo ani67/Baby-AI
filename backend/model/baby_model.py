@@ -216,6 +216,13 @@ class BabyModel:
         elif len(passed) < min_pass:
             passed = scores
 
+        # Hard cap at 20 — prevents O(n) blowup at large cluster counts.
+        # Z-score passes ~60 at 500+ clusters. Top-20 keeps the most relevant.
+        MAX_ACTIVE = 20
+        if len(passed) > MAX_ACTIVE:
+            top_k = sorted(passed.items(), key=lambda x: x[1], reverse=True)[:MAX_ACTIVE]
+            passed = dict(top_k)
+
         if self.step % 20 == 0:
             print(f"[resonance] step={self.step} screened={len(scores)} passed={len(passed)} z_threshold={z_threshold:.2f}", flush=True)
 
@@ -302,10 +309,15 @@ class BabyModel:
             for c1 in layer1:
                 self.graph.add_edge(c0.id, c1.id, strength=0.2)
 
+    def _forward_with_resonance(self, x: torch.Tensor, resonant_ids: dict) -> tuple[torch.Tensor, dict]:
+        """Forward pass with pre-computed resonance IDs (used by update_batch)."""
+        return self.forward(x, return_activations=False, _precomputed_resonance=resonant_ids)
+
     def forward(
         self,
         x: torch.Tensor,
         return_activations: bool = False,
+        _precomputed_resonance: dict | None = None,
     ) -> tuple[torch.Tensor, dict]:
         """
         Routes x through the active subgraph.
@@ -321,7 +333,7 @@ class BabyModel:
             print(f"[lr] stage={self.stage} step={self.step} effective_lr={lr:.6f}", flush=True)
 
         # Resonance pre-screening — only clusters relevant to this input participate
-        resonant_ids = self._compute_resonance(x)
+        resonant_ids = _precomputed_resonance if _precomputed_resonance is not None else self._compute_resonance(x)
 
         # Start with entry clusters that passed resonance, process in layer order
         queue = [c for c in self.graph.entry_clusters() if c.id in resonant_ids]
@@ -509,10 +521,16 @@ class BabyModel:
             if not cluster.dormant:
                 snapshots_before[cluster.id] = self._cluster_weight_snapshot(cluster)
 
-        # Accumulate FF updates: run forward + ff_update for each sample
+        # Compute resonance ONCE for the batch using the first sample,
+        # then reuse the same cluster set for all samples.
+        # This avoids 32 full resonance screenings (each scanning 500+ clusters).
+        first_x = samples[0][0]
+        shared_resonant = self._compute_resonance(first_x)
+
+        # Accumulate FF updates: run forward with pre-computed resonance
         all_activations: list[dict[str, float]] = []
         for x, is_positive in samples:
-            self.forward(x, return_activations=False)
+            self._forward_with_resonance(x, shared_resonant)
             for cluster in self.graph.clusters:
                 if not cluster.dormant and cluster.id in self._last_visited:
                     cluster.ff_update(x, is_positive, batch_lr)
@@ -644,35 +662,25 @@ class BabyModel:
                     )
                     events.append(event)
 
-        # Check PRUNE — protect minimum edge density + 200-step post-restore cooldown
+        # Check PRUNE — percentage-based: remove bottom 5% of edges each check.
+        # Self-scaling: 98K edges → prune 4900. 500 edges → prune 25.
+        # Protects minimum of 2 edges per cluster.
         min_edges = len(active_clusters) * 2
         pruned_count = 0
         prune_allowed = self.step - self._restore_step >= 200
-        if prune_allowed:
-            for edge in list(self.graph.edges):
+        if prune_allowed and len(self.graph.edges) > min_edges:
+            # Sort edges by strength ascending — weakest first
+            sorted_edges = sorted(self.graph.edges, key=lambda e: e.strength)
+            # Prune bottom 5% by strength — no additional condition.
+            # If you're in the weakest 5%, you get cut.
+            max_prune = max(1, len(sorted_edges) // 20)
+            for edge in sorted_edges[:max_prune]:
                 if len(self.graph.edges) <= min_edges:
                     break
-                if monitor.should_prune(edge):
-                    self.graph.remove_edge(edge)
-                    pruned_count += 1
-                    event = {
-                        "event_type": "PRUNE",
-                        "cluster_a": edge.from_id,
-                        "cluster_b": edge.to_id,
-                        "metadata": {
-                            "reason": "disuse",
-                            "steps_unused": edge.steps_since_activation,
-                            "final_strength": edge.strength,
-                        },
-                    }
-                    store.log_graph_event(
-                        step=self.step, event_type="PRUNE",
-                        cluster_a=edge.from_id, cluster_b=edge.to_id,
-                        metadata=event["metadata"],
-                    )
-                    events.append(event)
+                self.graph.remove_edge(edge)
+                pruned_count += 1
         if pruned_count > 0:
-            print(f"[prune] step={self.step} removed {pruned_count} edges (strength<0.05), total={len(self.graph.edges)}", flush=True)
+            print(f"[prune] step={self.step} removed {pruned_count} edges, total={len(self.graph.edges)}", flush=True)
 
         # Check INSERT — no stage-based cap, growth scales naturally
         growth_allowed = True

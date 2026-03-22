@@ -178,6 +178,45 @@ def main():
     else:
         print(f"     — Labels unavailable")
 
+    # 8. Structure metrics
+    print(f"\n  8. STRUCTURE")
+    dash = fetch(f"{base}/dashboard")
+    if dash and "structure" in dash:
+        s = dash["structure"]
+        spatial = s.get("spatial_score")
+        if spatial is not None:
+            verdict = "✓ Same-category clusters closer" if spatial > 0 else "⚠ No spatial separation"
+            print(f"     Spatial score: {spatial} ({verdict})")
+        else:
+            print(f"     Spatial score: — (need more labeled clusters)")
+
+        sib = s.get("sibling_coherence", 0)
+        print(f"     Sibling coherence: {sib} shared words/pair", end="")
+        print(f"  {'✓ BUD splits meaningfully' if sib > 0.5 else '⚠ BUD splits may be random'}")
+
+        ld = s.get("layer_diversity", {})
+        if ld:
+            print(f"     Layer diversity (unique/total labels):")
+            for layer, div in sorted(ld.items(), key=lambda x: int(x[0])):
+                print(f"       Layer {layer}: {div}")
+            layers_list = sorted(ld.values())
+            if len(layers_list) >= 2 and layers_list[-1] < layers_list[0]:
+                print(f"     ✓ Higher layers more general (abstraction gradient)")
+            else:
+                print(f"     — No clear abstraction gradient yet")
+
+        comm = s.get("cofiring_communities", 0)
+        sizes = s.get("community_sizes", [])
+        print(f"     Co-firing communities: {comm} groups (sizes: {sizes[:5]})")
+        if comm >= 3:
+            print(f"     ✓ Multiple distinct firing groups")
+        elif comm == 1:
+            print(f"     ⚠ Everything co-fires together (one big group)")
+        else:
+            print(f"     — Not enough data")
+    else:
+        print(f"     — Dashboard unavailable")
+
     # Summary
     print(f"\n" + "=" * 60)
     print(f"  SUMMARY: step={step} clusters={clusters} layers={layers}")
