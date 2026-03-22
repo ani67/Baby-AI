@@ -259,13 +259,16 @@ class GrowthMonitor:
         return explained.item() > 0.4
 
     def should_extend(self, stage: int) -> bool:
-        # Allow EXTEND after sufficient structure has formed (replaces stage gate)
+        # Allow EXTEND after sufficient structure has formed.
+        # Use activation bimodality instead of output_coherence
+        # (coherence stays ~1.0 with L2-normalized weights).
         if len(self._graph.clusters) < 30:
             return False
         top_clusters = self._graph.top_layer_clusters()
         if not top_clusters:
             return False
-        return all(c.output_coherence < 0.2 for c in top_clusters)
+        # Extend when top-layer clusters show diverse activation patterns
+        return all(c.activation_bimodality > 0.3 for c in top_clusters)
 
     def should_dormant(self, cluster: Cluster) -> bool:
         history = self._activation_history.get(cluster.id, deque())
