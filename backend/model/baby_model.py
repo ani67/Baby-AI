@@ -561,10 +561,11 @@ class BabyModel:
         # Dynamic growth check interval: slows as model scales
         active_clusters = [c for c in self.graph.clusters if not c.dormant]
         check_every = 50 + (len(active_clusters) // 10)
-        if self.step % check_every != 0:
+        if self.step - getattr(self, '_last_growth_check_step', -check_every) < check_every:
             return []
-        if self.step - self._last_bud_step < 20:
-            return []
+        self._last_growth_check_step = self.step
+        # BUD cooldown: skip BUD but still evaluate INSERT/EXTEND/PRUNE/DORMANT
+        bud_on_cooldown = self.step - self._last_bud_step < 20
         total_clusters = len(self.graph.clusters)
 
         events = []
@@ -584,10 +585,10 @@ class BabyModel:
         if len(active_clusters) > self.growth_warning_threshold:
             print(f"[growth] WARNING: {len(active_clusters)} active clusters exceeds soft threshold {self.growth_warning_threshold}", flush=True)
 
-        # Check BUD — rate scales with cluster count, no stage-based cap
+        # Check BUD — rate scales with cluster count, skip if on cooldown
         bud_count = 0
         bud_skipped = 0
-        max_buds_per_check = max(1, len(active_clusters) // 50)
+        max_buds_per_check = 0 if bud_on_cooldown else max(1, len(active_clusters) // 50)
         for cluster in list(self.graph.clusters):
             if monitor.should_bud(cluster):
                 if bud_count >= max_buds_per_check:
@@ -619,25 +620,29 @@ class BabyModel:
         if bud_count > 0:
             print(f"[growth] step={self.step} budded {bud_count} clusters (rate limited, {bud_skipped} eligible skipped)", flush=True)
 
-        # Check CONNECT
-        for pair, corr in monitor.get_coactivation_candidates():
-            if not self.graph.edge_exists(pair[0], pair[1]):
-                self.graph.add_edge(pair[0], pair[1], strength=0.1)
-                event = {
-                    "event_type": "CONNECT",
-                    "cluster_a": pair[0],
-                    "cluster_b": pair[1],
-                    "metadata": {
-                        "correlation": corr,
-                        "reason": "coactivation_threshold",
-                    },
-                }
-                store.log_graph_event(
-                    step=self.step, event_type="CONNECT",
-                    cluster_a=pair[0], cluster_b=pair[1],
-                    metadata=event["metadata"],
-                )
-                events.append(event)
+        # Check CONNECT — skip if edge count already exceeds cap
+        edge_cap = len(active_clusters) * 20
+        if len(self.graph.edges) > edge_cap:
+            print(f"[growth] edge cap: {len(self.graph.edges)} > {len(active_clusters)}*20, CONNECT skipped", flush=True)
+        else:
+            for pair, corr in monitor.get_coactivation_candidates():
+                if not self.graph.edge_exists(pair[0], pair[1]):
+                    self.graph.add_edge(pair[0], pair[1], strength=0.1)
+                    event = {
+                        "event_type": "CONNECT",
+                        "cluster_a": pair[0],
+                        "cluster_b": pair[1],
+                        "metadata": {
+                            "correlation": corr,
+                            "reason": "coactivation_threshold",
+                        },
+                    }
+                    store.log_graph_event(
+                        step=self.step, event_type="CONNECT",
+                        cluster_a=pair[0], cluster_b=pair[1],
+                        metadata=event["metadata"],
+                    )
+                    events.append(event)
 
         # Check PRUNE — protect minimum edge density + 200-step post-restore cooldown
         min_edges = len(active_clusters) * 2
@@ -702,6 +707,7 @@ class BabyModel:
         # Check EXTEND — allowed when top layer has diverse activation
         if growth_allowed and monitor.should_extend(0):
             new_cluster = extend_top(self.graph)
+            print(f"[extend] new layer: {new_cluster.id} at layer={new_cluster.layer_index}", flush=True)
             event = {
                 "event_type": "EXTEND",
                 "metadata": {

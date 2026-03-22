@@ -234,14 +234,14 @@ class GrowthMonitor:
         }
 
     def should_prune(self, edge: Edge) -> bool:
-        return edge.strength < 0.01 and edge.steps_since_activation > 150
+        return edge.strength < 0.05 and edge.steps_since_activation > 100
 
     def get_coactivation_candidates(self) -> list[tuple]:
         candidates = []
         for pair, history in self._coactivation.items():
             if len(history) > 20:
                 mean_corr = sum(history) / len(history)
-                if mean_corr > 0.3:
+                if mean_corr > 0.6:
                     candidates.append((pair, mean_corr))
         return candidates
 

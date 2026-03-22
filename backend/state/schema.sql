@@ -67,3 +67,11 @@ CREATE TABLE IF NOT EXISTS embedding_cache (
     caption_text TEXT    NOT NULL,
     image_url    TEXT
 );
+
+CREATE TABLE IF NOT EXISTS category_performance (
+    category    TEXT    PRIMARY KEY,
+    total       INTEGER DEFAULT 0,
+    positive    INTEGER DEFAULT 0,
+    avg_sim     REAL    DEFAULT 0.0,
+    last_step   INTEGER DEFAULT 0
+);

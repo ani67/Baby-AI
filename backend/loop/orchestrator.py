@@ -5,11 +5,21 @@ LearningLoop — the autonomous learning cycle orchestrator.
 import asyncio
 import enum
 import logging
+import re
 from collections import deque
 from dataclasses import dataclass, field
 
 import torch
 import torch.nn.functional as F
+
+# Category nouns for tracking per-category performance (COCO labels)
+_CATEGORY_NOUNS = re.compile(
+    r'\b(dog|cat|bird|car|bus|train|person|man|woman|horse|elephant|giraffe|'
+    r'zebra|bear|cow|sheep|truck|boat|bicycle|motorcycle|airplane|skateboard|'
+    r'surfboard|snowboard|tennis|baseball|pizza|cake|sandwich|broccoli|banana|'
+    r'apple|orange|chair|couch|bed|table|toilet|laptop|phone|clock|vase|book|'
+    r'umbrella|knife|fork|bottle|cup|bowl)\b', re.IGNORECASE
+)
 
 from .curiosity import CuriosityScorer
 from .health_monitor import HealthMonitor
@@ -416,7 +426,18 @@ class LearningLoop:
         import time as _time
 
         graph_summary = self.model.graph.summary()
-        items = self.curriculum.next_batch(batch_size, stage=self._stage, model_state=graph_summary)
+
+        # Compute adversarial category weights (inverse of per-category similarity)
+        cat_weights = None
+        try:
+            cats = self.store.get_category_performance()
+            if len(cats) >= 10:
+                max_sim = max(c["avg_sim"] for c in cats) or 1.0
+                cat_weights = {c["category"]: max(0.1, 1.0 - c["avg_sim"] / max_sim) for c in cats}
+        except Exception:
+            pass
+
+        items = self.curriculum.next_batch(batch_size, stage=self._stage, model_state=graph_summary, category_weights=cat_weights)
         if not items:
             return StepResult(skipped=True, reason="empty_batch")
 
@@ -441,9 +462,32 @@ class LearningLoop:
         result = await loop.run_in_executor(None, self._batch_compute, items)
 
         # Unpack results from the sync computation
-        changes, prediction, activations, growth_events, elapsed_ms = result
+        changes, prediction, activations, anchor_pred, elapsed_ms = result
 
-        # ── Async-only work: co-firing, logging, viz emit ──
+        # ── Main-thread work: growth, health, co-firing, logging, viz ──
+
+        # Category tracking — extract dominant noun from caption
+        for item in items:
+            if item.description:
+                match = _CATEGORY_NOUNS.search(item.description)
+                if match:
+                    category = match.group(1).lower()
+                    # Use the anchor similarity as a proxy for this category's performance
+                    sim = torch.dot(anchor_pred, F.normalize(item.expected_vector, dim=0)).item() if item.expected_vector is not None else 0.0
+                    self.store.update_category_performance(category, sim, sim > 0.2, self.model.step)
+
+        # Growth check (must run on main thread — uses SQLite store)
+        growth_events = self.model.growth_check(self.store)
+
+        # Health monitor
+        active_count = sum(1 for c in self.model.graph.clusters if not c.dormant)
+        total_clusters = len(self.model.graph.clusters)
+        self.health_monitor.record_step(active_count, total_clusters)
+        self.health_monitor.check(
+            step=self.model.step, stage=self._stage, model=self.model,
+            positive_history=self._positive_history,
+            similarity_history=self._similarity_history,
+        )
 
         # Co-firing
         active_cids = [cid for cid, v in activations.items() if v > 0.01]
@@ -560,25 +604,15 @@ class LearningLoop:
         # Batched forward+update
         changes = self.model.update_batch(samples)
 
-        # Final forward for activations (viz/growth)
+        # Final forward for activations (viz)
         last_vec = items[-1].expected_vector if items[-1].expected_vector is not None else torch.randn(self.model.input_dim)
         prediction, activations = self.model.forward(last_vec, return_activations=True)
 
-        # Growth check
-        growth_events = self.model.growth_check(self.store)
-
-        # Health monitor
-        active_count = sum(1 for c in self.model.graph.clusters if not c.dormant)
-        total_clusters = len(self.model.graph.clusters)
-        self.health_monitor.record_step(active_count, total_clusters)
-        self.health_monitor.check(
-            step=self.model.step, stage=self._stage, model=self.model,
-            positive_history=self._positive_history,
-            similarity_history=self._similarity_history,
-        )
+        # NOTE: growth_check and health_monitor moved to _step_batch (main thread)
+        # because they call store.log_graph_event() which requires same-thread SQLite access.
 
         elapsed_ms = (_time.perf_counter() - t0) * 1000
-        return (changes, prediction, activations, growth_events, elapsed_ms)
+        return (changes, prediction, activations, anchor_pred, elapsed_ms)
 
     # ── Speed / stage ──
 

@@ -717,6 +717,31 @@ async def cluster_tree():
     return {"nodes": nodes, "edges": edges, "max_depth": max_depth}
 
 
+@app.get("/dashboard")
+async def dashboard():
+    store = app.state.store
+    loop = app.state.loop
+    graph = loop.model.graph
+
+    gs = graph.summary()
+    categories = store.get_category_performance()
+
+    return {
+        "step": loop.model.step,
+        "clusters": gs["cluster_count"],
+        "layers": gs["layer_count"],
+        "edges": gs["edge_count"],
+        "nodes": gs["node_count"],
+        "growth_rate": gs["cluster_count"] / max(loop.model.step / 1000, 1),
+        "edge_ratio": gs["edge_count"] / max(gs["cluster_count"], 1),
+        "categories": {
+            "best": categories[-5:] if len(categories) >= 5 else categories,
+            "worst": categories[:5],
+            "total_tracked": len(categories),
+        },
+    }
+
+
 @app.get("/clusters/cofiring")
 async def cluster_cofiring():
     """Return co-firing pairs with normalized strength."""
