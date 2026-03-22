@@ -14,12 +14,13 @@ from .cluster import Cluster
 class PlasticitySchedule:
     """
     Controls the global learning rate over time.
-    Early stages: high plasticity.
-    Later stages: lower plasticity.
+    Pure exponential decay — no stage gating.
+    The model self-regulates through weight normalization and Oja's rule.
     """
 
-    def current_rate(self, step: int) -> float:
+    def current_rate(self, step: int, stage: int = 0) -> float:
         # Exponential decay from 0.01 to 0.001 over 10,000 steps
+        # Stage parameter kept for API compat but ignored
         base = 0.01
         floor = 0.001
         decay = 0.0003

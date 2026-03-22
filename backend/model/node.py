@@ -46,6 +46,7 @@ class Node:
         magnitude = self.plasticity * learning_rate * abs(activation)
         update = sign * magnitude * self._last_input * (1 - activation ** 2)
         self.weights = self.weights + update
+        self.weights = F.normalize(self.weights, dim=0)
 
     @property
     def mean_activation(self) -> float:

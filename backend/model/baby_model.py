@@ -2,6 +2,8 @@
 BabyModel — the assembled growing neural architecture.
 """
 
+import math
+
 import torch
 import torch.nn.functional as F
 
@@ -29,7 +31,7 @@ class BabyModel:
         self.growth_warning_threshold = 256  # soft warning only, no blocking
         self.inhibition_radius = 0.92
         self.suppression_factor = 0.5
-        self.resonance_threshold = 0.02
+        self.resonance_threshold = 0.05
         self.resonance_min_pass = 12
         self.growth_check_interval = growth_check_interval
         self.snapshot_interval = snapshot_interval
@@ -182,9 +184,9 @@ class BabyModel:
 
     def _compute_resonance(self, input_vec: torch.Tensor) -> dict[str, float]:
         """
-        Pre-screen clusters by cosine similarity to input.
-        Returns {cluster_id: resonance_score} for clusters passing threshold.
-        Guarantees at least 12 clusters pass (takes top 12 if fewer qualify).
+        Pre-screen clusters by cosine similarity to input using z-score filtering.
+        Returns {cluster_id: resonance_score} for clusters above mean + 1.0*std.
+        Guarantees at least resonance_min_pass clusters pass (takes top N by score).
         """
         input_norm = F.normalize(input_vec, dim=0)
         scores = {}
@@ -194,8 +196,16 @@ class BabyModel:
             sim = torch.dot(c.identity, input_norm).item()
             scores[c.id] = sim
 
-        # Filter by threshold
-        passed = {cid: s for cid, s in scores.items() if s > self.resonance_threshold}
+        if not scores:
+            return {}
+
+        # Z-score filtering: pass clusters above mean + 1.0 * std
+        vals = list(scores.values())
+        mean_s = sum(vals) / len(vals)
+        std_s = (sum((v - mean_s) ** 2 for v in vals) / len(vals)) ** 0.5
+        z_threshold = mean_s + 1.0 * std_s
+
+        passed = {cid: s for cid, s in scores.items() if s > z_threshold}
 
         # Guarantee minimum clusters pass
         min_pass = self.resonance_min_pass
@@ -204,11 +214,10 @@ class BabyModel:
             for cid, s in top_n:
                 passed[cid] = s
         elif len(passed) < min_pass:
-            # Fewer than min_pass active clusters total — let them all through
             passed = scores
 
         if self.step % 20 == 0:
-            print(f"[resonance] step={self.step} screened={len(scores)} passed={len(passed)} threshold={self.resonance_threshold:.2f}", flush=True)
+            print(f"[resonance] step={self.step} screened={len(scores)} passed={len(passed)} z_threshold={z_threshold:.2f}", flush=True)
 
         return passed
 
@@ -306,6 +315,11 @@ class BabyModel:
         outputs = {}
         visited = set()
 
+        # Log effective LR on first step
+        if self.step == 0 or (self.step % 500 == 0):
+            lr = self._plasticity_schedule.current_rate(self.step, self.stage)
+            print(f"[lr] stage={self.stage} step={self.step} effective_lr={lr:.6f}", flush=True)
+
         # Resonance pre-screening — only clusters relevant to this input participate
         resonant_ids = self._compute_resonance(x)
 
@@ -356,6 +370,9 @@ class BabyModel:
                 if neighbor and not neighbor.dormant and neighbor.id in resonant_ids and neighbor.id not in visited:
                     queue.append(neighbor)
 
+        # Run MPS texture-based forward pass alongside the standard forward
+        mps_scores = self.graph.mps_forward(x)
+
         # Record coactivation pairs BEFORE inhibition — growth monitor needs raw firing patterns
         if self.step % 20 == 0:
             active_ids = [k for k, v in activations.items() if abs(v) > 0.01]
@@ -376,20 +393,6 @@ class BabyModel:
         self._last_visited = visited
         self._last_activations = activations
         self._last_outputs = outputs
-
-        # Saturation check — dampen clusters that are pinned near 1.0 (once per 50 steps)
-        for cid, act in activations.items():
-            if act > 0.85:
-                last = self._last_dampened.get(cid, -50)
-                if self.step - last < 50:
-                    continue
-                cluster = self.graph.get_cluster(cid)
-                if cluster:
-                    for node in cluster.nodes:
-                        if node.alive:
-                            node.weights *= 0.7
-                    self._last_dampened[cid] = self.step
-                    print(f"[saturate] cluster={cid} activation={act:.3f} step={self.step} — weights scaled by 0.7 (next eligible at step {self.step + 50})", flush=True)
 
         # Final output = from highest-layer visited clusters
         if not visited:
@@ -444,7 +447,7 @@ class BabyModel:
         Returns dict of per-cluster weight change magnitudes.
         """
         if learning_rate is None:
-            learning_rate = self._plasticity_schedule.current_rate(self.step)
+            learning_rate = self._plasticity_schedule.current_rate(self.step, self.stage)
 
         changes = {}
         for cluster in self.graph.clusters:
@@ -460,7 +463,94 @@ class BabyModel:
             to_act = self._last_activations.get(edge.to_id, 0.0)
             edge.hebbian_update(from_act, to_act)
 
+        # Maintain quadtree: refresh textures, split/collapse tiles
+        if self.step % 10 == 0:
+            self.graph.maintain_quadtree()
+
         self.step += 1
+        return changes
+
+    def forward_batch(
+        self,
+        vectors: list[torch.Tensor],
+    ) -> list[tuple[torch.Tensor, dict]]:
+        """
+        Run forward pass for each vector in the batch.
+        Returns list of (output, activations) tuples.
+        Does NOT increment step or apply updates — caller handles that.
+        """
+        results = []
+        for x in vectors:
+            output, activations = self.forward(x, return_activations=True)
+            results.append((output, activations))
+        return results
+
+    def update_batch(
+        self,
+        samples: list[tuple[torch.Tensor, bool]],
+    ) -> dict:
+        """
+        Accumulate FF updates across a batch of (vector, is_positive) pairs,
+        then apply all accumulated gradients once.  Increments step by len(samples).
+        Returns aggregated per-cluster weight change magnitudes.
+        """
+        if not samples:
+            return {}
+
+        batch_size = len(samples)
+        base_lr = self._plasticity_schedule.current_rate(self.step, self.stage)
+        # Scale learning rate by 1/batch_size so total weight movement
+        # matches a single step — just in a better-informed direction.
+        batch_lr = base_lr / batch_size
+
+        # Snapshot weights before batch
+        snapshots_before: dict[str, torch.Tensor] = {}
+        for cluster in self.graph.clusters:
+            if not cluster.dormant:
+                snapshots_before[cluster.id] = self._cluster_weight_snapshot(cluster)
+
+        # Accumulate FF updates: run forward + ff_update for each sample
+        all_activations: list[dict[str, float]] = []
+        for x, is_positive in samples:
+            self.forward(x, return_activations=False)
+            for cluster in self.graph.clusters:
+                if not cluster.dormant and cluster.id in self._last_visited:
+                    cluster.ff_update(x, is_positive, batch_lr)
+
+            all_activations.append(dict(self._last_activations))
+
+        # Hebbian update: average activations across batch
+        avg_activations: dict[str, float] = {}
+        for act_dict in all_activations:
+            for cid, val in act_dict.items():
+                avg_activations[cid] = avg_activations.get(cid, 0.0) + val
+        n = len(all_activations)
+        for cid in avg_activations:
+            avg_activations[cid] /= n
+
+        for edge in self.graph.edges:
+            from_act = avg_activations.get(edge.from_id, 0.0)
+            to_act = avg_activations.get(edge.to_id, 0.0)
+            edge.hebbian_update(from_act, to_act)
+
+        # Compute weight changes
+        changes: dict[str, float] = {}
+        for cluster in self.graph.clusters:
+            if cluster.id in snapshots_before:
+                after = self._cluster_weight_snapshot(cluster)
+                changes[cluster.id] = torch.dist(snapshots_before[cluster.id], after).item()
+
+        # Maintain quadtree once per batch
+        if self.step % 10 == 0:
+            self.graph.maintain_quadtree()
+
+        # Advance step by batch size
+        self.step += len(samples)
+
+        # Store last activations from final sample (for growth monitor)
+        if all_activations:
+            self._last_activations = all_activations[-1]
+
         return changes
 
     def growth_check(self, store) -> list[dict]:
@@ -494,13 +584,10 @@ class BabyModel:
         if len(active_clusters) > self.growth_warning_threshold:
             print(f"[growth] WARNING: {len(active_clusters)} active clusters exceeds soft threshold {self.growth_warning_threshold}", flush=True)
 
-        # Check BUD — hardcoded to 1, and zero in Stage 0 above 80 clusters
+        # Check BUD — rate scales with cluster count, no stage-based cap
         bud_count = 0
         bud_skipped = 0
-        max_buds_per_check = 1
-        if self.stage == 0 and len(active_clusters) >= 80:
-            max_buds_per_check = 0
-            print(f"[growth] step={self.step} Stage 0 hard cap: {len(active_clusters)} >= 80, BUD disabled", flush=True)
+        max_buds_per_check = max(1, len(active_clusters) // 50)
         for cluster in list(self.graph.clusters):
             if monitor.should_bud(cluster):
                 if bud_count >= max_buds_per_check:
@@ -582,8 +669,8 @@ class BabyModel:
         if pruned_count > 0:
             print(f"[prune] step={self.step} removed {pruned_count} edges (strength<0.05), total={len(self.graph.edges)}", flush=True)
 
-        # Check INSERT — respect Stage 0 hard cap
-        growth_allowed = not (self.stage == 0 and len(active_clusters) >= 80)
+        # Check INSERT — no stage-based cap, growth scales naturally
+        growth_allowed = True
         insert_count = 0
         max_inserts_per_check = 2
         if growth_allowed:
@@ -612,8 +699,8 @@ class BabyModel:
                     )
                     events.append(event)
 
-        # Check EXTEND — respect Stage 0 hard cap
-        if growth_allowed and monitor.should_extend(self.stage):
+        # Check EXTEND — allowed when top layer has diverse activation
+        if growth_allowed and monitor.should_extend(0):
             new_cluster = extend_top(self.graph)
             event = {
                 "event_type": "EXTEND",
@@ -650,7 +737,7 @@ class BabyModel:
         return events
 
     def _cluster_weight_snapshot(self, cluster: Cluster) -> torch.Tensor:
-        """Flatten all node weights in a cluster into a single tensor."""
+        """Flatten all node weights in a cluster into a single tensor, normalized by sqrt(n)."""
         if not cluster.nodes:
             return torch.zeros(self.input_dim)
-        return torch.cat([n.weights.detach().clone() for n in cluster.nodes])
+        return torch.cat([n.weights.detach().clone() for n in cluster.nodes]) / math.sqrt(len(cluster.nodes))

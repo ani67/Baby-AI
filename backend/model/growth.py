@@ -61,6 +61,22 @@ def bud(cluster: Cluster, graph: Graph) -> tuple[Cluster, Cluster] | None:
     if len(nodes_a) == 0 or len(nodes_b) == 0:
         return None
 
+    # Pad each child to at least 4 nodes — after deep BUD chains
+    # clusters can get thin (2 nodes). Fresh nodes seeded near the
+    # child's centroid keep the cluster viable for further learning.
+    MIN_NODES = 4
+    for node_list in [nodes_a, nodes_b]:
+        centroid = torch.stack([n.weights for n in node_list]).mean(dim=0)
+        while len(node_list) < MIN_NODES:
+            fresh = Node(
+                id=graph.next_node_id(),
+                cluster_id="",
+                weights=F.normalize(centroid + torch.randn_like(centroid) * 0.1, dim=0),
+                bias=torch.zeros(1),
+                plasticity=cluster.plasticity,
+            )
+            node_list.append(fresh)
+
     child_a = Cluster(
         id=f"{cluster.id}a",
         nodes=nodes_a,
@@ -196,10 +212,13 @@ class GrowthMonitor:
                 self._residuals[key].append(residual.detach())
 
     def should_bud(self, cluster: Cluster) -> bool:
+        # With L2-normalized weights, output_coherence stays near 1.0.
+        # Use bimodality alone as the primary trigger — it measures whether
+        # the cluster is receiving two distinct types of input.
         return (
             cluster.activation_bimodality > 0.05
-            and cluster.output_coherence < 0.4
             and cluster.age > 200
+            and len(cluster.nodes) >= 2
             and not cluster.dormant
             and cluster.id not in self._bud_cooldown
         )
@@ -240,12 +259,16 @@ class GrowthMonitor:
         return explained.item() > 0.4
 
     def should_extend(self, stage: int) -> bool:
-        if stage < 2:
+        # Allow EXTEND after sufficient structure has formed.
+        # Use activation bimodality instead of output_coherence
+        # (coherence stays ~1.0 with L2-normalized weights).
+        if len(self._graph.clusters) < 30:
             return False
         top_clusters = self._graph.top_layer_clusters()
         if not top_clusters:
             return False
-        return all(c.output_coherence < 0.2 for c in top_clusters)
+        # Extend when top-layer clusters show diverse activation patterns
+        return all(c.activation_bimodality > 0.3 for c in top_clusters)
 
     def should_dormant(self, cluster: Cluster) -> bool:
         history = self._activation_history.get(cluster.id, deque())

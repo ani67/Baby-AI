@@ -6,7 +6,7 @@ import time
 
 
 class StateStore:
-    def __init__(self, path: str = "backend/state/dev.db"):
+    def __init__(self, path: str = "data/dev.db"):
         self._path = path
         self._conn = sqlite3.connect(path)
         self._conn.row_factory = sqlite3.Row
@@ -333,6 +333,38 @@ class StateStore:
         )
         self._conn.commit()
         return len(to_delete)
+
+    def get_recent_dialogues_for_clusters(self, limit: int = 500) -> list[tuple[str, str]]:
+        """
+        Return (clusters_active JSON, answer text) for the most recent dialogues.
+        Used by /clusters/labels to compute emergent labels.
+        """
+        rows = self._conn.execute(
+            "SELECT clusters_active, answer FROM dialogues ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [(row["clusters_active"], row["answer"]) for row in rows]
+
+    def batch_update_cofiring(self, pairs: list[tuple[str, str]], step: int) -> None:
+        """Increment co-firing counts for a batch of cluster pairs."""
+        for a, b in pairs:
+            # Canonical ordering so (a,b) and (b,a) map to the same row
+            lo, hi = (a, b) if a < b else (b, a)
+            self._conn.execute(
+                """INSERT INTO cluster_cofiring (cluster_a, cluster_b, count, last_updated)
+                   VALUES (?, ?, 1, ?)
+                   ON CONFLICT(cluster_a, cluster_b)
+                   DO UPDATE SET count = count + 1, last_updated = ?""",
+                (lo, hi, step, step),
+            )
+        self._conn.commit()
+
+    def get_cofiring_pairs(self) -> list[dict]:
+        """Return all co-firing pairs with counts."""
+        rows = self._conn.execute(
+            "SELECT cluster_a, cluster_b, count, last_updated FROM cluster_cofiring ORDER BY count DESC"
+        ).fetchall()
+        return [{"a": r["cluster_a"], "b": r["cluster_b"], "count": r["count"], "last_updated": r["last_updated"]} for r in rows]
 
     def export_dialogue_csv(self, path: str) -> None:
         rows = self._conn.execute("SELECT * FROM dialogues ORDER BY id ASC").fetchall()

@@ -51,3 +51,19 @@ CREATE TABLE IF NOT EXISTS human_chat (
     message         TEXT    NOT NULL,
     clusters_active TEXT
 );
+
+CREATE TABLE IF NOT EXISTS cluster_cofiring (
+    cluster_a    TEXT    NOT NULL,
+    cluster_b    TEXT    NOT NULL,
+    count        INTEGER DEFAULT 0,
+    last_updated INTEGER DEFAULT 0,
+    PRIMARY KEY (cluster_a, cluster_b)
+);
+
+CREATE TABLE IF NOT EXISTS embedding_cache (
+    image_id     INTEGER PRIMARY KEY,
+    image_emb    BLOB    NOT NULL,
+    caption_emb  BLOB    NOT NULL,
+    caption_text TEXT    NOT NULL,
+    image_url    TEXT
+);
