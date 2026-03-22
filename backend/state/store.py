@@ -366,6 +366,29 @@ class StateStore:
         ).fetchall()
         return [{"a": r["cluster_a"], "b": r["cluster_b"], "count": r["count"], "last_updated": r["last_updated"]} for r in rows]
 
+    def update_category_performance(self, category: str, similarity: float, is_positive: bool, step: int) -> None:
+        """Update running stats for a category."""
+        self._conn.execute(
+            """INSERT INTO category_performance (category, total, positive, avg_sim, last_step)
+               VALUES (?, 1, ?, ?, ?)
+               ON CONFLICT(category) DO UPDATE SET
+                 total = total + 1,
+                 positive = positive + ?,
+                 avg_sim = (avg_sim * total + ?) / (total + 1),
+                 last_step = ?""",
+            (category, int(is_positive), similarity, step,
+             int(is_positive), similarity, step),
+        )
+        self._conn.commit()
+
+    def get_category_performance(self) -> list[dict]:
+        """Return all category stats, worst-performing first."""
+        rows = self._conn.execute(
+            "SELECT category, total, positive, avg_sim, last_step FROM category_performance ORDER BY avg_sim ASC"
+        ).fetchall()
+        return [{"category": r[0], "total": r[1], "positive": r[2],
+                 "avg_sim": r[3], "last_step": r[4]} for r in rows]
+
     def export_dialogue_csv(self, path: str) -> None:
         rows = self._conn.execute("SELECT * FROM dialogues ORDER BY id ASC").fetchall()
         if not rows:

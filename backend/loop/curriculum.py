@@ -147,6 +147,52 @@ class _EmbeddingCache:
             items.append(item)
         return items
 
+    def sample_adversarial(self, n: int, category_weights: dict[str, float]) -> list[CurriculumItem]:
+        """Sample n items, weighted toward categories the model is worst at."""
+        items: list[CurriculumItem] = []
+        if not self._conn:
+            return items
+        # Try to get items matching worst categories first (sorted ascending by weight = worst first)
+        for category, weight in sorted(category_weights.items(), key=lambda x: -x[1]):
+            if len(items) >= n:
+                break
+            limit = max(1, int(n * weight))
+            if self._has_image_url:
+                rows = self._conn.execute(
+                    "SELECT image_id, image_emb, caption_emb, caption_text, image_url "
+                    "FROM embedding_cache WHERE caption_text LIKE ? ORDER BY RANDOM() LIMIT ?",
+                    (f'%{category}%', limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT image_id, image_emb, caption_emb, caption_text "
+                    "FROM embedding_cache WHERE caption_text LIKE ? ORDER BY RANDOM() LIMIT ?",
+                    (f'%{category}%', limit),
+                ).fetchall()
+            for row in rows:
+                if len(items) >= n:
+                    break
+                image_emb = _bytes_to_tensor(row["image_emb"])
+                caption_emb = _bytes_to_tensor(row["caption_emb"])
+                caption_text = row["caption_text"]
+                image_url = row["image_url"] if self._has_image_url else None
+                items.append(CurriculumItem(
+                    id=f"coco_{row['image_id']}", stage=0, item_type="image",
+                    input_vector=image_emb, expected_vector=caption_emb,
+                    label=None, description=caption_text, context=caption_text,
+                    template_slots={"description": caption_text},
+                    stage_relevance=1.0, image_path=None, image_url=image_url,
+                    precomputed=True,
+                ))
+        # Fill remaining with random samples
+        while len(items) < n:
+            item = self.sample()
+            if item:
+                items.append(item)
+            else:
+                break
+        return items
+
     def record_step_time(self, ms: float) -> None:
         self._step_times.append(ms)
 
@@ -234,9 +280,27 @@ class Curriculum:
 
         return item
 
-    def next_batch(self, n: int, stage: int, model_state: dict) -> list[CurriculumItem]:
-        """Return up to n curriculum items at once. Precomputed uses bulk cache read."""
+    def next_batch(self, n: int, stage: int, model_state: dict, category_weights: dict[str, float] | None = None) -> list[CurriculumItem]:
+        """Return up to n curriculum items at once. Precomputed uses bulk cache read.
+
+        If category_weights is provided, uses adversarial sampling — categories
+        the model is worst at get proportionally more exposure.
+        """
         if self._source == "precomputed" and self._cache is not None:
+            # Try adversarial sampling if category performance data exists
+            if category_weights:
+                items = self._cache.sample_adversarial(n, category_weights)
+                if items:
+                    self._step_count += len(items)
+                    if self._step_count % 500 == 0:
+                        worst = sorted(category_weights.items(), key=lambda x: -x[1])[:3]
+                        print(
+                            f"[curriculum] adversarial: worst categories = "
+                            f"{[(cat, f'{w:.3f}') for cat, w in worst]}",
+                            flush=True,
+                        )
+                    return items
+            # Fallback to random
             items = self._cache.sample_batch(n)
             if items:
                 self._step_count += len(items)

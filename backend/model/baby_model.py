@@ -620,25 +620,29 @@ class BabyModel:
         if bud_count > 0:
             print(f"[growth] step={self.step} budded {bud_count} clusters (rate limited, {bud_skipped} eligible skipped)", flush=True)
 
-        # Check CONNECT
-        for pair, corr in monitor.get_coactivation_candidates():
-            if not self.graph.edge_exists(pair[0], pair[1]):
-                self.graph.add_edge(pair[0], pair[1], strength=0.1)
-                event = {
-                    "event_type": "CONNECT",
-                    "cluster_a": pair[0],
-                    "cluster_b": pair[1],
-                    "metadata": {
-                        "correlation": corr,
-                        "reason": "coactivation_threshold",
-                    },
-                }
-                store.log_graph_event(
-                    step=self.step, event_type="CONNECT",
-                    cluster_a=pair[0], cluster_b=pair[1],
-                    metadata=event["metadata"],
-                )
-                events.append(event)
+        # Check CONNECT — skip if edge count already exceeds cap
+        edge_cap = len(active_clusters) * 20
+        if len(self.graph.edges) > edge_cap:
+            print(f"[growth] edge cap: {len(self.graph.edges)} > {len(active_clusters)}*20, CONNECT skipped", flush=True)
+        else:
+            for pair, corr in monitor.get_coactivation_candidates():
+                if not self.graph.edge_exists(pair[0], pair[1]):
+                    self.graph.add_edge(pair[0], pair[1], strength=0.1)
+                    event = {
+                        "event_type": "CONNECT",
+                        "cluster_a": pair[0],
+                        "cluster_b": pair[1],
+                        "metadata": {
+                            "correlation": corr,
+                            "reason": "coactivation_threshold",
+                        },
+                    }
+                    store.log_graph_event(
+                        step=self.step, event_type="CONNECT",
+                        cluster_a=pair[0], cluster_b=pair[1],
+                        metadata=event["metadata"],
+                    )
+                    events.append(event)
 
         # Check PRUNE — protect minimum edge density + 200-step post-restore cooldown
         min_edges = len(active_clusters) * 2
