@@ -709,11 +709,6 @@ async def cluster_tree():
         f"edges={len(edges)} phantoms={len(phantoms_needed)} max_depth={max_depth}",
         flush=True,
     )
-    for cid in sample:
-        n = node_map[cid]
-        tag = " [phantom]" if n["phantom"] else ""
-        print(f"[tree]   {cid} depth={n['depth']} parent={n['parent']}{tag}", flush=True)
-
     return {"nodes": nodes, "edges": edges, "max_depth": max_depth}
 
 
