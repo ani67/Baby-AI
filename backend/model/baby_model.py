@@ -44,6 +44,9 @@ class BabyModel:
         self._last_bud_step: int = -20  # global cooldown: no growth check for 20 steps after BUD
         self._restore_step: int = -200  # post-restore prune cooldown
 
+        # Curiosity buffer: recent inputs with low resonance (nothing matched well)
+        self._low_resonance_inputs: list[torch.Tensor] = []  # capped at 32
+
         # Memory buffer: decaying echo of recent cluster activations
         self._activation_buffer = torch.zeros(input_dim)
         self.buffer_decay = 0.9
@@ -244,8 +247,17 @@ class BabyModel:
 
         input_norm = F.normalize(input_vec, dim=0)
 
-        # Single matmul: (N*M, 512) @ (512,) → (N*M,)
-        all_sims = (self._proto_matrix @ input_norm).tolist()
+        # Multi-head resonance: split 512-d into 4 subspaces of 128-d each.
+        # A cluster can be strong on some heads (subject) and weak on others (action).
+        # This enables compositional matching: "dog running" activates dog-head AND running-head.
+        NUM_HEADS = 4
+        head_dim = self.input_dim // NUM_HEADS
+        # Reshape: (N*M, 512) → (N*M, 4, 128)
+        proto_heads = self._proto_matrix.view(-1, NUM_HEADS, head_dim)
+        input_heads = input_norm.view(NUM_HEADS, head_dim)
+        # Per-head dot products: (N*M, 4, 128) × (4, 128) → (N*M, 4) → sum → (N*M,)
+        head_sims = (proto_heads * input_heads.unsqueeze(0)).sum(dim=2)  # (N*M, 4)
+        all_sims = head_sims.sum(dim=1).tolist()  # sum across heads
 
         # Max per cluster — each node is a prototype
         cluster_max: dict[str, float] = {}
@@ -278,8 +290,13 @@ class BabyModel:
             top_k = sorted(passed.items(), key=lambda x: x[1], reverse=True)[:MAX_ACTIVE]
             passed = dict(top_k)
 
+        # Track low-resonance inputs for curiosity growth
+        best_sim = max(sims) if sims else 0.0
+        if best_sim < 0.15 and len(self._low_resonance_inputs) < 32:
+            self._low_resonance_inputs.append(input_vec.detach().clone())
+
         if self.step % 20 == 0:
-            print(f"[resonance] step={self.step} screened={n} passed={len(passed)} z_threshold={z_threshold:.2f}", flush=True)
+            print(f"[resonance] step={self.step} screened={n} passed={len(passed)} z_threshold={z_threshold:.2f} low_res_buf={len(self._low_resonance_inputs)}", flush=True)
 
         return passed
 
@@ -390,10 +407,10 @@ class BabyModel:
         """Forward pass with pre-computed resonance IDs (used by update_batch)."""
         return self.forward(x, return_activations=False, _precomputed_resonance=resonant_ids)
 
-    def _compute_traversal_order(self, resonant_ids: dict) -> list[tuple[str, list[tuple[str, str, float]]]]:
+    def _compute_traversal_order(self, resonant_ids: dict) -> list[tuple[str, list[tuple[str, str, float, str]]]]:
         """Pre-compute BFS traversal order + edge map. Reusable across batch samples."""
         visited = set()
-        order = []  # [(cluster_id, [(src_id, edge_from_id, strength), ...])]
+        order = []  # [(cluster_id, [(src_id, edge_from_id, strength, edge_type), ...])]
 
         queue = [c for c in self.graph.clusters if not c.dormant and c.id in resonant_ids]
         while queue:
@@ -403,12 +420,12 @@ class BabyModel:
                 continue
             visited.add(cluster.id)
 
-            # Pre-resolve incoming edges
+            # Pre-resolve incoming edges with type
             edges_info = []
             for edge in self.graph.incoming_edges(cluster.id):
                 src = edge.from_id if edge.from_id != cluster.id else edge.to_id
                 if src in visited:
-                    edges_info.append((src, edge.from_id, edge.strength))
+                    edges_info.append((src, edge.from_id, edge.strength, getattr(edge, 'edge_type', 'excitatory')))
             order.append((cluster.id, edges_info))
 
             for edge in self.graph.outgoing_edges(cluster.id):
@@ -430,9 +447,11 @@ class BabyModel:
                 continue
 
             incoming = {}
-            for src_id, _, strength in edges_info:
+            for edge_info in edges_info:
+                src_id, _, strength = edge_info[0], edge_info[1], edge_info[2]
+                edge_type = edge_info[3] if len(edge_info) > 3 else "excitatory"
                 if src_id in outputs:
-                    incoming[src_id] = (outputs[src_id], strength)
+                    incoming[src_id] = (outputs[src_id], strength, edge_type)
 
             output = cluster.forward(effective_x, incoming)
             outputs[cid] = output
@@ -510,7 +529,7 @@ class BabyModel:
                 if src == cluster.id:
                     src = edge.to_id
                 if src in outputs:
-                    incoming[src] = (outputs[src], edge.strength)
+                    incoming[src] = (outputs[src], edge.strength, getattr(edge, 'edge_type', 'excitatory'))
 
             output = cluster.forward(effective_x, incoming)
             outputs[cluster.id] = output
@@ -819,7 +838,18 @@ class BabyModel:
         else:
             for pair, corr in monitor.get_coactivation_candidates():
                 if not self.graph.edge_exists(pair[0], pair[1]):
+                    # If two clusters have very similar identities, make the edge
+                    # inhibitory — they're competing for the same input space.
+                    c_a = self.graph.get_cluster(pair[0])
+                    c_b = self.graph.get_cluster(pair[1])
+                    edge_type = "excitatory"
+                    if c_a and c_b:
+                        sim = torch.dot(c_a.identity, c_b.identity).item()
+                        if sim > 0.85:
+                            edge_type = "inhibitory"
                     self.graph.add_edge(pair[0], pair[1], strength=0.1)
+                    # Set edge type on the just-added edge
+                    self.graph.edges[-1].edge_type = edge_type
                     event = {
                         "event_type": "CONNECT",
                         "cluster_a": pair[0],
@@ -827,6 +857,7 @@ class BabyModel:
                         "metadata": {
                             "correlation": corr,
                             "reason": "coactivation_threshold",
+                            "edge_type": edge_type,
                         },
                     }
                     store.log_graph_event(
@@ -903,6 +934,40 @@ class BabyModel:
                 metadata=event["metadata"],
             )
             events.append(event)
+
+        # Check CURIOSITY — reactivate dormant clusters toward unrecognized inputs.
+        # Instead of spawning new clusters (which would exceed the cap), repurpose
+        # dormant ones by reseeding their weights toward low-resonance input directions.
+        curiosity_count = 0
+        dormant_clusters = [c for c in self.graph.clusters if c.dormant]
+        if self._low_resonance_inputs and dormant_clusters:
+            max_curiosity = min(2, len(dormant_clusters), len(self._low_resonance_inputs))
+            for i in range(max_curiosity):
+                target_vec = self._low_resonance_inputs.pop(0)
+                cluster = dormant_clusters[i]
+                # Reseed nodes toward the unrecognized input direction
+                for node in cluster.nodes:
+                    node.weights = F.normalize(target_vec + torch.randn_like(target_vec) * 0.1, dim=0)
+                    node.bias = torch.zeros(1)
+                    node.activation_history.clear()
+                    node.alive = True
+                cluster.dormant = False
+                cluster._identity_cache = None
+                curiosity_count += 1
+                event = {
+                    "event_type": "CURIOSITY",
+                    "cluster_a": cluster.id,
+                    "metadata": {"reason": "low_resonance_reactivation"},
+                }
+                store.log_graph_event(
+                    step=self.step, event_type="CURIOSITY",
+                    cluster_a=cluster.id, cluster_b=None,
+                    metadata=event["metadata"],
+                )
+                events.append(event)
+            if curiosity_count > 0:
+                self._proto_dirty.update(c.id for c in dormant_clusters[:curiosity_count])
+                print(f"[curiosity] step={self.step} reactivated {curiosity_count} dormant clusters toward novel inputs", flush=True)
 
         # Check DORMANT
         for cluster in self.graph.clusters:

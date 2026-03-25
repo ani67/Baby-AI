@@ -17,6 +17,7 @@ class Cluster:
     plasticity: float = 1.0
     age: int = 0
     dormant: bool = False
+    role: str = "detector"  # "detector" | "integrator" | "predictor"
     _identity_cache: torch.Tensor | None = field(default=None, repr=False)
 
     _output_history: deque = field(default_factory=lambda: deque(maxlen=64), repr=False)
@@ -112,12 +113,20 @@ class Cluster:
     ) -> torch.Tensor:
         """
         Activate all living nodes, return weighted-sum output (512,).
+        Supports typed edges: excitatory add signal, inhibitory subtract.
         """
         combined = x.clone()
         for value in incoming_edge_signals.values():
             if isinstance(value, tuple):
-                signal, strength = value
-                combined = combined + strength * signal
+                if len(value) == 3:
+                    signal, strength, edge_type = value
+                else:
+                    signal, strength = value
+                    edge_type = "excitatory"
+                if edge_type == "inhibitory":
+                    combined = combined - strength * signal
+                else:
+                    combined = combined + strength * signal
             else:
                 combined = combined + 0.3 * value
 

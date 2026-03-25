@@ -77,6 +77,7 @@ class Edge:
     age: int = 0
     direction: str = "bidirectional"
     steps_since_activation: int = 0
+    edge_type: str = "excitatory"  # "excitatory" | "inhibitory"
 
     def hebbian_update(
         self,
