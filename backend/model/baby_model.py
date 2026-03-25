@@ -47,6 +47,11 @@ class BabyModel:
         # Curiosity buffer: recent inputs with low resonance (nothing matched well)
         self._low_resonance_inputs: list[torch.Tensor] = []  # capped at 32
 
+        # Homeostatic regulation state
+        self._target_edge_ratio: float = 15.0    # healthy edges per cluster
+        self._activation_coverage: float = 0.5   # fraction of inputs with good resonance
+        self._coverage_history: list[float] = []  # recent coverage measurements
+
         # Memory buffer: decaying echo of recent cluster activations
         self._activation_buffer = torch.zeros(input_dim)
         self.buffer_decay = 0.9
@@ -284,14 +289,23 @@ class BabyModel:
             for i in top_indices:
                 passed[ids[i]] = sims[i]
 
-        # Hard cap at 20
-        MAX_ACTIVE = 20
-        if len(passed) > MAX_ACTIVE:
-            top_k = sorted(passed.items(), key=lambda x: x[1], reverse=True)[:MAX_ACTIVE]
+        # Adaptive resonance width: widen if too few clusters fire, narrow if too many.
+        # Homeostatic target: ~20 clusters, adjusts based on activation coverage.
+        max_active = 20
+        if self._activation_coverage < 0.3:
+            max_active = 25  # widen — not enough is matching
+        elif self._activation_coverage > 0.7:
+            max_active = 15  # narrow — too much is matching (blob risk)
+        if len(passed) > max_active:
+            top_k = sorted(passed.items(), key=lambda x: x[1], reverse=True)[:max_active]
             passed = dict(top_k)
 
-        # Track low-resonance inputs for curiosity growth
+        # Track activation coverage for homeostatic regulation
         best_sim = max(sims) if sims else 0.0
+        self._coverage_history.append(1.0 if best_sim > 0.3 else 0.0)
+        if len(self._coverage_history) > 100:
+            self._coverage_history = self._coverage_history[-100:]
+        self._activation_coverage = sum(self._coverage_history) / len(self._coverage_history) if self._coverage_history else 0.5
         if best_sim < 0.15 and len(self._low_resonance_inputs) < 32:
             self._low_resonance_inputs.append(input_vec.detach().clone())
 
@@ -720,7 +734,11 @@ class BabyModel:
             for cid in self._last_visited:
                 cluster = self.graph.get_cluster(cid)
                 if cluster and not cluster.dormant:
-                    cluster.ff_update(x, is_positive, batch_lr, signal_strength)
+                    # Per-cluster LR: error-driven homeostasis
+                    cluster_lr = self._plasticity_schedule.cluster_rate(cluster, batch_lr)
+                    cluster.ff_update(x, is_positive, cluster_lr, signal_strength)
+                    # Record error: negative examples = cluster was wrong
+                    cluster._error_history.append(0.0 if is_positive else 1.0)
                     self._proto_dirty.add(cid)
 
             all_activations.append(dict(self._last_activations))
@@ -875,25 +893,25 @@ class BabyModel:
                     )
                     events.append(event)
 
-        # Check PRUNE — percentage-based: remove bottom 5% of edges each check.
-        # Self-scaling: 98K edges → prune 4900. 500 edges → prune 25.
-        # Protects minimum of 2 edges per cluster.
+        # Check PRUNE — homeostatic: prune rate adapts to edge ratio vs target.
+        # Too many edges → prune aggressively. Too few → barely prune.
+        # Target: ~15 edges per active cluster (self._target_edge_ratio).
         min_edges = len(active_clusters) * 2
         pruned_count = 0
         prune_allowed = self.step - self._restore_step >= 200
         if prune_allowed and len(self.graph.edges) > min_edges:
-            # Sort edges by strength ascending — weakest first
+            current_ratio = len(self.graph.edges) / max(len(active_clusters), 1)
+            # Adaptive prune rate: 0% at target, 10% at 2x target, capped at 10%
+            prune_fraction = max(0.0, min(0.10, 0.05 * (current_ratio / self._target_edge_ratio - 1.0)))
             sorted_edges = sorted(self.graph.edges, key=lambda e: e.strength)
-            # Prune bottom 5% by strength — no additional condition.
-            # If you're in the weakest 5%, you get cut.
-            max_prune = max(1, len(sorted_edges) // 20)
+            max_prune = max(0, int(len(sorted_edges) * prune_fraction))
             for edge in sorted_edges[:max_prune]:
                 if len(self.graph.edges) <= min_edges:
                     break
                 self.graph.remove_edge(edge)
                 pruned_count += 1
         if pruned_count > 0:
-            print(f"[prune] step={self.step} removed {pruned_count} edges, total={len(self.graph.edges)}", flush=True)
+            print(f"[prune] step={self.step} removed {pruned_count} ratio={len(self.graph.edges)/max(len(active_clusters),1):.1f} target={self._target_edge_ratio}", flush=True)
 
         # Check INSERT — paused above 500 clusters (same as BUD)
         growth_allowed = len(active_clusters) < 500
