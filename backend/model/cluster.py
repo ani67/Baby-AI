@@ -21,6 +21,7 @@ class Cluster:
     _identity_cache: torch.Tensor | None = field(default=None, repr=False)
 
     _output_history: deque = field(default_factory=lambda: deque(maxlen=64), repr=False)
+    _error_history: deque = field(default_factory=lambda: deque(maxlen=64), repr=False)  # recent prediction errors (0-1)
 
     @property
     def cluster_type(self) -> str:

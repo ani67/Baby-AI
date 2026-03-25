@@ -864,6 +864,12 @@ async def dashboard():
             "weight": loop.model.buffer_weight,
             "top_k": loop.model.buffer_top_k,
         },
+        "homeostasis": {
+            "edge_ratio_target": loop.model._target_edge_ratio,
+            "edge_ratio_actual": round(gs["edge_count"] / max(gs["cluster_count"], 1), 1),
+            "activation_coverage": round(loop.model._activation_coverage, 3),
+            "curiosity_buffer": len(loop.model._low_resonance_inputs),
+        },
     }
 
 

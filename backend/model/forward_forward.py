@@ -31,6 +31,16 @@ class PlasticitySchedule:
         return rate
 
     def cluster_rate(self, cluster: Cluster, global_rate: float) -> float:
-        # Young clusters learn faster regardless of global rate
+        # Homeostatic per-cluster LR: clusters with high error learn faster,
+        # accurate clusters stabilize. Young clusters also learn faster.
         age_factor = min(1.0, cluster.age / 500)
-        return global_rate * (2.0 - age_factor)
+        age_boost = 2.0 - age_factor  # 2x for new clusters, 1x for old
+
+        # Error-driven boost: high error → up to 2x LR, low error → 0.5x LR
+        if cluster._error_history and len(cluster._error_history) >= 10:
+            mean_error = sum(cluster._error_history) / len(cluster._error_history)
+            error_boost = 0.5 + 1.5 * mean_error  # 0.5 (accurate) to 2.0 (wrong)
+        else:
+            error_boost = 1.0  # neutral until enough history
+
+        return global_rate * age_boost * error_boost
