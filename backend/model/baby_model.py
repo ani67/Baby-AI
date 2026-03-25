@@ -50,12 +50,12 @@ class BabyModel:
         self.buffer_weight = 0.15
         self.buffer_top_k = 5
 
-        # Persistent identity matrix for vectorized resonance.
-        # Only rows for changed clusters are recomputed each step (diff approach).
-        self._identity_matrix: torch.Tensor | None = None  # (N, 512)
-        self._identity_ids: list[str] = []                  # cluster_id per row
-        self._identity_id_to_row: dict[str, int] = {}       # cluster_id → row index
-        self._identity_dirty: set[str] = set()              # clusters needing row refresh
+        # Persistent node-weight matrix for multi-prototype resonance.
+        # Each node's weight vector is a row — nodes ARE the prototypes.
+        # resonance = max(dot(node.weights, input)) per cluster.
+        self._proto_matrix: torch.Tensor | None = None      # (N*M, 512) M=nodes per cluster
+        self._proto_cluster_ids: list[str] = []              # cluster_id per row (repeats per node)
+        self._proto_dirty: set[str] = set()                  # clusters needing row refresh
 
         self._init_clusters(initial_clusters, nodes_per_cluster, initial_plasticity)
 
@@ -205,59 +205,60 @@ class BabyModel:
         else:
             print(f"[cleanup] all {len(active)} active clusters are reachable", flush=True)
 
-    def _rebuild_identity_matrix(self) -> None:
-        """Full rebuild of identity matrix. Called on first use and after growth events."""
+    def _rebuild_proto_matrix(self) -> None:
+        """Full rebuild of node-weight matrix. Each node is a prototype row."""
         active = [c for c in self.graph.clusters if not c.dormant]
         if not active:
-            self._identity_matrix = None
-            self._identity_ids = []
-            self._identity_id_to_row = {}
+            self._proto_matrix = None
+            self._proto_cluster_ids = []
             return
-        self._identity_ids = [c.id for c in active]
-        self._identity_id_to_row = {cid: i for i, cid in enumerate(self._identity_ids)}
-        self._identity_matrix = torch.stack([c.identity for c in active])
-        self._identity_dirty.clear()
-
-    def _refresh_identity_matrix(self) -> None:
-        """Diff-based update: only recompute rows for clusters whose weights changed."""
-        if self._identity_matrix is None:
-            self._rebuild_identity_matrix()
+        rows = []
+        ids = []
+        for c in active:
+            for node in c.nodes:
+                if node.alive:
+                    rows.append(node.weights)
+                    ids.append(c.id)
+        if not rows:
+            self._proto_matrix = None
+            self._proto_cluster_ids = []
             return
+        self._proto_matrix = torch.stack(rows)
+        self._proto_cluster_ids = ids
+        self._proto_dirty.clear()
 
-        # Check if cluster count changed (growth/dormant events)
-        active_count = sum(1 for c in self.graph.clusters if not c.dormant)
-        if active_count != len(self._identity_ids):
-            self._rebuild_identity_matrix()
-            return
-
-        # Patch only dirty rows (~20 per step instead of ~600)
-        if self._identity_dirty:
-            for cid in self._identity_dirty:
-                row = self._identity_id_to_row.get(cid)
-                if row is not None:
-                    cluster = self.graph.get_cluster(cid)
-                    if cluster and not cluster.dormant:
-                        self._identity_matrix[row] = cluster.identity
-            self._identity_dirty.clear()
+    def _refresh_proto_matrix(self) -> None:
+        """Rebuild when dirty or structure changed. Nodes ARE the prototypes — no k-means needed."""
+        if self._proto_matrix is None or self._proto_dirty:
+            self._rebuild_proto_matrix()
 
     def _compute_resonance(self, input_vec: torch.Tensor) -> dict[str, float]:
         """
-        Pre-screen clusters by cosine similarity to input using z-score filtering.
-        Uses persistent identity matrix — only changed rows are recomputed (diff approach).
-        Returns {cluster_id: resonance_score} for top-20 clusters.
+        Multi-prototype resonance: each node's weight vector is a prototype.
+        resonance(cluster) = max(dot(node.weights, input)) over all nodes in cluster.
+        Uses persistent matrix — rebuilt only when weights change.
         """
-        self._refresh_identity_matrix()
-        if self._identity_matrix is None:
+        self._refresh_proto_matrix()
+        if self._proto_matrix is None:
             return {}
 
         input_norm = F.normalize(input_vec, dim=0)
 
-        # Single matrix-vector multiply: (N, 512) @ (512,) → (N,)
-        sims = (self._identity_matrix @ input_norm).tolist()
-        ids = self._identity_ids
+        # Single matmul: (N*M, 512) @ (512,) → (N*M,)
+        all_sims = (self._proto_matrix @ input_norm).tolist()
 
-        # Z-score filtering: pass clusters above mean + 1.0 * std
+        # Max per cluster — each node is a prototype
+        cluster_max: dict[str, float] = {}
+        for sim, cid in zip(all_sims, self._proto_cluster_ids):
+            if cid not in cluster_max or sim > cluster_max[cid]:
+                cluster_max[cid] = sim
+
+        # Z-score filtering on max-per-cluster scores
+        ids = list(cluster_max.keys())
+        sims = list(cluster_max.values())
         n = len(sims)
+        if n == 0:
+            return {}
         mean_s = sum(sims) / n
         std_s = (sum((v - mean_s) ** 2 for v in sims) / n) ** 0.5
         z_threshold = mean_s + 1.0 * std_s
@@ -617,7 +618,7 @@ class BabyModel:
                 cluster.ff_update(x, is_positive, learning_rate)
                 after = self._cluster_weight_snapshot(cluster)
                 changes[cluster.id] = torch.dist(before, after).item()
-                self._identity_dirty.add(cid)
+                self._proto_dirty.add(cid)
 
         # Hebbian update — only edges where at least one endpoint fired
         for cid in self._last_activations:
@@ -693,7 +694,7 @@ class BabyModel:
                 cluster = self.graph.get_cluster(cid)
                 if cluster and not cluster.dormant:
                     cluster.ff_update(x, is_positive, batch_lr)
-                    self._identity_dirty.add(cid)
+                    self._proto_dirty.add(cid)
 
             all_activations.append(dict(self._last_activations))
 
