@@ -19,12 +19,16 @@ class PlasticitySchedule:
     """
 
     def current_rate(self, step: int, stage: int = 0) -> float:
-        # Exponential decay from 0.01 to 0.001 over 10,000 steps
-        # Stage parameter kept for API compat but ignored
+        # Warmup for first 500 steps, then exponential decay
+        # Prevents wild early weight swings before structure forms
         base = 0.01
         floor = 0.001
         decay = 0.0003
-        return max(floor, base * math.exp(-decay * step))
+        warmup_steps = 500
+        rate = max(floor, base * math.exp(-decay * step))
+        if step < warmup_steps:
+            rate *= step / warmup_steps
+        return rate
 
     def cluster_rate(self, cluster: Cluster, global_rate: float) -> float:
         # Young clusters learn faster regardless of global rate
