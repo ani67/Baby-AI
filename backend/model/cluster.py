@@ -163,9 +163,31 @@ class Cluster:
         learning_rate: float,
         signal_strength: float = 1.0,
     ) -> None:
-        """Calls ff_update on each living node with continuous signal strength."""
-        for node in self.nodes:
-            if node.alive:
-                activation = node.activation_history[-1] if node.activation_history else 0.0
-                node.ff_update(activation, is_positive, learning_rate, signal_strength)
-        self._identity_cache = None  # weights changed, invalidate
+        """Batched FF update — computes all node updates via tensor ops."""
+        living = [n for n in self.nodes if n.alive]
+        if not living:
+            return
+
+        sign = 1.0 if is_positive else -1.0
+
+        # Batch: stack activations and inputs, compute all updates at once
+        acts = torch.tensor([n.activation_history[-1] if n.activation_history else 0.0 for n in living])
+        plasticities = torch.tensor([n.plasticity for n in living])
+        magnitudes = plasticities * learning_rate * acts.abs() * signal_strength  # (N,)
+
+        # All nodes share the same last_input (set during forward)
+        last_input = living[0]._last_input
+        if last_input is None:
+            return
+
+        # Update = sign * magnitude * input * (1 - act²), per node: (N, 512)
+        updates = sign * magnitudes.unsqueeze(1) * last_input.unsqueeze(0) * (1 - acts.pow(2)).unsqueeze(1)
+
+        # Apply momentum and update weights per node
+        for i, node in enumerate(living):
+            if node._momentum is None:
+                node._momentum = torch.zeros_like(node.weights)
+            node._momentum = 0.9 * node._momentum + 0.1 * updates[i]
+            node.weights = F.normalize(node.weights + node._momentum, dim=0)
+
+        self._identity_cache = None
