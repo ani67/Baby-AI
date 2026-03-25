@@ -130,6 +130,9 @@ class Cluster:
             else:
                 combined = combined + 0.3 * value
 
+        # Normalize combined signal before activation (prevents drift in deep graphs)
+        combined = F.normalize(combined, dim=0)
+
         node_activations = []
         for node in self.nodes:
             if node.alive:
@@ -145,7 +148,9 @@ class Cluster:
             for node, act in node_activations:
                 output += (act / total_weight) * node.weights
 
-        output = F.normalize(output, dim=0)
+        # Residual connection: output = input + learned transformation
+        # Enables gradient flow through deep graphs (proven in transformers)
+        output = F.normalize(x + output, dim=0)
         self._output_history.append(output.detach().clone())
         self.age += 1
         return output
