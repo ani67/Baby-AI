@@ -450,8 +450,8 @@ class BabyModel:
         return order
 
     def _forward_fast(self, x: torch.Tensor, traversal: list, resonance_scores: dict | None = None) -> tuple[torch.Tensor, dict]:
-        """Fast forward using pre-computed traversal order. Skips BFS rebuild.
-        If resonance_scores provided, weights activations by resonance strength (soft resonance)."""
+        """GPU-batched forward using pre-computed traversal order.
+        Node activations computed via single matmul instead of Python loops."""
         effective_x = self._apply_buffer(x)
         activations = {}
         outputs = {}
@@ -461,21 +461,57 @@ class BabyModel:
             if not cluster:
                 continue
 
-            incoming = {}
+            # Build combined input from x + edge signals
+            combined = effective_x.clone()
             for edge_info in edges_info:
                 src_id, _, strength = edge_info[0], edge_info[1], edge_info[2]
                 edge_type = edge_info[3] if len(edge_info) > 3 else "excitatory"
                 if src_id in outputs:
-                    incoming[src_id] = (outputs[src_id], strength, edge_type)
+                    if edge_type == "inhibitory":
+                        combined = combined - strength * outputs[src_id]
+                    else:
+                        combined = combined + strength * outputs[src_id]
+            combined = F.normalize(combined, dim=0)
 
-            output = cluster.forward(effective_x, incoming)
+            # BATCHED node activation: single matmul replaces per-node Python loop
+            # Stack all living node weights: (N_alive, 512)
+            living_nodes = [n for n in cluster.nodes if n.alive]
+            if not living_nodes:
+                outputs[cid] = torch.zeros(self.input_dim)
+                activations[cid] = 0.0
+                continue
+
+            weight_matrix = torch.stack([n.weights for n in living_nodes])  # (N, 512)
+            bias_vec = torch.cat([n.bias for n in living_nodes])  # (N,)
+            # All dot products + bias at once: (N, 512) @ (512,) + (N,) → (N,)
+            raw_acts = torch.tanh(weight_matrix @ combined + bias_vec)
+            act_list = raw_acts.tolist()
+
+            # Record activations on nodes (needed for FF update)
+            for node, act in zip(living_nodes, act_list):
+                node._last_input = combined.detach()
+                node.activation_history.append(act)
+                node.age += 1
+
+            # Weighted output: single vectorized operation
+            abs_acts = raw_acts.abs()
+            total_weight = abs_acts.sum().item()
+            if total_weight > 0:
+                weights_scaled = (abs_acts / total_weight).unsqueeze(1)  # (N, 1)
+                output = (weight_matrix * weights_scaled).sum(dim=0)  # (512,)
+            else:
+                output = torch.zeros(self.input_dim)
+
+            # Residual connection
+            output = F.normalize(effective_x + output, dim=0)
+            cluster._output_history.append(output.detach().clone())
+            cluster.age += 1
             outputs[cid] = output
-            node_acts = [n.activation_history[-1] for n in cluster.nodes if n.alive and n.activation_history]
-            raw_act = sum(abs(a) for a in node_acts) / len(node_acts) if node_acts else 0.0
-            # Soft resonance: scale activation by resonance score (0-1)
-            # Clusters with high resonance contribute more than borderline ones
+
+            # Activation from batched result
+            raw_act = abs_acts.mean().item()
             if resonance_scores and cid in resonance_scores:
-                raw_act *= max(0.1, resonance_scores[cid])  # floor at 0.1 to not zero out
+                raw_act *= max(0.1, resonance_scores[cid])
             activations[cid] = raw_act
 
         # Run inhibition + record
@@ -725,23 +761,92 @@ class BabyModel:
             if cluster and not cluster.dormant:
                 snapshots_before[cid] = self._cluster_weight_snapshot(cluster)
 
-        # Fast forward + FF update for each sample (reuses traversal)
-        all_activations: list[dict[str, float]] = []
-        for sample in samples:
-            x, is_positive = sample[0], sample[1]
-            signal_strength = sample[2] if len(sample) > 2 else 1.0
-            self._forward_fast(x, traversal, resonance_scores=shared_resonant)
-            for cid in self._last_visited:
-                cluster = self.graph.get_cluster(cid)
-                if cluster and not cluster.dormant:
-                    # Per-cluster LR: error-driven homeostasis
-                    cluster_lr = self._plasticity_schedule.cluster_rate(cluster, batch_lr)
-                    cluster.ff_update(x, is_positive, cluster_lr, signal_strength)
-                    # Record error: negative examples = cluster was wrong
-                    cluster._error_history.append(0.0 if is_positive else 1.0)
-                    self._proto_dirty.add(cid)
+        # BATCHED forward + FF update: process all 32 samples through traversal at once.
+        # For each cluster in traversal: (N_nodes, 512) @ (512, 32) = all activations at once.
+        batch_vecs = torch.stack([s[0] for s in samples])  # (B, 512)
+        batch_positive = [s[1] for s in samples]
+        batch_strength = [s[2] if len(s) > 2 else 1.0 for s in samples]
 
-            all_activations.append(dict(self._last_activations))
+        # Apply buffer to all inputs
+        if self._activation_buffer.norm().item() > 1e-6:
+            batch_effective = F.normalize(batch_vecs + self.buffer_weight * self._activation_buffer.unsqueeze(0), dim=1)
+        else:
+            batch_effective = batch_vecs
+
+        # Track per-cluster outputs for edge signal routing (need per-sample)
+        batch_outputs: dict[str, torch.Tensor] = {}  # cid → (B, 512)
+        all_activations_list: list[dict[str, float]] = [{} for _ in range(batch_size)]
+
+        for cid, edges_info in traversal:
+            cluster = self.graph.get_cluster(cid)
+            if not cluster:
+                continue
+
+            living = [n for n in cluster.nodes if n.alive]
+            if not living:
+                batch_outputs[cid] = torch.zeros(batch_size, self.input_dim)
+                continue
+
+            # Build combined input: (B, 512)
+            combined = batch_effective.clone()
+            for edge_info in edges_info:
+                src_id = edge_info[0]
+                strength = edge_info[2]
+                edge_type = edge_info[3] if len(edge_info) > 3 else "excitatory"
+                if src_id in batch_outputs:
+                    if edge_type == "inhibitory":
+                        combined = combined - strength * batch_outputs[src_id]
+                    else:
+                        combined = combined + strength * batch_outputs[src_id]
+            combined = F.normalize(combined, dim=1)  # (B, 512)
+
+            # BATCHED node activation: (N, 512) @ (512, B) → (N, B)
+            weight_matrix = torch.stack([n.weights for n in living])  # (N, 512)
+            bias_vec = torch.cat([n.bias for n in living])  # (N,)
+            all_raw = torch.tanh(weight_matrix @ combined.T + bias_vec.unsqueeze(1))  # (N, B)
+
+            # Record last activation per node (use mean across batch for history)
+            mean_acts = all_raw.mean(dim=1).tolist()
+            for node, act in zip(living, mean_acts):
+                node._last_input = combined.mean(dim=0).detach()  # approximate
+                node.activation_history.append(act)
+                node.age += 1
+
+            # Weighted output per sample: (N, B) → (B, 512)
+            abs_acts = all_raw.abs()  # (N, B)
+            total_weights = abs_acts.sum(dim=0, keepdim=True).clamp(min=1e-6)  # (1, B)
+            weights_scaled = abs_acts / total_weights  # (N, B)
+            # (N, B)^T @ (N, 512) → (B, 512) ... use einsum for clarity
+            output = torch.einsum('nb,nd->bd', weights_scaled, weight_matrix)  # (B, 512)
+
+            # Residual + normalize
+            output = F.normalize(batch_effective + output, dim=1)  # (B, 512)
+            batch_outputs[cid] = output
+            cluster._output_history.append(output.mean(dim=0).detach().clone())
+            cluster.age += 1
+
+            # Per-sample activations
+            mean_act_per_sample = abs_acts.mean(dim=0).tolist()  # (B,)
+            res_scale = max(0.1, shared_resonant.get(cid, 0.5)) if shared_resonant else 1.0
+            for b_idx in range(batch_size):
+                all_activations_list[b_idx][cid] = mean_act_per_sample[b_idx] * res_scale
+
+            # Batched FF update: accumulate across all samples
+            cluster_lr = self._plasticity_schedule.cluster_rate(cluster, batch_lr)
+            for b_idx in range(batch_size):
+                is_pos = batch_positive[b_idx]
+                sig_str = batch_strength[b_idx]
+                cluster.ff_update(combined[b_idx], is_pos, cluster_lr, sig_str)
+                cluster._error_history.append(0.0 if is_pos else 1.0)
+            self._proto_dirty.add(cid)
+
+        # Set last state from final sample for growth monitor
+        self._last_visited = {cid for cid, _ in traversal}
+        self._last_activations = all_activations_list[-1] if all_activations_list else {}
+        self._last_outputs = {cid: out[-1] for cid, out in batch_outputs.items()}
+        self._growth_monitor.record_step(self._last_activations, self._last_outputs)
+        self._last_activations = self._apply_inhibition(self._last_activations)
+        all_activations = all_activations_list
 
         # Hebbian update: average activations across batch
         avg_activations: dict[str, float] = {}
