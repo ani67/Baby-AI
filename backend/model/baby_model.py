@@ -44,6 +44,12 @@ class BabyModel:
         self._last_bud_step: int = -20  # global cooldown: no growth check for 20 steps after BUD
         self._restore_step: int = -200  # post-restore prune cooldown
 
+        # Memory buffer: decaying echo of recent cluster activations
+        self._activation_buffer = torch.zeros(input_dim)
+        self.buffer_decay = 0.9
+        self.buffer_weight = 0.15
+        self.buffer_top_k = 5
+
         self._init_clusters(initial_clusters, nodes_per_cluster, initial_plasticity)
 
     def restore_from_checkpoint(self, checkpoint: dict) -> None:
@@ -117,6 +123,9 @@ class BabyModel:
             )
             self.graph.edges.append(edge)
 
+        # Rebuild adjacency index after bulk edge loading
+        self.graph.rebuild_edge_index()
+
         # Fix ID counters so new nodes/clusters don't collide
         max_node = 0
         for c in self.graph.clusters:
@@ -141,6 +150,13 @@ class BabyModel:
         nn = sum(len(c.nodes) for c in self.graph.clusters)
         ne = len(self.graph.edges)
         self._restore_step = self.step
+
+        # Restore memory buffer if present
+        if "_activation_buffer" in state_dict:
+            self._activation_buffer = state_dict["_activation_buffer"]
+        else:
+            self._activation_buffer = torch.zeros(self.input_dim)
+
         print(f"[restore] loaded step={self.step} clusters={nc} edges={ne}", flush=True)
 
     def cleanup_excess_clusters(self) -> None:
@@ -227,6 +243,28 @@ class BabyModel:
             print(f"[resonance] step={self.step} screened={len(scores)} passed={len(passed)} z_threshold={z_threshold:.2f}", flush=True)
 
         return passed
+
+    def _apply_buffer(self, x: torch.Tensor) -> torch.Tensor:
+        """Mix activation buffer into input. Returns effective input for resonance + forward."""
+        if self._activation_buffer.norm().item() < 1e-6:
+            return x
+        return F.normalize(x + self.buffer_weight * self._activation_buffer, dim=0)
+
+    def _update_activation_buffer(self) -> None:
+        """Decay buffer and add top-K cluster identity vectors weighted by activation."""
+        self._activation_buffer *= self.buffer_decay
+        if not self._last_activations:
+            return
+        top_k = sorted(
+            self._last_activations.items(), key=lambda kv: kv[1], reverse=True
+        )[:self.buffer_top_k]
+        for cid, act in top_k:
+            cluster = self.graph.get_cluster(cid)
+            if cluster is not None:
+                self._activation_buffer += act * cluster.identity
+        if self.step % 100 == 0:
+            buf_norm = self._activation_buffer.norm().item()
+            print(f"[buffer] step={self.step} norm={buf_norm:.3f} top_k={[f'{c}:{a:.3f}' for c,a in top_k[:3]]}", flush=True)
 
     def _apply_inhibition(self, activations: dict) -> dict:
         """
@@ -332,20 +370,18 @@ class BabyModel:
             lr = self._plasticity_schedule.current_rate(self.step, self.stage)
             print(f"[lr] stage={self.stage} step={self.step} effective_lr={lr:.6f}", flush=True)
 
-        # Resonance pre-screening — only clusters relevant to this input participate
-        resonant_ids = _precomputed_resonance if _precomputed_resonance is not None else self._compute_resonance(x)
+        # Apply memory buffer: bias input toward recently active cluster directions
+        effective_x = self._apply_buffer(x)
 
-        # Start with entry clusters that passed resonance, process in layer order
-        queue = [c for c in self.graph.entry_clusters() if c.id in resonant_ids]
-        # Also seed any resonant cluster that has no incoming edges (orphaned subgraphs)
-        all_targets = set()
-        for e in self.graph.edges:
-            all_targets.add(e.to_id)
-            if e.direction == "bidirectional":
-                all_targets.add(e.from_id)
-        for c in self.graph.clusters:
-            if not c.dormant and c.id in resonant_ids and c.id not in all_targets and c.layer_index > 0:
-                queue.append(c)
+        # Resonance pre-screening — only clusters relevant to this input participate
+        resonant_ids = _precomputed_resonance if _precomputed_resonance is not None else self._compute_resonance(effective_x)
+
+        # Seed BFS from ALL resonant clusters, sorted by layer.
+        # Old approach only seeded from layer-0 entry clusters, which broke
+        # when rapid BUD growth pushed all resonant clusters to deeper layers.
+        # Resonance screening already filters to top-20 — all are valid entry points.
+        queue = [c for c in self.graph.clusters
+                 if not c.dormant and c.id in resonant_ids]
 
         while queue:
             # Sort by layer_index to ensure proper ordering
@@ -363,7 +399,7 @@ class BabyModel:
                 if src in outputs:
                     incoming[src] = (outputs[src], edge.strength)
 
-            output = cluster.forward(x, incoming)
+            output = cluster.forward(effective_x, incoming)
             outputs[cluster.id] = output
             # Use instantaneous activation (last step), not rolling average
             node_acts = [
@@ -469,15 +505,21 @@ class BabyModel:
                 after = self._cluster_weight_snapshot(cluster)
                 changes[cluster.id] = torch.dist(before, after).item()
 
-        # Hebbian update on all edges
-        for edge in self.graph.edges:
-            from_act = self._last_activations.get(edge.from_id, 0.0)
-            to_act = self._last_activations.get(edge.to_id, 0.0)
-            edge.hebbian_update(from_act, to_act)
+        # Hebbian update — only edges where at least one endpoint fired
+        for cid in self._last_activations:
+            for edge in self.graph._edges_from.get(cid, []):
+                to_act = self._last_activations.get(edge.to_id, 0.0)
+                edge.hebbian_update(self._last_activations[cid], to_act)
+            for edge in self.graph._edges_to.get(cid, []):
+                from_act = self._last_activations.get(edge.from_id, 0.0)
+                edge.hebbian_update(from_act, self._last_activations[cid])
 
         # Maintain quadtree: refresh textures, split/collapse tiles
         if self.step % 10 == 0:
             self.graph.maintain_quadtree()
+
+        # Update memory buffer: decay + record top-K cluster echoes
+        self._update_activation_buffer()
 
         self.step += 1
         return changes
@@ -525,7 +567,7 @@ class BabyModel:
         # then reuse the same cluster set for all samples.
         # This avoids 32 full resonance screenings (each scanning 500+ clusters).
         first_x = samples[0][0]
-        shared_resonant = self._compute_resonance(first_x)
+        shared_resonant = self._compute_resonance(self._apply_buffer(first_x))
 
         # Accumulate FF updates: run forward with pre-computed resonance
         all_activations: list[dict[str, float]] = []
@@ -546,10 +588,14 @@ class BabyModel:
         for cid in avg_activations:
             avg_activations[cid] /= n
 
-        for edge in self.graph.edges:
-            from_act = avg_activations.get(edge.from_id, 0.0)
-            to_act = avg_activations.get(edge.to_id, 0.0)
-            edge.hebbian_update(from_act, to_act)
+        # Hebbian update — only edges where at least one endpoint fired
+        for cid in avg_activations:
+            for edge in self.graph._edges_from.get(cid, []):
+                to_act = avg_activations.get(edge.to_id, 0.0)
+                edge.hebbian_update(avg_activations[cid], to_act)
+            for edge in self.graph._edges_to.get(cid, []):
+                from_act = avg_activations.get(edge.from_id, 0.0)
+                edge.hebbian_update(from_act, avg_activations[cid])
 
         # Compute weight changes
         changes: dict[str, float] = {}
@@ -562,12 +608,15 @@ class BabyModel:
         if self.step % 10 == 0:
             self.graph.maintain_quadtree()
 
-        # Advance step by batch size
-        self.step += len(samples)
-
         # Store last activations from final sample (for growth monitor)
         if all_activations:
             self._last_activations = all_activations[-1]
+
+        # Update memory buffer once per batch (not per sample)
+        self._update_activation_buffer()
+
+        # Advance step by batch size
+        self.step += len(samples)
 
         return changes
 
@@ -603,10 +652,16 @@ class BabyModel:
         if len(active_clusters) > self.growth_warning_threshold:
             print(f"[growth] WARNING: {len(active_clusters)} active clusters exceeds soft threshold {self.growth_warning_threshold}", flush=True)
 
-        # Check BUD — rate scales with cluster count, skip if on cooldown
+        # Check BUD — rate scales with cluster count, skip if on cooldown.
+        # Hard pause above 500 clusters to prevent performance collapse.
         bud_count = 0
         bud_skipped = 0
-        max_buds_per_check = 0 if bud_on_cooldown else max(1, len(active_clusters) // 50)
+        if len(active_clusters) >= 500:
+            max_buds_per_check = 0
+        elif bud_on_cooldown:
+            max_buds_per_check = 0
+        else:
+            max_buds_per_check = max(1, len(active_clusters) // 50)
         for cluster in list(self.graph.clusters):
             if monitor.should_bud(cluster):
                 if bud_count >= max_buds_per_check:

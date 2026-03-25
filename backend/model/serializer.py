@@ -133,3 +133,5 @@ class ModelSerializer:
                 steps_since_activation=ed["steps_since_activation"],
             )
             model.graph.edges.append(edge)
+
+        model.graph.rebuild_edge_index()

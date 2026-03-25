@@ -242,6 +242,10 @@ class Graph:
         self._node_counter: int = 0
         self._cluster_counter: int = 0
 
+        # Edge adjacency index — O(1) lookups instead of O(E) scans
+        self._edges_to: dict[str, list[Edge]] = {}    # cluster_id → edges where to_id matches
+        self._edges_from: dict[str, list[Edge]] = {}   # cluster_id → edges where from_id matches
+
         # Quadtree
         self._root: QuadTile = QuadTile(x0=0.0, y0=0.0, x1=1.0, y1=1.0, depth=0)
         self._tile_index: dict[str, QuadTile] = {}  # cluster_id → tile
@@ -297,37 +301,54 @@ class Graph:
     #  Edge operations — unchanged                                        #
     # ------------------------------------------------------------------ #
 
+    def rebuild_edge_index(self) -> None:
+        """Rebuild adjacency index from self.edges. Call after bulk edge loading."""
+        self._edges_from.clear()
+        self._edges_to.clear()
+        for e in self.edges:
+            self._edges_from.setdefault(e.from_id, []).append(e)
+            self._edges_to.setdefault(e.to_id, []).append(e)
+
     def add_edge(self, from_id: str, to_id: str, strength: float = 0.1) -> None:
         edge = Edge(from_id=from_id, to_id=to_id, strength=strength)
         self.edges.append(edge)
+        self._edges_from.setdefault(from_id, []).append(edge)
+        self._edges_to.setdefault(to_id, []).append(edge)
 
     def remove_edge(self, edge: Edge) -> None:
         self.edges = [e for e in self.edges if e is not edge]
+        from_list = self._edges_from.get(edge.from_id)
+        if from_list:
+            self._edges_from[edge.from_id] = [e for e in from_list if e is not edge]
+        to_list = self._edges_to.get(edge.to_id)
+        if to_list:
+            self._edges_to[edge.to_id] = [e for e in to_list if e is not edge]
 
     def edge_exists(self, from_id: str, to_id: str) -> bool:
-        for e in self.edges:
-            if (e.from_id == from_id and e.to_id == to_id) or \
-               (e.from_id == to_id and e.to_id == from_id):
+        for e in self._edges_from.get(from_id, []):
+            if e.to_id == to_id:
+                return True
+        for e in self._edges_from.get(to_id, []):
+            if e.to_id == from_id:
                 return True
         return False
 
     def incoming_edges(self, cluster_id: str) -> list[Edge]:
-        return [
-            e for e in self.edges
-            if e.to_id == cluster_id
-            or (e.direction == "bidirectional" and e.from_id == cluster_id)
-        ]
+        # Direct incoming: edges pointing TO this cluster
+        result = list(self._edges_to.get(cluster_id, []))
+        # Bidirectional edges FROM this cluster also count as incoming
+        for e in self._edges_from.get(cluster_id, []):
+            if e.direction == "bidirectional":
+                result.append(e)
+        return result
 
     def outgoing_edges(self, cluster_id: str) -> list[Edge]:
         result = []
-        for e in self.edges:
-            if e.from_id == cluster_id and e.to_id != cluster_id:
+        for e in self._edges_from.get(cluster_id, []):
+            if e.to_id != cluster_id:
                 result.append(e)
-            elif (
-                e.direction == "bidirectional"
-                and e.to_id == cluster_id
-                and e.from_id != cluster_id
-            ):
+        for e in self._edges_to.get(cluster_id, []):
+            if e.direction == "bidirectional" and e.from_id != cluster_id:
                 result.append(
                     Edge(
                         from_id=cluster_id,
