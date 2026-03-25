@@ -36,15 +36,17 @@ class Node:
         activation: float,
         is_positive: bool,
         learning_rate: float,
+        signal_strength: float = 1.0,
     ) -> None:
         """
-        Forward-Forward local update rule.
-        No backward pass. Each node updates from its own activation alone.
+        Forward-Forward local update rule with continuous signal.
+        signal_strength (0-1) scales the update magnitude — stronger
+        similarity gets a stronger push, weak similarity gets a weak push.
         """
         if self._last_input is None:
             return
         sign = 1.0 if is_positive else -1.0
-        magnitude = self.plasticity * learning_rate * abs(activation)
+        magnitude = self.plasticity * learning_rate * abs(activation) * signal_strength
         update = sign * magnitude * self._last_input * (1 - activation ** 2)
         # Momentum: smooth weight updates for more stable convergence
         if self._momentum is None:

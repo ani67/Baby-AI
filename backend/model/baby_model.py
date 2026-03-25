@@ -435,8 +435,9 @@ class BabyModel:
 
         return order
 
-    def _forward_fast(self, x: torch.Tensor, traversal: list[tuple[str, list[tuple[str, str, float]]]]) -> tuple[torch.Tensor, dict]:
-        """Fast forward using pre-computed traversal order. Skips BFS rebuild."""
+    def _forward_fast(self, x: torch.Tensor, traversal: list, resonance_scores: dict | None = None) -> tuple[torch.Tensor, dict]:
+        """Fast forward using pre-computed traversal order. Skips BFS rebuild.
+        If resonance_scores provided, weights activations by resonance strength (soft resonance)."""
         effective_x = self._apply_buffer(x)
         activations = {}
         outputs = {}
@@ -456,7 +457,12 @@ class BabyModel:
             output = cluster.forward(effective_x, incoming)
             outputs[cid] = output
             node_acts = [n.activation_history[-1] for n in cluster.nodes if n.alive and n.activation_history]
-            activations[cid] = sum(abs(a) for a in node_acts) / len(node_acts) if node_acts else 0.0
+            raw_act = sum(abs(a) for a in node_acts) / len(node_acts) if node_acts else 0.0
+            # Soft resonance: scale activation by resonance score (0-1)
+            # Clusters with high resonance contribute more than borderline ones
+            if resonance_scores and cid in resonance_scores:
+                raw_act *= max(0.1, resonance_scores[cid])  # floor at 0.1 to not zero out
+            activations[cid] = raw_act
 
         # Run inhibition + record
         self._growth_monitor.record_step(activations, outputs)
@@ -675,11 +681,11 @@ class BabyModel:
 
     def update_batch(
         self,
-        samples: list[tuple[torch.Tensor, bool]],
+        samples: list[tuple[torch.Tensor, bool]] | list[tuple[torch.Tensor, bool, float]],
     ) -> dict:
         """
-        Accumulate FF updates across a batch of (vector, is_positive) pairs,
-        then apply all accumulated gradients once.  Increments step by len(samples).
+        Accumulate FF updates across a batch of (vector, is_positive[, signal_strength]) tuples.
+        Increments step by len(samples).
         Returns aggregated per-cluster weight change magnitudes.
         """
         if not samples:
@@ -707,12 +713,14 @@ class BabyModel:
 
         # Fast forward + FF update for each sample (reuses traversal)
         all_activations: list[dict[str, float]] = []
-        for x, is_positive in samples:
-            self._forward_fast(x, traversal)
+        for sample in samples:
+            x, is_positive = sample[0], sample[1]
+            signal_strength = sample[2] if len(sample) > 2 else 1.0
+            self._forward_fast(x, traversal, resonance_scores=shared_resonant)
             for cid in self._last_visited:
                 cluster = self.graph.get_cluster(cid)
                 if cluster and not cluster.dormant:
-                    cluster.ff_update(x, is_positive, batch_lr)
+                    cluster.ff_update(x, is_positive, batch_lr, signal_strength)
                     self._proto_dirty.add(cid)
 
             all_activations.append(dict(self._last_activations))

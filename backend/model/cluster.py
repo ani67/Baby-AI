@@ -160,10 +160,11 @@ class Cluster:
         x: torch.Tensor,
         is_positive: bool,
         learning_rate: float,
+        signal_strength: float = 1.0,
     ) -> None:
-        """Calls ff_update on each living node."""
+        """Calls ff_update on each living node with continuous signal strength."""
         for node in self.nodes:
             if node.alive:
                 activation = node.activation_history[-1] if node.activation_history else 0.0
-                node.ff_update(activation, is_positive, learning_rate)
+                node.ff_update(activation, is_positive, learning_rate, signal_strength)
         self._identity_cache = None  # weights changed, invalidate
