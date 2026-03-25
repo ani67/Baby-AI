@@ -1,109 +1,161 @@
 # Baby AI
 
-A developmental AI that grows a neural architecture from scratch. It starts with no knowledge, asks questions of a local teacher LLM, learns from the answers, and evolves its own internal structure over time. You watch it happen in real time through a 3D graph visualization.
+A developmental AI that grows its own neural architecture from scratch. No backpropagation — uses Forward-Forward learning. A teacher provides training signal, the model builds itself by splitting, connecting, and pruning clusters of neurons. You watch it happen in real-time 3D.
 
-Everything runs locally on an M1 Mac. One script starts everything.
+Everything runs locally on Apple Silicon. One command starts everything.
 
 ## What it does
 
-1. A **curriculum** picks a training item (image or text concept)
-2. A **teacher LLM** (LLaVA via Ollama) answers a question about it
-3. **CLIP** encodes the answer into a 512-dimensional vector
-4. The **baby model** processes it through a graph of clusters and nodes
-5. **Forward-Forward learning** updates weights locally (no backpropagation)
-6. A **growth system** evolves the architecture: splitting clusters, adding layers, pruning weak connections
-7. The **3D visualizer** shows the living graph in real time via WebSocket
+```
+  image/text ──→ CLIP encode ──→ memory buffer ──→ multi-prototype resonance
+                  (512-d)         (temporal context)  (top-20 clusters)
+                                                          │
+                  ┌───────────────────────────────────────┘
+                  ▼
+             BFS graph walk ──→ cluster forward ──→ lateral inhibition
+                                  (node activations)   (suppress similar)
+                                                          │
+                  ┌───────────────────────────────────────┘
+                  ▼
+             FF weight update ──→ Hebbian edges ──→ growth check
+               (local, no backprop)  (strengthen co-firing)  (BUD/PRUNE/INSERT)
+                                                          │
+                  ┌───────────────────────────────────────┘
+                  ▼
+             3D visualization ──→ metrics panel ──→ dialogue feed
+               (WebSocket delta)    (spatial score,    (Q/T/M per step)
+                                     communities)
+```
 
 The model doesn't use gradient descent. Each node learns independently using the Forward-Forward algorithm — positive examples strengthen activations, negative examples suppress them. The architecture itself grows and prunes based on activation patterns.
+
+## Current Results
+
+Trained on 123K COCO images (precomputed CLIP embeddings):
+
+| Metric | Without buffer | With buffer + multi-prototype |
+|--------|---------------|-------------------------------|
+| Spatial score | 0.012 | 0.324 (peak) |
+| Co-firing communities | 1 (one blob) | 7-12 (distinct groups) |
+| Best category similarity | 0.51 | 0.20 (improving) |
+| Growth rate | 5 clusters/1K steps | 50/1K (capped at 500) |
+
+The blob problem — where all clusters activate identically for all inputs — has been broken. Clusters now organize by category and form distinct co-firing communities.
 
 ## Architecture
 
 ```
 frontend (React + Three.js)     backend (FastAPI + Python)
 ┌─────────────────────────┐     ┌────────────────────────────────┐
-│  3D Graph Visualizer    │     │  Learning Loop (orchestrator)  │
-│  Dialogue Feed (Q/T/M)  │◄───►│  Baby Model (graph of clusters)│
-│  Controls & Chat        │ WS  │  Teacher Bridge (Ollama/LLaVA) │
-└─────────────────────────┘     │  CLIP Encoder/Decoder          │
-                                │  Growth Monitor                │
-                                │  Viz Emitter                   │
+│  3D Graph (UMAP/Live/   │     │  Learning Loop (orchestrator)  │
+│           Tree modes)   │     │  Baby Model                    │
+│  Metrics Panel          │◄───►│    ├─ Memory Buffer             │
+│  Dialogue Feed          │ WS  │    ├─ Multi-Prototype Resonance │
+│  Controls & Chat        │     │    ├─ Cached BFS Traversal      │
+└─────────────────────────┘     │    ├─ Edge Adjacency Index      │
+                                │    └─ Growth Monitor             │
+                                │  CLIP Encoder/Decoder            │
+                                │  Adversarial Curriculum          │
+                                │  Viz Emitter (delta-based)       │
                                 └────────────────────────────────┘
 ```
 
 ### Baby Model
 
-- **Nodes**: Each has a 512-dim weight vector and bias. Activation = `tanh(w·x + b)`.
-- **Clusters**: Groups of 8 nodes. A cluster's output is the weighted sum of its nodes' activations.
-- **Graph**: Clusters connected by edges with learned strengths. Organized in layers.
-- **Forward pass**: Input routes through the graph layer by layer, following edges.
-- **Learning**: Forward-Forward algorithm — no backprop, no global loss function. Each node adjusts its own weights based on whether the current example is positive or negative.
+- **Nodes**: 512-dim weight vector + bias. Activation = `tanh(w·x + b)`. Each learns independently via FF.
+- **Clusters**: Groups of 4-8 nodes. Output = weighted sum of node activations.
+- **Graph**: Clusters connected by directed edges with Hebbian-learned strengths. Organized in layers.
+- **Memory Buffer**: Decaying echo of recent cluster activations. Biases input toward recently active directions, giving the model temporal context.
+- **Multi-Prototype Resonance**: Each node's weight vector serves as a prototype. A cluster resonates if ANY of its nodes match the input well — not just the blurred mean.
+- **Lateral Inhibition**: Strongly activated clusters suppress similar neighbors (cosine > 0.92), preventing the blob problem.
 
 ### Growth Operations
 
-| Operation | What it does |
-|-----------|-------------|
-| **BUD** | Splits a cluster with bimodal activations into two |
-| **CONNECT** | Adds an edge between clusters that frequently co-activate |
-| **PRUNE** | Removes edges that are weak and unused |
-| **INSERT** | Adds a new cluster between two existing ones with high residual |
-| **EXTEND** | Adds a new layer on top when the top layer collapses |
-| **DORMANT** | Deactivates clusters that haven't fired in a long time |
+| Operation | What it does | Trigger |
+|-----------|-------------|---------|
+| **BUD** | Splits a bimodal cluster into two children | Activation bimodality > 0.05 |
+| **CONNECT** | Adds edge between co-firing clusters | Co-activation correlation > 0.6 |
+| **PRUNE** | Removes bottom 5% weakest edges | Every growth check |
+| **INSERT** | Adds cluster between two with structured residual | PCA explained variance > 0.4 |
+| **EXTEND** | Adds new top layer | Top layer bimodality > 0.3 |
+| **DORMANT** | Deactivates low-activity clusters | Mean activation < 0.05 for 500+ steps |
 
-Growth is capped at 64 active clusters. PRUNE and DORMANT still run to reclaim space.
+All growth operations pause above 500 active clusters to prevent performance collapse.
 
-### Learning Stages
+### Performance
 
-- **Stage 0**: Pure exposure. The model sees everything as positive (except every 3rd step = noise). Growth is aggressive. Auto-advances to stage 1 after 100 steps at the cluster cap.
-- **Stage 1**: Real learning. Model predictions are compared to teacher answers via cosine similarity. An adaptive threshold (median of last 25 scores) determines positive vs negative — roughly 50/50 split for maximum contrast signal.
-- **Stage 2+**: Same as 1, with EXTEND enabled. Not meaningfully different yet.
+At 500 clusters, the system uses several optimizations to stay responsive:
+
+- **Edge adjacency index**: O(degree) edge lookups instead of O(E) scans
+- **Cached traversal**: BFS computed once per batch, reused for all 32 samples
+- **Diff-based proto matrix**: only ~20 changed rows rebuilt per step (not all 3000)
+- **Vectorized resonance**: single matrix-vector multiply for all prototypes
+- **Targeted updates**: FF and Hebbian updates only touch visited clusters (~20)
 
 ### Training Data
 
-~998 items across two modalities:
-- **656 images** across 93 categories (animals, vehicles, food, nature, objects, scenes)
-- **342 text concepts** (emotions, opposites, actions, abstract concepts, sensory words, spatial, temporal)
+Two modes:
 
-Images are downloaded from loremflickr.com via `seed_data.py`. Text concepts are CLIP-encoded at training time.
+- **Precomputed** (recommended): 123K COCO train+val images as pre-encoded CLIP embeddings. ~250+ steps/sec.
+- **Live**: Ollama + LLaVA answers questions about images. ~1 step/sec but more varied signal.
 
 ## Running
 
 ```bash
-# Full system (recommended)
+# Fast mode: precomputed COCO embeddings (recommended)
+CURRICULUM_SOURCE=precomputed bash start.sh
+
+# Live mode: Ollama teacher (slower but richer)
 bash start.sh
 
 # This starts:
-#   - Ollama (teacher LLM)
+#   - Ollama (teacher LLM, live mode only)
 #   - Backend (FastAPI on port 8000)
 #   - Frontend (Vite on port 5180)
 #   - Opens browser automatically
-
-# Seed more training data
-cd backend && python3 seed_data.py
-
-# Manual control
-curl -X POST localhost:8000/start    # start training
-curl -X POST localhost:8000/pause    # pause
-curl -X POST localhost:8000/step     # single step
-curl -s localhost:8000/status         # check status
 ```
+
+### Manual control
+
+```bash
+curl -X POST localhost:8000/start          # start training
+curl -X POST localhost:8000/pause          # pause
+curl -X POST localhost:8000/step           # single step
+curl -s localhost:8000/status              # check status
+curl -s localhost:8000/dashboard           # full metrics
+```
+
+## What You See
+
+- **3D graph**: Three visualization modes — UMAP (point cloud), LIVE (force-directed physics), TREE (BUD lineage planes). Clusters as colored spheres. Edges show connections. Hover for labels.
+- **Metrics panel**: Live spatial score, co-firing communities, memory buffer stats, category performance, growth rate. Bottom-right overlay, collapsible.
+- **Dialogue feed**: Each training step shows Q (question), T (teacher answer), M (model answer). Green = positive, red = negative.
+- **Chat**: Send text to the model and see its decoded response.
+- **Controls**: Start/pause/step, speed slider, stage buttons, image upload, reset with experiment notes.
 
 ## Requirements
 
-- macOS with Apple Silicon (M1/M2/M3)
+- macOS with Apple Silicon (M1/M2/M3/M4)
 - Python 3.11+
 - Node.js 18+
-- Ollama with LLaVA model
-
-## What you see
-
-- **3D graph**: Clusters as colored spheres (size = activation, pulse = active, dim = dead). Edges show connections (opacity = strength). Force-directed layout where structure emerges from the data.
-- **Dialogue feed**: Each training step shows Q (question), T (teacher answer), M (model answer). Green check = positive example, red cross = negative.
-- **"Talk to it"**: Send text to the model and see its decoded response.
-- **Controls**: Start/pause/step, speed slider, stage buttons, image upload.
+- Ollama with LLaVA model (live mode only)
 
 ## Stack
 
-- **Backend**: Python, FastAPI, PyTorch, MLX CLIP, SQLite
+- **Backend**: Python, FastAPI, PyTorch (MPS), CLIP ViT-B/32, SQLite
 - **Frontend**: React, TypeScript, Three.js (React Three Fiber), Zustand, Vite
-- **Teacher**: Ollama + LLaVA
+- **Teacher**: Ollama + LLaVA (live mode) or precomputed COCO embeddings
 - **Encoding**: CLIP ViT-B/32 (512-dim vectors)
+
+## Roadmap
+
+See [docs-v2/ROADMAP.md](docs-v2/ROADMAP.md) for the full arc: Phases A-F, decision framework, and metrics targets.
+
+```
+Phase A ✅  Memory buffer + adversarial curriculum
+Phase B 🔄  Multi-prototype resonance + curiosity growth
+Phase C ○   Cluster roles + typed edges
+Phase D ○   Learned encoders (replace CLIP)
+Phase E ○   Temporal reasoning + prediction
+Phase F ○   Environment interaction + agency
+```
