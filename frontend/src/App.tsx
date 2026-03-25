@@ -3,6 +3,7 @@ import { LatentSpace } from './components/LatentSpace'
 import { DialogueFeed } from './components/DialogueFeed'
 import { HumanChat } from './components/HumanChat'
 import { Controls } from './components/Controls'
+import { MetricsPanel } from './components/MetricsPanel'
 import { useWebSocket } from './hooks/useWebSocket'
 import { WS_URL } from './lib/constants'
 
@@ -22,8 +23,9 @@ export function App() {
       {/* Main content: latent space left, dialogue + chat right */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {/* Left panel: 60% */}
-        <div style={{ width: '60%', height: '100%' }}>
+        <div style={{ width: '60%', height: '100%', position: 'relative' }}>
           <LatentSpace />
+          <MetricsPanel />
         </div>
 
         {/* Right panel: 40%, split 60/40 vertically */}

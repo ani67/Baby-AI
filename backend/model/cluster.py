@@ -17,6 +17,7 @@ class Cluster:
     plasticity: float = 1.0
     age: int = 0
     dormant: bool = False
+    _identity_cache: torch.Tensor | None = field(default=None, repr=False)
 
     _output_history: deque = field(default_factory=lambda: deque(maxlen=64), repr=False)
 
@@ -44,12 +45,16 @@ class Cluster:
 
     @property
     def identity(self) -> torch.Tensor:
-        """Normalized mean of all node weight vectors — the cluster's semantic fingerprint."""
+        """Normalized mean of all node weight vectors — the cluster's semantic fingerprint.
+        Cached until invalidated by ff_update."""
+        if self._identity_cache is not None:
+            return self._identity_cache
         living = [n for n in self.nodes if n.alive]
         if not living:
             return torch.zeros(512)
         weights = torch.stack([n.weights for n in living])
-        return F.normalize(weights.mean(dim=0), dim=0)
+        self._identity_cache = F.normalize(weights.mean(dim=0), dim=0)
+        return self._identity_cache
 
     @property
     def mean_activation(self) -> float:
@@ -147,3 +152,4 @@ class Cluster:
             if node.alive:
                 activation = node.activation_history[-1] if node.activation_history else 0.0
                 node.ff_update(activation, is_positive, learning_rate)
+        self._identity_cache = None  # weights changed, invalidate

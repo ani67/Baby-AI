@@ -50,6 +50,13 @@ class BabyModel:
         self.buffer_weight = 0.15
         self.buffer_top_k = 5
 
+        # Persistent identity matrix for vectorized resonance.
+        # Only rows for changed clusters are recomputed each step (diff approach).
+        self._identity_matrix: torch.Tensor | None = None  # (N, 512)
+        self._identity_ids: list[str] = []                  # cluster_id per row
+        self._identity_id_to_row: dict[str, int] = {}       # cluster_id → row index
+        self._identity_dirty: set[str] = set()              # clusters needing row refresh
+
         self._init_clusters(initial_clusters, nodes_per_cluster, initial_plasticity)
 
     def restore_from_checkpoint(self, checkpoint: dict) -> None:
@@ -198,49 +205,80 @@ class BabyModel:
         else:
             print(f"[cleanup] all {len(active)} active clusters are reachable", flush=True)
 
+    def _rebuild_identity_matrix(self) -> None:
+        """Full rebuild of identity matrix. Called on first use and after growth events."""
+        active = [c for c in self.graph.clusters if not c.dormant]
+        if not active:
+            self._identity_matrix = None
+            self._identity_ids = []
+            self._identity_id_to_row = {}
+            return
+        self._identity_ids = [c.id for c in active]
+        self._identity_id_to_row = {cid: i for i, cid in enumerate(self._identity_ids)}
+        self._identity_matrix = torch.stack([c.identity for c in active])
+        self._identity_dirty.clear()
+
+    def _refresh_identity_matrix(self) -> None:
+        """Diff-based update: only recompute rows for clusters whose weights changed."""
+        if self._identity_matrix is None:
+            self._rebuild_identity_matrix()
+            return
+
+        # Check if cluster count changed (growth/dormant events)
+        active_count = sum(1 for c in self.graph.clusters if not c.dormant)
+        if active_count != len(self._identity_ids):
+            self._rebuild_identity_matrix()
+            return
+
+        # Patch only dirty rows (~20 per step instead of ~600)
+        if self._identity_dirty:
+            for cid in self._identity_dirty:
+                row = self._identity_id_to_row.get(cid)
+                if row is not None:
+                    cluster = self.graph.get_cluster(cid)
+                    if cluster and not cluster.dormant:
+                        self._identity_matrix[row] = cluster.identity
+            self._identity_dirty.clear()
+
     def _compute_resonance(self, input_vec: torch.Tensor) -> dict[str, float]:
         """
         Pre-screen clusters by cosine similarity to input using z-score filtering.
-        Returns {cluster_id: resonance_score} for clusters above mean + 1.0*std.
-        Guarantees at least resonance_min_pass clusters pass (takes top N by score).
+        Uses persistent identity matrix — only changed rows are recomputed (diff approach).
+        Returns {cluster_id: resonance_score} for top-20 clusters.
         """
-        input_norm = F.normalize(input_vec, dim=0)
-        scores = {}
-        for c in self.graph.clusters:
-            if c.dormant:
-                continue
-            sim = torch.dot(c.identity, input_norm).item()
-            scores[c.id] = sim
-
-        if not scores:
+        self._refresh_identity_matrix()
+        if self._identity_matrix is None:
             return {}
 
+        input_norm = F.normalize(input_vec, dim=0)
+
+        # Single matrix-vector multiply: (N, 512) @ (512,) → (N,)
+        sims = (self._identity_matrix @ input_norm).tolist()
+        ids = self._identity_ids
+
         # Z-score filtering: pass clusters above mean + 1.0 * std
-        vals = list(scores.values())
-        mean_s = sum(vals) / len(vals)
-        std_s = (sum((v - mean_s) ** 2 for v in vals) / len(vals)) ** 0.5
+        n = len(sims)
+        mean_s = sum(sims) / n
+        std_s = (sum((v - mean_s) ** 2 for v in sims) / n) ** 0.5
         z_threshold = mean_s + 1.0 * std_s
 
-        passed = {cid: s for cid, s in scores.items() if s > z_threshold}
+        passed = {cid: s for cid, s in zip(ids, sims) if s > z_threshold}
 
         # Guarantee minimum clusters pass
         min_pass = self.resonance_min_pass
-        if len(passed) < min_pass and len(scores) >= min_pass:
-            top_n = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:min_pass]
-            for cid, s in top_n:
-                passed[cid] = s
-        elif len(passed) < min_pass:
-            passed = scores
+        if len(passed) < min_pass:
+            top_indices = sorted(range(n), key=lambda i: sims[i], reverse=True)[:min_pass]
+            for i in top_indices:
+                passed[ids[i]] = sims[i]
 
-        # Hard cap at 20 — prevents O(n) blowup at large cluster counts.
-        # Z-score passes ~60 at 500+ clusters. Top-20 keeps the most relevant.
+        # Hard cap at 20
         MAX_ACTIVE = 20
         if len(passed) > MAX_ACTIVE:
             top_k = sorted(passed.items(), key=lambda x: x[1], reverse=True)[:MAX_ACTIVE]
             passed = dict(top_k)
 
         if self.step % 20 == 0:
-            print(f"[resonance] step={self.step} screened={len(scores)} passed={len(passed)} z_threshold={z_threshold:.2f}", flush=True)
+            print(f"[resonance] step={self.step} screened={n} passed={len(passed)} z_threshold={z_threshold:.2f}", flush=True)
 
         return passed
 
@@ -350,6 +388,80 @@ class BabyModel:
     def _forward_with_resonance(self, x: torch.Tensor, resonant_ids: dict) -> tuple[torch.Tensor, dict]:
         """Forward pass with pre-computed resonance IDs (used by update_batch)."""
         return self.forward(x, return_activations=False, _precomputed_resonance=resonant_ids)
+
+    def _compute_traversal_order(self, resonant_ids: dict) -> list[tuple[str, list[tuple[str, str, float]]]]:
+        """Pre-compute BFS traversal order + edge map. Reusable across batch samples."""
+        visited = set()
+        order = []  # [(cluster_id, [(src_id, edge_from_id, strength), ...])]
+
+        queue = [c for c in self.graph.clusters if not c.dormant and c.id in resonant_ids]
+        while queue:
+            queue.sort(key=lambda c: c.layer_index)
+            cluster = queue.pop(0)
+            if cluster.id in visited or cluster.dormant or cluster.id not in resonant_ids:
+                continue
+            visited.add(cluster.id)
+
+            # Pre-resolve incoming edges
+            edges_info = []
+            for edge in self.graph.incoming_edges(cluster.id):
+                src = edge.from_id if edge.from_id != cluster.id else edge.to_id
+                if src in visited:
+                    edges_info.append((src, edge.from_id, edge.strength))
+            order.append((cluster.id, edges_info))
+
+            for edge in self.graph.outgoing_edges(cluster.id):
+                neighbor = self.graph.get_cluster(edge.to_id)
+                if neighbor and not neighbor.dormant and neighbor.id in resonant_ids and neighbor.id not in visited:
+                    queue.append(neighbor)
+
+        return order
+
+    def _forward_fast(self, x: torch.Tensor, traversal: list[tuple[str, list[tuple[str, str, float]]]]) -> tuple[torch.Tensor, dict]:
+        """Fast forward using pre-computed traversal order. Skips BFS rebuild."""
+        effective_x = self._apply_buffer(x)
+        activations = {}
+        outputs = {}
+
+        for cid, edges_info in traversal:
+            cluster = self.graph.get_cluster(cid)
+            if not cluster:
+                continue
+
+            incoming = {}
+            for src_id, _, strength in edges_info:
+                if src_id in outputs:
+                    incoming[src_id] = (outputs[src_id], strength)
+
+            output = cluster.forward(effective_x, incoming)
+            outputs[cid] = output
+            node_acts = [n.activation_history[-1] for n in cluster.nodes if n.alive and n.activation_history]
+            activations[cid] = sum(abs(a) for a in node_acts) / len(node_acts) if node_acts else 0.0
+
+        # Run inhibition + record
+        self._growth_monitor.record_step(activations, outputs)
+        activations = self._apply_inhibition(activations)
+        self._last_visited = {cid for cid, _ in traversal}
+        self._last_activations = activations
+        self._last_outputs = outputs
+
+        # Output from highest layer
+        if not traversal:
+            return torch.zeros(self.input_dim), {}
+        visited_clusters = [self.graph.get_cluster(cid) for cid, _ in traversal]
+        visited_clusters = [c for c in visited_clusters if c]
+        if visited_clusters:
+            max_layer = max(c.layer_index for c in visited_clusters)
+            top = [c for c in visited_clusters if c.layer_index == max_layer]
+            top_outputs = [outputs[c.id] for c in top if c.id in outputs]
+            if top_outputs:
+                result = F.normalize(torch.stack(top_outputs).mean(dim=0), dim=0)
+            else:
+                result = torch.zeros(self.input_dim)
+        else:
+            result = torch.zeros(self.input_dim)
+
+        return result, activations
 
     def forward(
         self,
@@ -498,12 +610,14 @@ class BabyModel:
             learning_rate = self._plasticity_schedule.current_rate(self.step, self.stage)
 
         changes = {}
-        for cluster in self.graph.clusters:
-            if not cluster.dormant and cluster.id in self._last_visited:
+        for cid in self._last_visited:
+            cluster = self.graph.get_cluster(cid)
+            if cluster and not cluster.dormant:
                 before = self._cluster_weight_snapshot(cluster)
                 cluster.ff_update(x, is_positive, learning_rate)
                 after = self._cluster_weight_snapshot(cluster)
                 changes[cluster.id] = torch.dist(before, after).item()
+                self._identity_dirty.add(cid)
 
         # Hebbian update — only edges where at least one endpoint fired
         for cid in self._last_activations:
@@ -557,25 +671,29 @@ class BabyModel:
         # matches a single step — just in a better-informed direction.
         batch_lr = base_lr / batch_size
 
-        # Snapshot weights before batch
-        snapshots_before: dict[str, torch.Tensor] = {}
-        for cluster in self.graph.clusters:
-            if not cluster.dormant:
-                snapshots_before[cluster.id] = self._cluster_weight_snapshot(cluster)
-
-        # Compute resonance ONCE for the batch using the first sample,
-        # then reuse the same cluster set for all samples.
-        # This avoids 32 full resonance screenings (each scanning 500+ clusters).
+        # Compute resonance + traversal order ONCE for the batch.
+        # All 32 samples reuse the same BFS path (same clusters, same edges).
         first_x = samples[0][0]
         shared_resonant = self._compute_resonance(self._apply_buffer(first_x))
+        traversal = self._compute_traversal_order(shared_resonant)
+        visited_ids = {cid for cid, _ in traversal}
 
-        # Accumulate FF updates: run forward with pre-computed resonance
+        # Snapshot only visited clusters (~20), not all 600+
+        snapshots_before: dict[str, torch.Tensor] = {}
+        for cid in visited_ids:
+            cluster = self.graph.get_cluster(cid)
+            if cluster and not cluster.dormant:
+                snapshots_before[cid] = self._cluster_weight_snapshot(cluster)
+
+        # Fast forward + FF update for each sample (reuses traversal)
         all_activations: list[dict[str, float]] = []
         for x, is_positive in samples:
-            self._forward_with_resonance(x, shared_resonant)
-            for cluster in self.graph.clusters:
-                if not cluster.dormant and cluster.id in self._last_visited:
+            self._forward_fast(x, traversal)
+            for cid in self._last_visited:
+                cluster = self.graph.get_cluster(cid)
+                if cluster and not cluster.dormant:
                     cluster.ff_update(x, is_positive, batch_lr)
+                    self._identity_dirty.add(cid)
 
             all_activations.append(dict(self._last_activations))
 
@@ -737,8 +855,8 @@ class BabyModel:
         if pruned_count > 0:
             print(f"[prune] step={self.step} removed {pruned_count} edges, total={len(self.graph.edges)}", flush=True)
 
-        # Check INSERT — no stage-based cap, growth scales naturally
-        growth_allowed = True
+        # Check INSERT — paused above 500 clusters (same as BUD)
+        growth_allowed = len(active_clusters) < 500
         insert_count = 0
         max_inserts_per_check = 2
         if growth_allowed:
@@ -767,7 +885,7 @@ class BabyModel:
                     )
                     events.append(event)
 
-        # Check EXTEND — allowed when top layer has diverse activation
+        # Check EXTEND — allowed when top layer has diverse activation, paused above 500
         if growth_allowed and monitor.should_extend(0):
             new_cluster = extend_top(self.graph)
             print(f"[extend] new layer: {new_cluster.id} at layer={new_cluster.layer_index}", flush=True)

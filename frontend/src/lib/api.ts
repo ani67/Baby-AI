@@ -92,4 +92,28 @@ export const api = {
       edges: Array<{ source: string; target: string }>
       max_depth: number
     }>,
+
+  dashboard: () =>
+    fetch(`${BASE_URL}/dashboard`).then(r => r.json()) as Promise<{
+      step: number
+      clusters: number
+      layers: number
+      edges: number
+      nodes: number
+      growth_rate: number
+      edge_ratio: number
+      categories: {
+        best: Array<{ category: string; total: number; positive: number; avg_sim: number; last_step: number }>
+        worst: Array<{ category: string; total: number; positive: number; avg_sim: number; last_step: number }>
+        total_tracked: number
+      }
+      structure: {
+        spatial_score: number | null
+        sibling_coherence: number
+        layer_diversity: Record<number, number>
+        cofiring_communities: number
+        community_sizes: number[]
+      }
+      memory_buffer: { norm: number; decay: number; weight: number; top_k: number }
+    }>,
 }

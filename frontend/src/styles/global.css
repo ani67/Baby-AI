@@ -618,6 +618,80 @@ html, body, #root {
   font-style: italic;
 }
 
+/* ── Metrics Panel ── */
+
+.metrics-panel {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  background: rgba(8, 8, 8, 0.85);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 10px;
+  color: var(--text-dim);
+  pointer-events: auto;
+  min-width: 180px;
+  backdrop-filter: blur(6px);
+  z-index: 15;
+}
+
+.metrics-toggle {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  width: 22px;
+  height: 22px;
+  background: rgba(8, 8, 8, 0.7);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  z-index: 15;
+}
+
+.metrics-toggle:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+.metrics-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1px 0;
+}
+
+.metrics-label {
+  color: var(--text-dim);
+}
+
+.metrics-label.best {
+  color: var(--accent);
+}
+
+.metrics-label.worst {
+  color: var(--negative);
+}
+
+.metrics-value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.metrics-value.good {
+  color: var(--accent);
+}
+
+.metrics-value.dim {
+  color: var(--text-dim);
+}
+
 /* ── Reset Modal ── */
 
 .reset-modal-overlay {
