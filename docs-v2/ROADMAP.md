@@ -25,7 +25,7 @@ Each cluster's 4-8 nodes are used as individual prototypes for resonance.
 `resonance = max(dot(node.weights, input))` instead of `dot(mean, input)`.
 Zero new state, zero new params — nodes already ARE multi-directional prototypes.
 
-**Result:** z_threshold jumped from 0.23 to 0.39 immediately. Monitoring spatial score for structural impact (active, ~4K steps in).
+**Result:** z_threshold jumped from 0.23 to 0.39 — node-level matching finds stronger resonance. But spatial score stayed flat at 0.211 over 20K steps (36K→56K). Better selection alone doesn't break the ceiling when the underlying representations are still single-direction means. The output and learning are unchanged — only which clusters activate improved.
 
 ### Performance (v2.4)
 - Edge adjacency index: O(degree) lookups instead of O(E) scans
@@ -41,13 +41,14 @@ Zero new state, zero new params — nodes already ARE multi-directional prototyp
 ## Current Status (2026-03-25)
 
 ```
-Step:        ~40K
-Clusters:    506 (capped)
-Spatial:     0.215
-Communities: 7 (sizes: 134, 36, 4, 3, 3)
-Buffer:      active (norm ~30)
-Prototypes:  active (node-weight multi-prototype)
+Step:        ~56K
+Clusters:    506 (capped at 500)
+Spatial:     0.211 (plateaued since ~36K)
+Communities: 7 (sizes: 134, 38, 4, 3, 3)
+Buffer:      active (norm ~16)
+Prototypes:  active (node-weight multi-prototype, z_threshold 0.39)
 Speed:       ~3-16 steps/sec at 500+ clusters
+Ceiling:     spatial stuck at 0.21, categories flat at 0.09-0.20
 ```
 
 ---
@@ -67,6 +68,30 @@ Every 100 steps:
 
 "I don't know what this is → build a detector for it"
 ```
+
+### Phase B.3 — Multi-Head Resonance (NOT YET STARTED)
+
+**Problem:** The 512-d CLIP vector has internal structure — some dimensions encode subject, others encode action, scene, texture. But resonance treats all 512 dims equally. `dot(weights, input)` can't distinguish "dog running" from "dog sleeping" because the "dog" dims dominate.
+
+**Proposal:** Split resonance into K subspace heads:
+```
+Current:
+  score = max(dot(node.weights, input))              all 512 dims
+
+Multi-head (K=4, 128 dims each):
+  score_h1 = max(dot(node.weights[0:128],   input[0:128]))    "what?"
+  score_h2 = max(dot(node.weights[128:256], input[128:256]))   "doing?"
+  score_h3 = max(dot(node.weights[256:384], input[256:384]))   "where?"
+  score_h4 = max(dot(node.weights[384:512], input[384:512]))   "texture?"
+
+  resonance = sum(score_h1, score_h2, score_h3, score_h4)
+```
+
+A cluster can now be strong on SOME heads and weak on others. "Dog" cluster matches head 1 (subject), "running" cluster matches head 2 (action). The same input activates multiple specialized clusters instead of one blurry generalist.
+
+**Risk:** CLIP dimensions may not be semantically aligned to clean heads. Subspace splits might capture noise, not meaning. Need empirical validation.
+
+**Implementation:** ~10 lines in `_compute_resonance`. Reshape proto matrix to `(N*M, K, D/K)`, reshape input to `(K, D/K)`, batched matmul per head, sum across heads, then max per cluster. Zero new state, zero new params.
 
 ### Phase C.1 — Cluster Roles (NOT YET STARTED)
 
