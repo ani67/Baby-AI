@@ -296,12 +296,14 @@ class StateStore:
         }
 
     def clear_for_reset(self):
-        """Delete all dialogues, graph_events, model_checkpoints, and latent_snapshots."""
+        """Delete all training state: dialogues, events, checkpoints, cofiring, categories."""
         self._conn.execute("DELETE FROM dialogues")
         self._conn.execute("DELETE FROM graph_events")
         self._conn.execute("DELETE FROM model_checkpoints")
         self._conn.execute("DELETE FROM latent_snapshots")
         self._conn.execute("DELETE FROM human_chat")
+        self._conn.execute("DELETE FROM cluster_cofiring")
+        self._conn.execute("DELETE FROM category_performance")
         self._conn.commit()
 
     # ── Maintenance ──

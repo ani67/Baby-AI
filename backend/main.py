@@ -858,6 +858,12 @@ async def dashboard():
             "cofiring_communities": num_communities,  # number of distinct co-firing groups (>= 3 members)
             "community_sizes": community_sizes[:10],  # top 10 community sizes
         },
+        "memory_buffer": {
+            "norm": round(loop.model._activation_buffer.norm().item(), 4),
+            "decay": loop.model.buffer_decay,
+            "weight": loop.model.buffer_weight,
+            "top_k": loop.model.buffer_top_k,
+        },
     }
 
 

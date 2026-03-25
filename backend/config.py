@@ -33,6 +33,11 @@ class Config:
     # Resonance
     resonance_threshold: float = 0.02     # min cosine sim to input for cluster to participate
 
+    # Memory buffer — decaying echo of recent activations
+    buffer_decay: float = 0.9             # per-step decay (0.9 = ~10 step half-life)
+    buffer_weight: float = 0.15           # how much buffer biases current input
+    buffer_top_k: int = 5                 # clusters contributing to echo each step
+
     @property
     def device(self) -> str:
         try:
