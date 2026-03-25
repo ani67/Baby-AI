@@ -17,6 +17,7 @@ class Node:
     alive: bool = True                             # False = dormant
 
     _last_input: torch.Tensor = field(default=None, repr=False)
+    _momentum: torch.Tensor = field(default=None, repr=False)
 
     def activate(self, x: torch.Tensor) -> float:
         """
@@ -45,7 +46,11 @@ class Node:
         sign = 1.0 if is_positive else -1.0
         magnitude = self.plasticity * learning_rate * abs(activation)
         update = sign * magnitude * self._last_input * (1 - activation ** 2)
-        self.weights = self.weights + update
+        # Momentum: smooth weight updates for more stable convergence
+        if self._momentum is None:
+            self._momentum = torch.zeros_like(self.weights)
+        self._momentum = 0.9 * self._momentum + 0.1 * update
+        self.weights = self.weights + self._momentum
         self.weights = F.normalize(self.weights, dim=0)
 
     @property
