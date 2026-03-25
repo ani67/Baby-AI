@@ -47,7 +47,9 @@ interface SnapshotMessage {
   model_stats?: Record<string, unknown>
 }
 
-interface DeltaMessage {
+export interface DeltaMessage {
+  step: number
+  stage: number
   activated: string[]
   deactivated: string[]
   activation_values: Record<string, number>
@@ -57,6 +59,16 @@ interface DeltaMessage {
   clusters_dormanted: string[]
   positions: Record<string, [number, number, number]>
   nodes_added?: GraphNode[]
+  dialogue?: {
+    question: string
+    answer: string
+    model_answer: string | null
+    curiosity_score: number
+    is_positive: boolean
+    image_url: string | null
+  }
+  growth_events?: GrowthEvent[]
+  graph_summary?: Record<string, unknown>
 }
 
 interface GraphState {
