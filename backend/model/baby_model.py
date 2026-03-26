@@ -847,15 +847,13 @@ class BabyModel:
                     # C.3: Use patch-specific input if available
                     update_vec = cluster_patch_input.get(cid, x)
 
-                    # Exp 2: error direction — push toward teacher, not just input
-                    if self.exp_error_direction and cluster_positive and teacher_vec is not None:
-                        update_vec = F.normalize(teacher_vec, dim=0)
-
-                    cluster.ff_update(update_vec, cluster_positive, batch_lr)
-
-                    # Exp 4: multi-target — additive bonus toward teacher direction
-                    if self.exp_multi_target and cluster_positive and teacher_vec is not None:
-                        cluster.ff_update(F.normalize(teacher_vec, dim=0), True, batch_lr * 0.5)
+                    # Local target learning: use rich 512-d teacher signal
+                    if teacher_vec is not None:
+                        cluster.local_target_update(
+                            F.normalize(teacher_vec, dim=0), batch_lr
+                        )
+                    else:
+                        cluster.ff_update(update_vec, cluster_positive, batch_lr)
 
                     self._identity_dirty.add(cid)
 

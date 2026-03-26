@@ -49,6 +49,31 @@ class Node:
         self.weights = self.weights + update
         self.weights = F.normalize(self.weights, dim=0)
 
+    def local_target_update(
+        self,
+        activation: float,
+        local_target: torch.Tensor,
+        learning_rate: float,
+    ) -> None:
+        """
+        Rich local learning: each node gets a 512-d target direction
+        instead of a binary +/-. The node pushes its weights toward
+        producing output aligned with the target.
+
+        update = lr * (target - weighted_output_direction) * (1 - act²)
+        Still local — no backprop. But 512x more information than FF.
+        """
+        if self._last_input is None:
+            return
+        # How much this node contributed to the cluster output
+        magnitude = self.plasticity * learning_rate * abs(activation)
+        # Error: difference between what the node "sees" and what the target wants
+        current_direction = self.weights
+        error = local_target - current_direction  # (512,) rich signal
+        update = magnitude * error * (1 - activation ** 2)
+        self.weights = self.weights + update
+        self.weights = F.normalize(self.weights, dim=0)
+
     @property
     def mean_activation(self) -> float:
         if not self.activation_history:

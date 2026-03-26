@@ -177,3 +177,27 @@ class Cluster:
                 activation = node.activation_history[-1] if node.activation_history else 0.0
                 node.ff_update(activation, is_positive, learning_rate)
         self._identity_cache = None  # weights changed, invalidate
+
+    def local_target_update(
+        self,
+        teacher_vec: torch.Tensor,
+        learning_rate: float,
+    ) -> None:
+        """
+        Rich local learning: project teacher target into each node's space.
+        Each node gets its own 512-d direction to learn toward.
+        """
+        for node in self.nodes:
+            if node.alive:
+                activation = node.activation_history[-1] if node.activation_history else 0.0
+                if abs(activation) < 0.001:
+                    continue
+                # Each node's local target: blend of teacher direction
+                # and its own specialization (so nodes don't all converge)
+                node_sim = torch.dot(node.weights, teacher_vec).item()
+                # Scale target by how relevant this node is to the teacher
+                local_target = F.normalize(
+                    teacher_vec + 0.5 * node.weights, dim=0
+                )
+                node.local_target_update(activation, local_target, learning_rate)
+        self._identity_cache = None
