@@ -847,12 +847,27 @@ class BabyModel:
                     # C.3: Use patch-specific input if available
                     update_vec = cluster_patch_input.get(cid, x)
 
-                    # Local target learning: use rich 512-d teacher signal
-                    # Scale LR down — 512-d signal is much richer than 1-bit FF
-                    if teacher_vec is not None:
-                        cluster.local_target_update(
-                            F.normalize(teacher_vec, dim=0), batch_lr * 0.05
-                        )
+                    # Distributed error: each cluster fixes its SHARE of the gap
+                    if teacher_vec is not None and self._last_outputs:
+                        teacher_norm = F.normalize(teacher_vec, dim=0)
+                        # Model's combined output (same as forward result)
+                        active_outputs = {
+                            k: v.cpu() for k, v in self._last_outputs.items()
+                            if k in self._last_activations and abs(self._last_activations[k]) > 0.01
+                        }
+                        if active_outputs:
+                            model_output = torch.stack(list(active_outputs.values())).mean(dim=0)
+                            error = teacher_norm - F.normalize(model_output, dim=0)
+                            # This cluster's share proportional to its activation
+                            total_act = sum(abs(v) for v in self._last_activations.values())
+                            cluster_act = abs(self._last_activations.get(cid, 0.0))
+                            share = cluster_act / total_act if total_act > 0 else 0.0
+                            # Cluster's local target: its current output + its share of the error
+                            cluster_out = self._last_outputs[cid].cpu() if cid in self._last_outputs else torch.zeros(512)
+                            local_target = F.normalize(cluster_out + share * error, dim=0)
+                            cluster.local_target_update(local_target, batch_lr * 0.1)
+                        else:
+                            cluster.ff_update(update_vec, cluster_positive, batch_lr)
                     else:
                         cluster.ff_update(update_vec, cluster_positive, batch_lr)
 
