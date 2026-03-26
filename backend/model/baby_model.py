@@ -459,6 +459,7 @@ class BabyModel:
 
             # Vectorized gate computation: one matmul per cluster instead of per-edge loops
             ready_edges = [(src_id, edge) for src_id, edge in edges_info if src_id in outputs]
+            incoming = {}
             if ready_edges and use_gates:
                 gates = [e.gate for _, e in ready_edges if e.gate is not None]
                 if gates:
