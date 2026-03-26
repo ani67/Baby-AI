@@ -410,10 +410,10 @@ class BabyModel:
         """Forward pass with pre-computed resonance IDs (used by update_batch)."""
         return self.forward(x, return_activations=False, _precomputed_resonance=resonant_ids)
 
-    def _compute_traversal_order(self, resonant_ids: dict) -> list[tuple[str, list[tuple[str, str, float]]]]:
-        """Pre-compute BFS traversal order + edge map. Reusable across batch samples."""
+    def _compute_traversal_order(self, resonant_ids: dict) -> list[tuple[str, list[tuple[str, Edge]]]]:
+        """Pre-compute BFS traversal order + edge refs. Reusable across batch samples."""
         visited = set()
-        order = []  # [(cluster_id, [(src_id, edge_from_id, strength), ...])]
+        order = []  # [(cluster_id, [(src_id, edge_ref), ...])]
 
         queue = [c for c in self.graph.clusters if not c.dormant and c.id in resonant_ids]
         while queue:
@@ -423,12 +423,12 @@ class BabyModel:
                 continue
             visited.add(cluster.id)
 
-            # Pre-resolve incoming edges
+            # Pre-resolve incoming edges (carry edge ref for gated strength)
             edges_info = []
             for edge in self.graph.incoming_edges(cluster.id):
                 src = edge.from_id if edge.from_id != cluster.id else edge.to_id
                 if src in visited:
-                    edges_info.append((src, edge.from_id, edge.strength))
+                    edges_info.append((src, edge))
             order.append((cluster.id, edges_info))
 
             for edge in self.graph.outgoing_edges(cluster.id):
@@ -438,7 +438,7 @@ class BabyModel:
 
         return order
 
-    def _forward_fast(self, x: torch.Tensor, traversal: list[tuple[str, list[tuple[str, str, float]]]]) -> tuple[torch.Tensor, dict]:
+    def _forward_fast(self, x: torch.Tensor, traversal: list[tuple[str, list[tuple[str, Edge]]]]) -> tuple[torch.Tensor, dict]:
         """Fast forward using pre-computed traversal order. Skips BFS rebuild."""
         effective_x = self._apply_buffer(x)
         activations = {}
@@ -450,9 +450,9 @@ class BabyModel:
                 continue
 
             incoming = {}
-            for src_id, _, strength in edges_info:
+            for src_id, edge in edges_info:
                 if src_id in outputs:
-                    incoming[src_id] = (outputs[src_id], strength)
+                    incoming[src_id] = (outputs[src_id], edge.gated_strength(effective_x))
 
             output = cluster.forward(effective_x, incoming)
             outputs[cid] = output
@@ -530,7 +530,7 @@ class BabyModel:
                 if src == cluster.id:
                     src = edge.to_id
                 if src in outputs:
-                    incoming[src] = (outputs[src], edge.strength)
+                    incoming[src] = (outputs[src], edge.gated_strength(effective_x))
 
             output = cluster.forward(effective_x, incoming)
             outputs[cluster.id] = output
@@ -735,6 +735,17 @@ class BabyModel:
             x = sample[0]
             is_positive = sample[1]
             teacher_vec = sample[2] if len(sample) > 2 else None
+            patches = sample[3] if len(sample) > 3 else None  # C.3: (49, 512) or None
+
+            # C.3: precompute per-cluster best patch if patches available
+            cluster_patch_input: dict[str, torch.Tensor] = {}
+            if patches is not None and self._identity_matrix is not None:
+                # (N, 512) @ (512, 49) → (N, 49) — each cluster identity vs each patch
+                patch_scores = self._identity_matrix @ patches.T
+                # Each cluster picks its best-matching patch
+                best_patch_indices = patch_scores.argmax(dim=1)  # (N,)
+                for i, cid in enumerate(self._identity_ids):
+                    cluster_patch_input[cid] = patches[best_patch_indices[i].item()]
 
             self._forward_fast(x, traversal)
             blend = self._per_cluster_blend() if self.per_cluster_signal else 0.0
@@ -752,8 +763,10 @@ class BabyModel:
                         if random.random() < blend:
                             cluster_positive = cluster_is_positive
 
+                    # C.3: Use patch-specific input if available
+                    update_vec = cluster_patch_input.get(cid, x)
+
                     # Exp 2: error direction — push toward teacher, not just input
-                    update_vec = x
                     if self.exp_error_direction and cluster_positive and teacher_vec is not None:
                         update_vec = F.normalize(teacher_vec, dim=0)
 
@@ -762,6 +775,10 @@ class BabyModel:
                     # Exp 4: multi-target — additive bonus toward teacher direction
                     if self.exp_multi_target and cluster_positive and teacher_vec is not None:
                         cluster.ff_update(F.normalize(teacher_vec, dim=0), True, batch_lr * 0.5)
+
+                    # C.2: Gate learning — nudge edge gates based on downstream signal
+                    for edge in self.graph.incoming_edges(cid):
+                        edge.gate_update(x, cluster_positive)
 
                     self._identity_dirty.add(cid)
 

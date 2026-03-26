@@ -78,6 +78,7 @@ class Edge:
     direction: str = "bidirectional"
     steps_since_activation: int = 0
     edge_type: str = "excitatory"  # "excitatory" | "inhibitory"
+    gate: torch.Tensor | None = None  # C.2: content-aware routing direction (512-d)
 
     def hebbian_update(
         self,
@@ -92,6 +93,20 @@ class Edge:
         else:
             self.steps_since_activation += 1
         self.age += 1
+
+    def gated_strength(self, x: torch.Tensor) -> float:
+        """Return edge strength modulated by gate alignment with input x."""
+        if self.gate is None:
+            return self.strength
+        gate_score = torch.sigmoid(torch.dot(x, self.gate)).item()
+        return self.strength * gate_score
+
+    def gate_update(self, x: torch.Tensor, is_positive: bool, lr: float = 0.001) -> None:
+        """Nudge gate toward inputs that help downstream, away from inputs that don't."""
+        if self.gate is None:
+            return
+        sign = 1.0 if is_positive else -1.0
+        self.gate = F.normalize(self.gate + sign * lr * x, dim=0)
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +326,8 @@ class Graph:
             self._edges_to.setdefault(e.to_id, []).append(e)
 
     def add_edge(self, from_id: str, to_id: str, strength: float = 0.1) -> None:
-        edge = Edge(from_id=from_id, to_id=to_id, strength=strength)
+        gate = F.normalize(torch.randn(512), dim=0)
+        edge = Edge(from_id=from_id, to_id=to_id, strength=strength, gate=gate)
         self.edges.append(edge)
         self._edges_from.setdefault(from_id, []).append(edge)
         self._edges_to.setdefault(to_id, []).append(edge)

@@ -602,7 +602,8 @@ class LearningLoop:
             self._positive_history.append(1.0 if is_positive else 0.0)
             if not is_positive:
                 vec = F.normalize(torch.randn(self.model.input_dim), dim=0)
-            samples.append((vec, is_positive, teacher_vec))
+            patches = getattr(item, "patches", None)  # C.3: (49, 512) or None
+            samples.append((vec, is_positive, teacher_vec, patches))
 
         # Batched forward+update
         changes = self.model.update_batch(samples)

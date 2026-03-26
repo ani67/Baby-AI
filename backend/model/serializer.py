@@ -73,14 +73,17 @@ class ModelSerializer:
 
         edges = []
         for e in graph.edges:
-            edges.append({
+            edge_data = {
                 "from_id": e.from_id,
                 "to_id": e.to_id,
                 "strength": e.strength,
                 "age": e.age,
                 "direction": e.direction,
                 "steps_since_activation": e.steps_since_activation,
-            })
+            }
+            if e.gate is not None:
+                edge_data["gate"] = e.gate.tolist()
+            edges.append(edge_data)
 
         return {
             "step": model.step,
@@ -124,6 +127,11 @@ class ModelSerializer:
             model.graph.add_cluster(cluster)
 
         for ed in data["edges"]:
+            gate = None
+            if "gate" in ed:
+                gate = F.normalize(torch.tensor(ed["gate"], dtype=torch.float32), dim=0)
+            else:
+                gate = F.normalize(torch.randn(512), dim=0)
             edge = Edge(
                 from_id=ed["from_id"],
                 to_id=ed["to_id"],
@@ -131,6 +139,7 @@ class ModelSerializer:
                 age=ed["age"],
                 direction=ed["direction"],
                 steps_since_activation=ed["steps_since_activation"],
+                gate=gate,
             )
             model.graph.edges.append(edge)
 

@@ -32,6 +32,7 @@ class CurriculumItem:
     image_path: str | None = None               # path to image on disk (for vision models)
     image_url: str | None = None                # remote URL for frontend thumbnail
     precomputed: bool = False                    # True when item came from embedding_cache
+    patches: torch.Tensor | None = None         # C.3: (49, 512) patch-level features
 
 
 class EmptyPoolError(Exception):
@@ -60,6 +61,7 @@ class _EmbeddingCache:
         self._cursor_idx: int = 0  # sequential position for round-robin
         self._step_times: list[float] = []
         self._has_image_url: bool = False
+        self._patches: dict[int, torch.Tensor] = {}  # C.3: image_id → (49, 512)
 
     def open(self) -> int:
         """Open the database and index image_ids.  Returns count."""
@@ -86,6 +88,11 @@ class _EmbeddingCache:
             # Detect image_url column for backwards compat
             cols = {r[1] for r in self._conn.execute("PRAGMA table_info(embedding_cache)").fetchall()}
             self._has_image_url = "image_url" in cols
+            # C.3: Load patch features if available
+            patches_path = os.path.join(os.path.dirname(self._db_path), "patch_features.pt")
+            if os.path.exists(patches_path):
+                self._patches = torch.load(patches_path, weights_only=False)
+                print(f"[curriculum] loaded {len(self._patches)} patch features", flush=True)
         except Exception as e:
             print(f"[curriculum] embedding_cache open error: {e}", flush=True)
             self._conn = None
@@ -121,6 +128,8 @@ class _EmbeddingCache:
         caption_text = row["caption_text"]
         image_url = row["image_url"] if self._has_image_url else None
 
+        patches = self._patches.get(iid)  # (49, 512) or None
+
         return CurriculumItem(
             id=f"coco_{iid}",
             stage=0,
@@ -135,6 +144,7 @@ class _EmbeddingCache:
             image_path=None,
             image_url=image_url,
             precomputed=True,
+            patches=patches,
         )
 
     def sample_batch(self, n: int) -> list[CurriculumItem]:
