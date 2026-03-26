@@ -848,9 +848,10 @@ class BabyModel:
                     update_vec = cluster_patch_input.get(cid, x)
 
                     # Local target learning: use rich 512-d teacher signal
+                    # Scale LR down — 512-d signal is much richer than 1-bit FF
                     if teacher_vec is not None:
                         cluster.local_target_update(
-                            F.normalize(teacher_vec, dim=0), batch_lr
+                            F.normalize(teacher_vec, dim=0), batch_lr * 0.05
                         )
                     else:
                         cluster.ff_update(update_vec, cluster_positive, batch_lr)
