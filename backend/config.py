@@ -38,6 +38,13 @@ class Config:
     buffer_weight: float = 0.15           # how much buffer biases current input
     buffer_top_k: int = 5                 # clusters contributing to echo each step
 
+    # FF Signal Enrichment Experiments (all default OFF for baseline)
+    exp_per_cluster_sign: bool = False    # Exp 1: each cluster gets its own +/- based on its output
+    exp_error_direction: bool = False     # Exp 2: push toward teacher answer, not just input
+    exp_contrastive_pairs: bool = False   # Exp 3: rank pairs within batch instead of threshold
+    exp_multi_target: bool = False        # Exp 4: additive bonus update toward teacher direction
+    exp_structure_reuse: bool = False     # Exp 5: save/load graph topology for warm starts
+
     @property
     def device(self) -> str:
         try:

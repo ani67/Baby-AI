@@ -50,6 +50,12 @@ class BabyModel:
         self.buffer_weight = 0.15
         self.buffer_top_k = 5
 
+        # FF Signal Enrichment Experiments (all OFF by default)
+        self.exp_per_cluster_sign = False
+        self.exp_error_direction = False
+        self.exp_contrastive_pairs = False
+        self.exp_multi_target = False
+
         # Persistent identity matrix for vectorized resonance.
         # Only rows for changed clusters are recomputed each step (diff approach).
         self._identity_matrix: torch.Tensor | None = None  # (N, 512)
@@ -655,12 +661,12 @@ class BabyModel:
 
     def update_batch(
         self,
-        samples: list[tuple[torch.Tensor, bool]],
+        samples: list[tuple],
     ) -> dict:
         """
-        Accumulate FF updates across a batch of (vector, is_positive) pairs,
-        then apply all accumulated gradients once.  Increments step by len(samples).
-        Returns aggregated per-cluster weight change magnitudes.
+        Accumulate FF updates across a batch of sample tuples.
+        Supports: (vec, is_positive) or (vec, is_positive, teacher_vec) for enriched signal.
+        Increments step by len(samples). Returns per-cluster weight change magnitudes.
         """
         if not samples:
             return {}
@@ -687,12 +693,55 @@ class BabyModel:
 
         # Fast forward + FF update for each sample (reuses traversal)
         all_activations: list[dict[str, float]] = []
-        for x, is_positive in samples:
+
+        # Exp 3: contrastive pairs — pair up samples, winner gets +, loser gets -
+        if self.exp_contrastive_pairs and len(samples) >= 2:
+            paired_samples = []
+            for i in range(0, len(samples) - 1, 2):
+                s_a, s_b = samples[i], samples[i + 1]
+                vec_a, vec_b = s_a[0], s_b[0]
+                teacher_a = s_a[2] if len(s_a) > 2 else vec_a
+                teacher_b = s_b[2] if len(s_b) > 2 else vec_b
+                # Run forward on both, compare outputs to their teachers
+                out_a, _ = self.forward(vec_a)
+                out_b, _ = self.forward(vec_b)
+                sim_a = torch.dot(out_a, F.normalize(teacher_a, dim=0)).item()
+                sim_b = torch.dot(out_b, F.normalize(teacher_b, dim=0)).item()
+                # Better one gets positive, worse gets negative
+                if sim_a >= sim_b:
+                    paired_samples.append((vec_a, True, teacher_a))
+                    paired_samples.append((vec_b, False, teacher_b))
+                else:
+                    paired_samples.append((vec_a, False, teacher_a))
+                    paired_samples.append((vec_b, True, teacher_b))
+            samples = paired_samples
+
+        for sample in samples:
+            x = sample[0]
+            is_positive = sample[1]
+            teacher_vec = sample[2] if len(sample) > 2 else None
+
             self._forward_fast(x, traversal)
             for cid in self._last_visited:
                 cluster = self.graph.get_cluster(cid)
                 if cluster and not cluster.dormant:
-                    cluster.ff_update(x, is_positive, batch_lr)
+                    # Exp 1: per-cluster sign — each cluster gets own +/- based on its output
+                    cluster_positive = is_positive
+                    if self.exp_per_cluster_sign and teacher_vec is not None and cid in self._last_outputs:
+                        cluster_sim = torch.dot(self._last_outputs[cid], F.normalize(teacher_vec, dim=0)).item()
+                        cluster_positive = cluster_sim > 0.0
+
+                    # Exp 2: error direction — push toward teacher, not just input
+                    update_vec = x
+                    if self.exp_error_direction and cluster_positive and teacher_vec is not None:
+                        update_vec = F.normalize(teacher_vec, dim=0)
+
+                    cluster.ff_update(update_vec, cluster_positive, batch_lr)
+
+                    # Exp 4: multi-target — additive bonus toward teacher direction
+                    if self.exp_multi_target and cluster_positive and teacher_vec is not None:
+                        cluster.ff_update(F.normalize(teacher_vec, dim=0), True, batch_lr * 0.5)
+
                     self._identity_dirty.add(cid)
 
             all_activations.append(dict(self._last_activations))
@@ -922,6 +971,47 @@ class BabyModel:
                 events.append(event)
 
         return events
+
+    def save_topology(self, path: str) -> None:
+        """Exp 5: Save graph topology (structure only, no weights) for reuse."""
+        import json
+        topo = {
+            "clusters": [{"id": c.id, "layer": c.layer_index, "role": getattr(c, 'role', 'detector'),
+                          "node_count": len(c.nodes)} for c in self.graph.clusters],
+            "edges": [{"from": e.from_id, "to": e.to_id, "direction": e.direction}
+                      for e in self.graph.edges],
+        }
+        with open(path, "w") as f:
+            json.dump(topo, f, indent=2)
+        print(f"[topology] saved {len(topo['clusters'])} clusters, {len(topo['edges'])} edges to {path}")
+
+    def load_topology(self, path: str) -> None:
+        """Exp 5: Load topology and rebuild graph with fresh random weights."""
+        import json
+        with open(path) as f:
+            topo = json.load(f)
+        self.graph = Graph()
+        self._growth_monitor = GrowthMonitor(self.graph)
+        for cj in topo["clusters"]:
+            nodes = []
+            for _ in range(cj.get("node_count", 8)):
+                node = Node(
+                    id=self.graph.next_node_id(), cluster_id="",
+                    weights=F.normalize(torch.randn(self.input_dim), dim=0),
+                    bias=torch.zeros(1),
+                )
+                nodes.append(node)
+            cluster = Cluster(id=cj["id"], nodes=nodes, layer_index=cj["layer"])
+            if hasattr(cluster, 'role'):
+                cluster.role = cj.get("role", "detector")
+            for n in cluster.nodes:
+                n.cluster_id = cluster.id
+            self.graph.add_cluster(cluster, source="topology")
+        for ej in topo["edges"]:
+            self.graph.add_edge(ej["from"], ej["to"])
+        self.step = 0
+        self._identity_dirty.add("__all__")
+        print(f"[topology] loaded {len(topo['clusters'])} clusters, {len(topo['edges'])} edges with fresh weights")
 
     def _cluster_weight_snapshot(self, cluster: Cluster) -> torch.Tensor:
         """Flatten all node weights in a cluster into a single tensor, normalized by sqrt(n)."""

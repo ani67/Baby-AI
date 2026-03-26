@@ -332,6 +332,35 @@ async def reset(body: ResetRequest):
     return loop.get_status()
 
 
+@app.post("/experiments")
+async def set_experiments(body: dict):
+    """Toggle FF signal enrichment experiments. Pass {name: true/false}."""
+    model = app.state.loop.model
+    toggled = {}
+    for key in ["exp_per_cluster_sign", "exp_error_direction", "exp_contrastive_pairs", "exp_multi_target"]:
+        if key in body:
+            setattr(model, key, bool(body[key]))
+            toggled[key] = bool(body[key])
+    return {"toggled": toggled, "active": {
+        k: getattr(model, k) for k in ["exp_per_cluster_sign", "exp_error_direction", "exp_contrastive_pairs", "exp_multi_target"]
+    }}
+
+@app.post("/topology/save")
+async def save_topology():
+    """Save current graph topology (structure only, no weights)."""
+    model = app.state.loop.model
+    path = "data/topology.json"
+    model.save_topology(path)
+    return {"saved": path, "clusters": len(model.graph.clusters), "edges": len(model.graph.edges)}
+
+@app.post("/topology/load")
+async def load_topology():
+    """Load topology and restart with fresh random weights."""
+    model = app.state.loop.model
+    path = "data/topology.json"
+    model.load_topology(path)
+    return {"loaded": path, "clusters": len(model.graph.clusters), "edges": len(model.graph.edges)}
+
 @app.get("/status", response_model=StatusResponse)
 async def status():
     loop = app.state.loop
