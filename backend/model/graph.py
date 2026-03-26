@@ -328,13 +328,10 @@ class Graph:
             self._edges_to.setdefault(e.to_id, []).append(e)
 
     def add_edge(self, from_id: str, to_id: str, strength: float = 0.1) -> None:
-        gate = F.normalize(torch.randn(512), dim=0)
-        edge = Edge(from_id=from_id, to_id=to_id, strength=strength, gate=gate)
+        edge = Edge(from_id=from_id, to_id=to_id, strength=strength)
         self.edges.append(edge)
         self._edges_from.setdefault(from_id, []).append(edge)
         self._edges_to.setdefault(to_id, []).append(edge)
-        if self._weight_store is not None:
-            self._weight_store.alloc_gate(from_id, to_id, gate)
 
     def remove_edge(self, edge: Edge) -> None:
         self.edges = [e for e in self.edges if e is not edge]

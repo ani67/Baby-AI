@@ -57,8 +57,8 @@ class BabyModel:
         self.per_cluster_global_steps = 5000
         self.per_cluster_blend_steps = 10000
 
-        # C.2: Gate activation delay (gates are noise before clusters differentiate)
-        self.gate_activation_step = 2000
+        # C.2: Gates disabled — halving edge signals hurt spatial score
+        self.gate_activation_step = float('inf')
 
         # FF Signal Enrichment Experiments (all OFF by default)
         self.exp_per_cluster_sign = False  # superseded by C.1
