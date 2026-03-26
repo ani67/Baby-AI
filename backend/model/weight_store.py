@@ -12,10 +12,9 @@ import torch.nn.functional as F
 
 class WeightStore:
     def __init__(self, dim: int = 512, max_nodes: int = 8192, max_edges: int = 32768):
-        if torch.backends.mps.is_available():
-            self.device = torch.device("mps")
-        else:
-            self.device = torch.device("cpu")
+        # MPS causes silent segfaults with large pre-allocated tensors + fancy indexing.
+        # Stay on CPU until PyTorch MPS matures. The store still eliminates torch.stack().
+        self.device = torch.device("cpu")
         self.dim = dim
         self._max_nodes = max_nodes
         self._max_edges = max_edges
