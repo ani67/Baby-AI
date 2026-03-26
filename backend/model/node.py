@@ -17,7 +17,6 @@ class Node:
     alive: bool = True                             # False = dormant
 
     _last_input: torch.Tensor = field(default=None, repr=False)
-    _momentum: torch.Tensor = field(default=None, repr=False)
 
     def activate(self, x: torch.Tensor) -> float:
         """
@@ -36,23 +35,17 @@ class Node:
         activation: float,
         is_positive: bool,
         learning_rate: float,
-        signal_strength: float = 1.0,
     ) -> None:
         """
-        Forward-Forward local update rule with continuous signal.
-        signal_strength (0-1) scales the update magnitude — stronger
-        similarity gets a stronger push, weak similarity gets a weak push.
+        Forward-Forward local update rule.
+        No backward pass. Each node updates from its own activation alone.
         """
         if self._last_input is None:
             return
         sign = 1.0 if is_positive else -1.0
-        magnitude = self.plasticity * learning_rate * abs(activation) * signal_strength
+        magnitude = self.plasticity * learning_rate * abs(activation)
         update = sign * magnitude * self._last_input * (1 - activation ** 2)
-        # Momentum: smooth weight updates for more stable convergence
-        if self._momentum is None:
-            self._momentum = torch.zeros_like(self.weights)
-        self._momentum = 0.9 * self._momentum + 0.1 * update
-        self.weights = self.weights + self._momentum
+        self.weights = self.weights + update
         self.weights = F.normalize(self.weights, dim=0)
 
     @property

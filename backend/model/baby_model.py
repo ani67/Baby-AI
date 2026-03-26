@@ -44,26 +44,18 @@ class BabyModel:
         self._last_bud_step: int = -20  # global cooldown: no growth check for 20 steps after BUD
         self._restore_step: int = -200  # post-restore prune cooldown
 
-        # Curiosity buffer: recent inputs with low resonance (nothing matched well)
-        self._low_resonance_inputs: list[torch.Tensor] = []  # capped at 32
-
-        # Homeostatic regulation state
-        self._target_edge_ratio: float = 15.0    # healthy edges per cluster
-        self._activation_coverage: float = 0.5   # fraction of inputs with good resonance
-        self._coverage_history: list[float] = []  # recent coverage measurements
-
         # Memory buffer: decaying echo of recent cluster activations
         self._activation_buffer = torch.zeros(input_dim)
         self.buffer_decay = 0.9
         self.buffer_weight = 0.15
         self.buffer_top_k = 5
 
-        # Persistent node-weight matrix for multi-prototype resonance.
-        # Each node's weight vector is a row — nodes ARE the prototypes.
-        # resonance = max(dot(node.weights, input)) per cluster.
-        self._proto_matrix: torch.Tensor | None = None      # (N*M, 512) M=nodes per cluster
-        self._proto_cluster_ids: list[str] = []              # cluster_id per row (repeats per node)
-        self._proto_dirty: set[str] = set()                  # clusters needing row refresh
+        # Persistent identity matrix for vectorized resonance.
+        # Only rows for changed clusters are recomputed each step (diff approach).
+        self._identity_matrix: torch.Tensor | None = None  # (N, 512)
+        self._identity_ids: list[str] = []                  # cluster_id per row
+        self._identity_id_to_row: dict[str, int] = {}       # cluster_id → row index
+        self._identity_dirty: set[str] = set()              # clusters needing row refresh
 
         self._init_clusters(initial_clusters, nodes_per_cluster, initial_plasticity)
 
@@ -213,69 +205,59 @@ class BabyModel:
         else:
             print(f"[cleanup] all {len(active)} active clusters are reachable", flush=True)
 
-    def _rebuild_proto_matrix(self) -> None:
-        """Full rebuild of node-weight matrix. Each node is a prototype row."""
+    def _rebuild_identity_matrix(self) -> None:
+        """Full rebuild of identity matrix. Called on first use and after growth events."""
         active = [c for c in self.graph.clusters if not c.dormant]
         if not active:
-            self._proto_matrix = None
-            self._proto_cluster_ids = []
+            self._identity_matrix = None
+            self._identity_ids = []
+            self._identity_id_to_row = {}
             return
-        rows = []
-        ids = []
-        for c in active:
-            for node in c.nodes:
-                if node.alive:
-                    rows.append(node.weights)
-                    ids.append(c.id)
-        if not rows:
-            self._proto_matrix = None
-            self._proto_cluster_ids = []
-            return
-        self._proto_matrix = torch.stack(rows)
-        self._proto_cluster_ids = ids
-        self._proto_dirty.clear()
+        self._identity_ids = [c.id for c in active]
+        self._identity_id_to_row = {cid: i for i, cid in enumerate(self._identity_ids)}
+        self._identity_matrix = torch.stack([c.identity for c in active])
+        self._identity_dirty.clear()
 
-    def _refresh_proto_matrix(self) -> None:
-        """Rebuild when dirty or structure changed. Nodes ARE the prototypes — no k-means needed."""
-        if self._proto_matrix is None or self._proto_dirty:
-            self._rebuild_proto_matrix()
+    def _refresh_identity_matrix(self) -> None:
+        """Diff-based update: only recompute rows for clusters whose weights changed."""
+        if self._identity_matrix is None:
+            self._rebuild_identity_matrix()
+            return
+
+        # Check if cluster count changed (growth/dormant events)
+        active_count = sum(1 for c in self.graph.clusters if not c.dormant)
+        if active_count != len(self._identity_ids):
+            self._rebuild_identity_matrix()
+            return
+
+        # Patch only dirty rows (~20 per step instead of ~600)
+        if self._identity_dirty:
+            for cid in self._identity_dirty:
+                row = self._identity_id_to_row.get(cid)
+                if row is not None:
+                    cluster = self.graph.get_cluster(cid)
+                    if cluster and not cluster.dormant:
+                        self._identity_matrix[row] = cluster.identity
+            self._identity_dirty.clear()
 
     def _compute_resonance(self, input_vec: torch.Tensor) -> dict[str, float]:
         """
-        Multi-prototype resonance: each node's weight vector is a prototype.
-        resonance(cluster) = max(dot(node.weights, input)) over all nodes in cluster.
-        Uses persistent matrix — rebuilt only when weights change.
+        Pre-screen clusters by cosine similarity to input using z-score filtering.
+        Uses persistent identity matrix — only changed rows are recomputed (diff approach).
+        Returns {cluster_id: resonance_score} for top-20 clusters.
         """
-        self._refresh_proto_matrix()
-        if self._proto_matrix is None:
+        self._refresh_identity_matrix()
+        if self._identity_matrix is None:
             return {}
 
         input_norm = F.normalize(input_vec, dim=0)
 
-        # Multi-head resonance: split 512-d into 4 subspaces of 128-d each.
-        # A cluster can be strong on some heads (subject) and weak on others (action).
-        # This enables compositional matching: "dog running" activates dog-head AND running-head.
-        NUM_HEADS = 4
-        head_dim = self.input_dim // NUM_HEADS
-        # Reshape: (N*M, 512) → (N*M, 4, 128)
-        proto_heads = self._proto_matrix.view(-1, NUM_HEADS, head_dim)
-        input_heads = input_norm.view(NUM_HEADS, head_dim)
-        # Per-head dot products: (N*M, 4, 128) × (4, 128) → (N*M, 4) → sum → (N*M,)
-        head_sims = (proto_heads * input_heads.unsqueeze(0)).sum(dim=2)  # (N*M, 4)
-        all_sims = head_sims.sum(dim=1).tolist()  # sum across heads
+        # Single matrix-vector multiply: (N, 512) @ (512,) → (N,)
+        sims = (self._identity_matrix @ input_norm).tolist()
+        ids = self._identity_ids
 
-        # Max per cluster — each node is a prototype
-        cluster_max: dict[str, float] = {}
-        for sim, cid in zip(all_sims, self._proto_cluster_ids):
-            if cid not in cluster_max or sim > cluster_max[cid]:
-                cluster_max[cid] = sim
-
-        # Z-score filtering on max-per-cluster scores
-        ids = list(cluster_max.keys())
-        sims = list(cluster_max.values())
+        # Z-score filtering: pass clusters above mean + 1.0 * std
         n = len(sims)
-        if n == 0:
-            return {}
         mean_s = sum(sims) / n
         std_s = (sum((v - mean_s) ** 2 for v in sims) / n) ** 0.5
         z_threshold = mean_s + 1.0 * std_s
@@ -289,28 +271,14 @@ class BabyModel:
             for i in top_indices:
                 passed[ids[i]] = sims[i]
 
-        # Adaptive resonance width: widen if too few clusters fire, narrow if too many.
-        # Homeostatic target: ~20 clusters, adjusts based on activation coverage.
-        max_active = 20
-        if self._activation_coverage < 0.3:
-            max_active = 25  # widen — not enough is matching
-        elif self._activation_coverage > 0.7:
-            max_active = 15  # narrow — too much is matching (blob risk)
-        if len(passed) > max_active:
-            top_k = sorted(passed.items(), key=lambda x: x[1], reverse=True)[:max_active]
+        # Hard cap at 20
+        MAX_ACTIVE = 20
+        if len(passed) > MAX_ACTIVE:
+            top_k = sorted(passed.items(), key=lambda x: x[1], reverse=True)[:MAX_ACTIVE]
             passed = dict(top_k)
 
-        # Track activation coverage for homeostatic regulation
-        best_sim = max(sims) if sims else 0.0
-        self._coverage_history.append(1.0 if best_sim > 0.3 else 0.0)
-        if len(self._coverage_history) > 100:
-            self._coverage_history = self._coverage_history[-100:]
-        self._activation_coverage = sum(self._coverage_history) / len(self._coverage_history) if self._coverage_history else 0.5
-        if best_sim < 0.15 and len(self._low_resonance_inputs) < 32:
-            self._low_resonance_inputs.append(input_vec.detach().clone())
-
         if self.step % 20 == 0:
-            print(f"[resonance] step={self.step} screened={n} passed={len(passed)} z_threshold={z_threshold:.2f} low_res_buf={len(self._low_resonance_inputs)}", flush=True)
+            print(f"[resonance] step={self.step} screened={n} passed={len(passed)} z_threshold={z_threshold:.2f}", flush=True)
 
         return passed
 
@@ -421,10 +389,10 @@ class BabyModel:
         """Forward pass with pre-computed resonance IDs (used by update_batch)."""
         return self.forward(x, return_activations=False, _precomputed_resonance=resonant_ids)
 
-    def _compute_traversal_order(self, resonant_ids: dict) -> list[tuple[str, list[tuple[str, str, float, str]]]]:
+    def _compute_traversal_order(self, resonant_ids: dict) -> list[tuple[str, list[tuple[str, str, float]]]]:
         """Pre-compute BFS traversal order + edge map. Reusable across batch samples."""
         visited = set()
-        order = []  # [(cluster_id, [(src_id, edge_from_id, strength, edge_type), ...])]
+        order = []  # [(cluster_id, [(src_id, edge_from_id, strength), ...])]
 
         queue = [c for c in self.graph.clusters if not c.dormant and c.id in resonant_ids]
         while queue:
@@ -434,12 +402,12 @@ class BabyModel:
                 continue
             visited.add(cluster.id)
 
-            # Pre-resolve incoming edges with type
+            # Pre-resolve incoming edges
             edges_info = []
             for edge in self.graph.incoming_edges(cluster.id):
                 src = edge.from_id if edge.from_id != cluster.id else edge.to_id
                 if src in visited:
-                    edges_info.append((src, edge.from_id, edge.strength, getattr(edge, 'edge_type', 'excitatory')))
+                    edges_info.append((src, edge.from_id, edge.strength))
             order.append((cluster.id, edges_info))
 
             for edge in self.graph.outgoing_edges(cluster.id):
@@ -449,9 +417,8 @@ class BabyModel:
 
         return order
 
-    def _forward_fast(self, x: torch.Tensor, traversal: list, resonance_scores: dict | None = None) -> tuple[torch.Tensor, dict]:
-        """GPU-batched forward using pre-computed traversal order.
-        Node activations computed via single matmul instead of Python loops."""
+    def _forward_fast(self, x: torch.Tensor, traversal: list[tuple[str, list[tuple[str, str, float]]]]) -> tuple[torch.Tensor, dict]:
+        """Fast forward using pre-computed traversal order. Skips BFS rebuild."""
         effective_x = self._apply_buffer(x)
         activations = {}
         outputs = {}
@@ -461,58 +428,15 @@ class BabyModel:
             if not cluster:
                 continue
 
-            # Build combined input from x + edge signals
-            combined = effective_x.clone()
-            for edge_info in edges_info:
-                src_id, _, strength = edge_info[0], edge_info[1], edge_info[2]
-                edge_type = edge_info[3] if len(edge_info) > 3 else "excitatory"
+            incoming = {}
+            for src_id, _, strength in edges_info:
                 if src_id in outputs:
-                    if edge_type == "inhibitory":
-                        combined = combined - strength * outputs[src_id]
-                    else:
-                        combined = combined + strength * outputs[src_id]
-            combined = F.normalize(combined, dim=0)
+                    incoming[src_id] = (outputs[src_id], strength)
 
-            # BATCHED node activation: single matmul replaces per-node Python loop
-            # Stack all living node weights: (N_alive, 512)
-            living_nodes = [n for n in cluster.nodes if n.alive]
-            if not living_nodes:
-                outputs[cid] = torch.zeros(self.input_dim)
-                activations[cid] = 0.0
-                continue
-
-            weight_matrix = torch.stack([n.weights for n in living_nodes])  # (N, 512)
-            bias_vec = torch.cat([n.bias for n in living_nodes])  # (N,)
-            # All dot products + bias at once: (N, 512) @ (512,) + (N,) → (N,)
-            raw_acts = torch.tanh(weight_matrix @ combined + bias_vec)
-            act_list = raw_acts.tolist()
-
-            # Record activations on nodes (needed for FF update)
-            for node, act in zip(living_nodes, act_list):
-                node._last_input = combined.detach()
-                node.activation_history.append(act)
-                node.age += 1
-
-            # Weighted output: single vectorized operation
-            abs_acts = raw_acts.abs()
-            total_weight = abs_acts.sum().item()
-            if total_weight > 0:
-                weights_scaled = (abs_acts / total_weight).unsqueeze(1)  # (N, 1)
-                output = (weight_matrix * weights_scaled).sum(dim=0)  # (512,)
-            else:
-                output = torch.zeros(self.input_dim)
-
-            # Residual connection
-            output = F.normalize(effective_x + output, dim=0)
-            cluster._output_history.append(output.detach().clone())
-            cluster.age += 1
+            output = cluster.forward(effective_x, incoming)
             outputs[cid] = output
-
-            # Activation from batched result
-            raw_act = abs_acts.mean().item()
-            if resonance_scores and cid in resonance_scores:
-                raw_act *= max(0.1, resonance_scores[cid])
-            activations[cid] = raw_act
+            node_acts = [n.activation_history[-1] for n in cluster.nodes if n.alive and n.activation_history]
+            activations[cid] = sum(abs(a) for a in node_acts) / len(node_acts) if node_acts else 0.0
 
         # Run inhibition + record
         self._growth_monitor.record_step(activations, outputs)
@@ -585,7 +509,7 @@ class BabyModel:
                 if src == cluster.id:
                     src = edge.to_id
                 if src in outputs:
-                    incoming[src] = (outputs[src], edge.strength, getattr(edge, 'edge_type', 'excitatory'))
+                    incoming[src] = (outputs[src], edge.strength)
 
             output = cluster.forward(effective_x, incoming)
             outputs[cluster.id] = output
@@ -693,7 +617,7 @@ class BabyModel:
                 cluster.ff_update(x, is_positive, learning_rate)
                 after = self._cluster_weight_snapshot(cluster)
                 changes[cluster.id] = torch.dist(before, after).item()
-                self._proto_dirty.add(cid)
+                self._identity_dirty.add(cid)
 
         # Hebbian update — only edges where at least one endpoint fired
         for cid in self._last_activations:
@@ -731,11 +655,11 @@ class BabyModel:
 
     def update_batch(
         self,
-        samples: list[tuple[torch.Tensor, bool]] | list[tuple[torch.Tensor, bool, float]],
+        samples: list[tuple[torch.Tensor, bool]],
     ) -> dict:
         """
-        Accumulate FF updates across a batch of (vector, is_positive[, signal_strength]) tuples.
-        Increments step by len(samples).
+        Accumulate FF updates across a batch of (vector, is_positive) pairs,
+        then apply all accumulated gradients once.  Increments step by len(samples).
         Returns aggregated per-cluster weight change magnitudes.
         """
         if not samples:
@@ -761,92 +685,17 @@ class BabyModel:
             if cluster and not cluster.dormant:
                 snapshots_before[cid] = self._cluster_weight_snapshot(cluster)
 
-        # BATCHED forward + FF update: process all 32 samples through traversal at once.
-        # For each cluster in traversal: (N_nodes, 512) @ (512, 32) = all activations at once.
-        batch_vecs = torch.stack([s[0] for s in samples])  # (B, 512)
-        batch_positive = [s[1] for s in samples]
-        batch_strength = [s[2] if len(s) > 2 else 1.0 for s in samples]
+        # Fast forward + FF update for each sample (reuses traversal)
+        all_activations: list[dict[str, float]] = []
+        for x, is_positive in samples:
+            self._forward_fast(x, traversal)
+            for cid in self._last_visited:
+                cluster = self.graph.get_cluster(cid)
+                if cluster and not cluster.dormant:
+                    cluster.ff_update(x, is_positive, batch_lr)
+                    self._identity_dirty.add(cid)
 
-        # Apply buffer to all inputs
-        if self._activation_buffer.norm().item() > 1e-6:
-            batch_effective = F.normalize(batch_vecs + self.buffer_weight * self._activation_buffer.unsqueeze(0), dim=1)
-        else:
-            batch_effective = batch_vecs
-
-        # Track per-cluster outputs for edge signal routing (need per-sample)
-        batch_outputs: dict[str, torch.Tensor] = {}  # cid → (B, 512)
-        all_activations_list: list[dict[str, float]] = [{} for _ in range(batch_size)]
-
-        for cid, edges_info in traversal:
-            cluster = self.graph.get_cluster(cid)
-            if not cluster:
-                continue
-
-            living = [n for n in cluster.nodes if n.alive]
-            if not living:
-                batch_outputs[cid] = torch.zeros(batch_size, self.input_dim)
-                continue
-
-            # Build combined input: (B, 512)
-            combined = batch_effective.clone()
-            for edge_info in edges_info:
-                src_id = edge_info[0]
-                strength = edge_info[2]
-                edge_type = edge_info[3] if len(edge_info) > 3 else "excitatory"
-                if src_id in batch_outputs:
-                    if edge_type == "inhibitory":
-                        combined = combined - strength * batch_outputs[src_id]
-                    else:
-                        combined = combined + strength * batch_outputs[src_id]
-            combined = F.normalize(combined, dim=1)  # (B, 512)
-
-            # BATCHED node activation: (N, 512) @ (512, B) → (N, B)
-            weight_matrix = torch.stack([n.weights for n in living])  # (N, 512)
-            bias_vec = torch.cat([n.bias for n in living])  # (N,)
-            all_raw = torch.tanh(weight_matrix @ combined.T + bias_vec.unsqueeze(1))  # (N, B)
-
-            # Record last activation per node (use mean across batch for history)
-            mean_acts = all_raw.mean(dim=1).tolist()
-            for node, act in zip(living, mean_acts):
-                node._last_input = combined.mean(dim=0).detach()  # approximate
-                node.activation_history.append(act)
-                node.age += 1
-
-            # Weighted output per sample: (N, B) → (B, 512)
-            abs_acts = all_raw.abs()  # (N, B)
-            total_weights = abs_acts.sum(dim=0, keepdim=True).clamp(min=1e-6)  # (1, B)
-            weights_scaled = abs_acts / total_weights  # (N, B)
-            # (N, B)^T @ (N, 512) → (B, 512) ... use einsum for clarity
-            output = torch.einsum('nb,nd->bd', weights_scaled, weight_matrix)  # (B, 512)
-
-            # Residual + normalize
-            output = F.normalize(batch_effective + output, dim=1)  # (B, 512)
-            batch_outputs[cid] = output
-            cluster._output_history.append(output.mean(dim=0).detach().clone())
-            cluster.age += 1
-
-            # Per-sample activations
-            mean_act_per_sample = abs_acts.mean(dim=0).tolist()  # (B,)
-            res_scale = max(0.1, shared_resonant.get(cid, 0.5)) if shared_resonant else 1.0
-            for b_idx in range(batch_size):
-                all_activations_list[b_idx][cid] = mean_act_per_sample[b_idx] * res_scale
-
-            # Batched FF update: accumulate across all samples
-            cluster_lr = self._plasticity_schedule.cluster_rate(cluster, batch_lr)
-            for b_idx in range(batch_size):
-                is_pos = batch_positive[b_idx]
-                sig_str = batch_strength[b_idx]
-                cluster.ff_update(combined[b_idx], is_pos, cluster_lr, sig_str)
-                cluster._error_history.append(0.0 if is_pos else 1.0)
-            self._proto_dirty.add(cid)
-
-        # Set last state from final sample for growth monitor
-        self._last_visited = {cid for cid, _ in traversal}
-        self._last_activations = all_activations_list[-1] if all_activations_list else {}
-        self._last_outputs = {cid: out[-1] for cid, out in batch_outputs.items()}
-        self._growth_monitor.record_step(self._last_activations, self._last_outputs)
-        self._last_activations = self._apply_inhibition(self._last_activations)
-        all_activations = all_activations_list
+            all_activations.append(dict(self._last_activations))
 
         # Hebbian update: average activations across batch
         avg_activations: dict[str, float] = {}
@@ -969,18 +818,7 @@ class BabyModel:
         else:
             for pair, corr in monitor.get_coactivation_candidates():
                 if not self.graph.edge_exists(pair[0], pair[1]):
-                    # If two clusters have very similar identities, make the edge
-                    # inhibitory — they're competing for the same input space.
-                    c_a = self.graph.get_cluster(pair[0])
-                    c_b = self.graph.get_cluster(pair[1])
-                    edge_type = "excitatory"
-                    if c_a and c_b:
-                        sim = torch.dot(c_a.identity, c_b.identity).item()
-                        if sim > 0.85:
-                            edge_type = "inhibitory"
                     self.graph.add_edge(pair[0], pair[1], strength=0.1)
-                    # Set edge type on the just-added edge
-                    self.graph.edges[-1].edge_type = edge_type
                     event = {
                         "event_type": "CONNECT",
                         "cluster_a": pair[0],
@@ -988,7 +826,6 @@ class BabyModel:
                         "metadata": {
                             "correlation": corr,
                             "reason": "coactivation_threshold",
-                            "edge_type": edge_type,
                         },
                     }
                     store.log_graph_event(
@@ -998,25 +835,25 @@ class BabyModel:
                     )
                     events.append(event)
 
-        # Check PRUNE — homeostatic: prune rate adapts to edge ratio vs target.
-        # Too many edges → prune aggressively. Too few → barely prune.
-        # Target: ~15 edges per active cluster (self._target_edge_ratio).
+        # Check PRUNE — percentage-based: remove bottom 5% of edges each check.
+        # Self-scaling: 98K edges → prune 4900. 500 edges → prune 25.
+        # Protects minimum of 2 edges per cluster.
         min_edges = len(active_clusters) * 2
         pruned_count = 0
         prune_allowed = self.step - self._restore_step >= 200
         if prune_allowed and len(self.graph.edges) > min_edges:
-            current_ratio = len(self.graph.edges) / max(len(active_clusters), 1)
-            # Adaptive prune rate: 0% at target, 10% at 2x target, capped at 10%
-            prune_fraction = max(0.0, min(0.10, 0.05 * (current_ratio / self._target_edge_ratio - 1.0)))
+            # Sort edges by strength ascending — weakest first
             sorted_edges = sorted(self.graph.edges, key=lambda e: e.strength)
-            max_prune = max(0, int(len(sorted_edges) * prune_fraction))
+            # Prune bottom 5% by strength — no additional condition.
+            # If you're in the weakest 5%, you get cut.
+            max_prune = max(1, len(sorted_edges) // 20)
             for edge in sorted_edges[:max_prune]:
                 if len(self.graph.edges) <= min_edges:
                     break
                 self.graph.remove_edge(edge)
                 pruned_count += 1
         if pruned_count > 0:
-            print(f"[prune] step={self.step} removed {pruned_count} ratio={len(self.graph.edges)/max(len(active_clusters),1):.1f} target={self._target_edge_ratio}", flush=True)
+            print(f"[prune] step={self.step} removed {pruned_count} edges, total={len(self.graph.edges)}", flush=True)
 
         # Check INSERT — paused above 500 clusters (same as BUD)
         growth_allowed = len(active_clusters) < 500
@@ -1065,40 +902,6 @@ class BabyModel:
                 metadata=event["metadata"],
             )
             events.append(event)
-
-        # Check CURIOSITY — reactivate dormant clusters toward unrecognized inputs.
-        # Instead of spawning new clusters (which would exceed the cap), repurpose
-        # dormant ones by reseeding their weights toward low-resonance input directions.
-        curiosity_count = 0
-        dormant_clusters = [c for c in self.graph.clusters if c.dormant]
-        if self._low_resonance_inputs and dormant_clusters:
-            max_curiosity = min(2, len(dormant_clusters), len(self._low_resonance_inputs))
-            for i in range(max_curiosity):
-                target_vec = self._low_resonance_inputs.pop(0)
-                cluster = dormant_clusters[i]
-                # Reseed nodes toward the unrecognized input direction
-                for node in cluster.nodes:
-                    node.weights = F.normalize(target_vec + torch.randn_like(target_vec) * 0.1, dim=0)
-                    node.bias = torch.zeros(1)
-                    node.activation_history.clear()
-                    node.alive = True
-                cluster.dormant = False
-                cluster._identity_cache = None
-                curiosity_count += 1
-                event = {
-                    "event_type": "CURIOSITY",
-                    "cluster_a": cluster.id,
-                    "metadata": {"reason": "low_resonance_reactivation"},
-                }
-                store.log_graph_event(
-                    step=self.step, event_type="CURIOSITY",
-                    cluster_a=cluster.id, cluster_b=None,
-                    metadata=event["metadata"],
-                )
-                events.append(event)
-            if curiosity_count > 0:
-                self._proto_dirty.update(c.id for c in dormant_clusters[:curiosity_count])
-                print(f"[curiosity] step={self.step} reactivated {curiosity_count} dormant clusters toward novel inputs", flush=True)
 
         # Check DORMANT
         for cluster in self.graph.clusters:

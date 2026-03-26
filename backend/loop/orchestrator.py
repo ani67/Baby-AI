@@ -586,7 +586,7 @@ class LearningLoop:
         anchor_vec = items[0].expected_vector if items[0].expected_vector is not None else torch.randn(self.model.input_dim)
         anchor_pred, _ = self.model.forward(anchor_vec, return_activations=False)
 
-        samples: list[tuple[torch.Tensor, bool, float]] = []
+        samples: list[tuple[torch.Tensor, bool]] = []
         for item in items:
             vec = item.expected_vector if item.expected_vector is not None else torch.randn(self.model.input_dim)
             # Cheap signal: cosine similarity between model's anchor prediction and this sample
@@ -598,12 +598,10 @@ class LearningLoop:
                 is_positive = sim > threshold
             else:
                 is_positive = True
-            # Continuous signal: how far from threshold (0-1 scale)
-            signal_strength = min(1.0, abs(sim - (threshold if len(self._similarity_history) >= 10 else 0.0)))
             self._positive_history.append(1.0 if is_positive else 0.0)
             if not is_positive:
                 vec = F.normalize(torch.randn(self.model.input_dim), dim=0)
-            samples.append((vec, is_positive, signal_strength))
+            samples.append((vec, is_positive))
 
         # Batched forward+update
         changes = self.model.update_batch(samples)
