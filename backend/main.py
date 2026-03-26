@@ -337,13 +337,29 @@ async def set_experiments(body: dict):
     """Toggle FF signal enrichment experiments. Pass {name: true/false}."""
     model = app.state.loop.model
     toggled = {}
-    for key in ["exp_per_cluster_sign", "exp_error_direction", "exp_contrastive_pairs", "exp_multi_target"]:
+    # C.1 config
+    for key in ["per_cluster_signal", "per_cluster_global_steps", "per_cluster_blend_steps"]:
+        if key in body:
+            val = body[key]
+            if key == "per_cluster_signal":
+                val = bool(val)
+            else:
+                val = int(val)
+            setattr(model, key, val)
+            toggled[key] = val
+    # Legacy experiment flags
+    for key in ["exp_error_direction", "exp_contrastive_pairs", "exp_multi_target"]:
         if key in body:
             setattr(model, key, bool(body[key]))
             toggled[key] = bool(body[key])
-    return {"toggled": toggled, "active": {
-        k: getattr(model, k) for k in ["exp_per_cluster_sign", "exp_error_direction", "exp_contrastive_pairs", "exp_multi_target"]
-    }}
+    return {
+        "toggled": toggled,
+        "active": {
+            "per_cluster_signal": model.per_cluster_signal,
+            "per_cluster_blend": round(model._per_cluster_blend(), 3),
+            **{k: getattr(model, k) for k in ["exp_error_direction", "exp_contrastive_pairs", "exp_multi_target"]},
+        },
+    }
 
 @app.post("/topology/save")
 async def save_topology():
@@ -894,10 +910,23 @@ async def dashboard():
             "top_k": loop.model.buffer_top_k,
         },
         "homeostasis": {
-            "edge_ratio_target": loop.model._target_edge_ratio,
             "edge_ratio_actual": round(gs["edge_count"] / max(gs["cluster_count"], 1), 1),
-            "activation_coverage": round(loop.model._activation_coverage, 3),
-            "curiosity_buffer": len(loop.model._low_resonance_inputs),
+            "curiosity_buffer": len(getattr(loop.model, '_low_resonance_inputs', [])),
+        },
+        "per_cluster_signal": {
+            "enabled": loop.model.per_cluster_signal,
+            "blend": round(loop.model._per_cluster_blend(), 3),
+            "global_steps": loop.model.per_cluster_global_steps,
+            "blend_steps": loop.model.per_cluster_blend_steps,
+            "phase": (
+                "global" if loop.model._per_cluster_blend() == 0.0
+                else "per-cluster" if loop.model._per_cluster_blend() == 1.0
+                else "blending"
+            ),
+        },
+        "experiments": {
+            k: getattr(loop.model, k, False)
+            for k in ["exp_error_direction", "exp_contrastive_pairs", "exp_multi_target"]
         },
     }
 

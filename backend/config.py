@@ -38,8 +38,14 @@ class Config:
     buffer_weight: float = 0.15           # how much buffer biases current input
     buffer_top_k: int = 5                 # clusters contributing to echo each step
 
+    # C.1: Per-cluster staged learning signal
+    per_cluster_signal: bool = True       # Enable staged per-cluster signal
+    per_cluster_global_steps: int = 5000  # Steps 0–5K: 100% global signal (training wheels)
+    per_cluster_blend_steps: int = 10000  # Steps 5K–10K: linear blend global→per-cluster
+    # After 10K: 100% per-cluster signal
+
     # FF Signal Enrichment Experiments (all default OFF for baseline)
-    exp_per_cluster_sign: bool = False    # Exp 1: each cluster gets its own +/- based on its output
+    exp_per_cluster_sign: bool = False    # Exp 1 (superseded by C.1 above)
     exp_error_direction: bool = False     # Exp 2: push toward teacher answer, not just input
     exp_contrastive_pairs: bool = False   # Exp 3: rank pairs within batch instead of threshold
     exp_multi_target: bool = False        # Exp 4: additive bonus update toward teacher direction

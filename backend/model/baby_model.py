@@ -3,6 +3,7 @@ BabyModel — the assembled growing neural architecture.
 """
 
 import math
+import random
 
 import torch
 import torch.nn.functional as F
@@ -50,8 +51,13 @@ class BabyModel:
         self.buffer_weight = 0.15
         self.buffer_top_k = 5
 
+        # C.1: Per-cluster staged learning signal
+        self.per_cluster_signal = True
+        self.per_cluster_global_steps = 5000
+        self.per_cluster_blend_steps = 10000
+
         # FF Signal Enrichment Experiments (all OFF by default)
-        self.exp_per_cluster_sign = False
+        self.exp_per_cluster_sign = False  # superseded by C.1
         self.exp_error_direction = False
         self.exp_contrastive_pairs = False
         self.exp_multi_target = False
@@ -287,6 +293,15 @@ class BabyModel:
             print(f"[resonance] step={self.step} screened={n} passed={len(passed)} z_threshold={z_threshold:.2f}", flush=True)
 
         return passed
+
+    def _per_cluster_blend(self) -> float:
+        """Returns blend ratio: 0.0 = all global signal, 1.0 = all per-cluster signal."""
+        if self.step < self.per_cluster_global_steps:
+            return 0.0
+        if self.step < self.per_cluster_global_steps + self.per_cluster_blend_steps:
+            elapsed = self.step - self.per_cluster_global_steps
+            return elapsed / self.per_cluster_blend_steps
+        return 1.0
 
     def _apply_buffer(self, x: torch.Tensor) -> torch.Tensor:
         """Mix activation buffer into input. Returns effective input for resonance + forward."""
@@ -722,14 +737,20 @@ class BabyModel:
             teacher_vec = sample[2] if len(sample) > 2 else None
 
             self._forward_fast(x, traversal)
+            blend = self._per_cluster_blend() if self.per_cluster_signal else 0.0
             for cid in self._last_visited:
                 cluster = self.graph.get_cluster(cid)
                 if cluster and not cluster.dormant:
-                    # Exp 1: per-cluster sign — each cluster gets own +/- based on its output
                     cluster_positive = is_positive
-                    if self.exp_per_cluster_sign and teacher_vec is not None and cid in self._last_outputs:
-                        cluster_sim = torch.dot(self._last_outputs[cid], F.normalize(teacher_vec, dim=0)).item()
-                        cluster_positive = cluster_sim > 0.0
+
+                    # C.1: Staged per-cluster signal
+                    if blend > 0.0 and teacher_vec is not None and cid in self._last_outputs:
+                        cluster_sim = torch.dot(
+                            self._last_outputs[cid], F.normalize(teacher_vec, dim=0)
+                        ).item()
+                        cluster_is_positive = cluster_sim > 0.0
+                        if random.random() < blend:
+                            cluster_positive = cluster_is_positive
 
                     # Exp 2: error direction — push toward teacher, not just input
                     update_vec = x
