@@ -63,7 +63,11 @@ info "Checking dependencies..."
 command -v python3 >/dev/null 2>&1 || fail "python3 not found. Install Python 3.11+."
 command -v node    >/dev/null 2>&1 || fail "node not found. Install Node.js 18+."
 command -v npm     >/dev/null 2>&1 || fail "npm not found."
-command -v ollama  >/dev/null 2>&1 || fail "ollama not found. Install from https://ollama.ai"
+# Ollama only required for live/ollama curriculum
+CURRICULUM_SOURCE="${CURRICULUM_SOURCE:-precomputed}"
+if [ "$CURRICULUM_SOURCE" != "precomputed" ]; then
+    command -v ollama  >/dev/null 2>&1 || fail "ollama not found. Install from https://ollama.ai"
+fi
 
 # Python version check (3.11+)
 PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
@@ -82,43 +86,42 @@ ok "Dependencies found (Python $PYTHON_VERSION, Node $(node --version))"
 mkdir -p "$LOG_DIR"
 mkdir -p "$BACKEND_DIR/data/stage0"
 
-# ─── 3. Ollama ────────────────────────────────────────────────────────────────
-info "Starting Ollama..."
+# ─── 3. Ollama (only for live curriculum) ────────────────────────────────────
+if [ "$CURRICULUM_SOURCE" != "precomputed" ]; then
+    info "Starting Ollama..."
 
-# Check if Ollama is already running
-if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
-    ok "Ollama already running"
-    OLLAMA_PID=""  # don't kill it on exit — we didn't start it
-else
-    ollama serve >> "$OLLAMA_LOG" 2>&1 &
-    OLLAMA_PID=$!
+    if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
+        ok "Ollama already running"
+        OLLAMA_PID=""
+    else
+        ollama serve >> "$OLLAMA_LOG" 2>&1 &
+        OLLAMA_PID=$!
 
-    # Wait for Ollama to be ready (up to 15s)
-    OLLAMA_READY=0
-    for i in $(seq 1 30); do
-        if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
-            OLLAMA_READY=1
-            break
+        OLLAMA_READY=0
+        for i in $(seq 1 30); do
+            if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
+                OLLAMA_READY=1
+                break
+            fi
+            sleep 0.5
+        done
+
+        if [ "$OLLAMA_READY" -eq 0 ]; then
+            fail "Ollama failed to start. Check $OLLAMA_LOG"
         fi
-        sleep 0.5
-    done
-
-    if [ "$OLLAMA_READY" -eq 0 ]; then
-        fail "Ollama failed to start. Check $OLLAMA_LOG"
+        ok "Ollama started (pid $OLLAMA_PID)"
     fi
-    ok "Ollama started (pid $OLLAMA_PID)"
-fi
 
-# Pull teacher model if not present
-# Note: ollama list may show "phi4-mini:latest" or "phi4-mini" depending on version.
-# We remove the ^ anchor to match anywhere in the line, handling both formats.
-info "Checking teacher model ($TEACHER_MODEL)..."
-if ollama list | grep -q "$TEACHER_MODEL"; then
-    ok "Model $TEACHER_MODEL already cached"
+    info "Checking teacher model ($TEACHER_MODEL)..."
+    if ollama list | grep -q "$TEACHER_MODEL"; then
+        ok "Model $TEACHER_MODEL already cached"
+    else
+        warn "Model $TEACHER_MODEL not found — pulling now (this may take a while)..."
+        ollama pull "$TEACHER_MODEL" || fail "Failed to pull $TEACHER_MODEL"
+        ok "Model $TEACHER_MODEL ready"
+    fi
 else
-    warn "Model $TEACHER_MODEL not found — pulling now (this may take a while)..."
-    ollama pull "$TEACHER_MODEL" || fail "Failed to pull $TEACHER_MODEL"
-    ok "Model $TEACHER_MODEL ready"
+    ok "Using precomputed embeddings — skipping Ollama"
 fi
 
 # ─── 4. Backend ───────────────────────────────────────────────────────────────

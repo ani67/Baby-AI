@@ -14,7 +14,7 @@ import torch.nn.functional as F
 # Toggle: "live" (Ollama teacher) or "precomputed" (embedding_cache)
 # ---------------------------------------------------------------------------
 
-CURRICULUM_SOURCE = os.getenv("CURRICULUM_SOURCE", "live")
+CURRICULUM_SOURCE = os.getenv("CURRICULUM_SOURCE", "precomputed")
 
 
 @dataclass
