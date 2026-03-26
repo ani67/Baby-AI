@@ -125,7 +125,6 @@ def insert_layer(
         nodes=new_nodes,
         layer_index=(cluster_a.layer_index + cluster_b.layer_index) / 2,
         plasticity=0.9,
-        role="integrator",  # INSERT creates integrators — they combine detector signals
     )
 
     graph.insert_cluster_between(cluster_a, new_cluster, cluster_b)
@@ -154,7 +153,6 @@ def extend_top(graph: Graph, nodes_per_cluster: int = 8) -> Cluster:
         nodes=new_nodes,
         layer_index=max_layer + 1,
         plasticity=0.85,
-        role="predictor",  # EXTEND creates predictors — they anticipate from context
     )
 
     # Connect to current top clusters

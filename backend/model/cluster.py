@@ -17,11 +17,9 @@ class Cluster:
     plasticity: float = 1.0
     age: int = 0
     dormant: bool = False
-    role: str = "detector"  # "detector" | "integrator" | "predictor"
     _identity_cache: torch.Tensor | None = field(default=None, repr=False)
 
     _output_history: deque = field(default_factory=lambda: deque(maxlen=64), repr=False)
-    _error_history: deque = field(default_factory=lambda: deque(maxlen=64), repr=False)  # recent prediction errors (0-1)
 
     @property
     def cluster_type(self) -> str:
@@ -114,25 +112,14 @@ class Cluster:
     ) -> torch.Tensor:
         """
         Activate all living nodes, return weighted-sum output (512,).
-        Supports typed edges: excitatory add signal, inhibitory subtract.
         """
         combined = x.clone()
         for value in incoming_edge_signals.values():
             if isinstance(value, tuple):
-                if len(value) == 3:
-                    signal, strength, edge_type = value
-                else:
-                    signal, strength = value
-                    edge_type = "excitatory"
-                if edge_type == "inhibitory":
-                    combined = combined - strength * signal
-                else:
-                    combined = combined + strength * signal
+                signal, strength = value
+                combined = combined + strength * signal
             else:
                 combined = combined + 0.3 * value
-
-        # Normalize combined signal before activation (prevents drift in deep graphs)
-        combined = F.normalize(combined, dim=0)
 
         node_activations = []
         for node in self.nodes:
@@ -149,9 +136,7 @@ class Cluster:
             for node, act in node_activations:
                 output += (act / total_weight) * node.weights
 
-        # Residual connection: output = input + learned transformation
-        # Enables gradient flow through deep graphs (proven in transformers)
-        output = F.normalize(x + output, dim=0)
+        output = F.normalize(output, dim=0)
         self._output_history.append(output.detach().clone())
         self.age += 1
         return output
@@ -161,33 +146,10 @@ class Cluster:
         x: torch.Tensor,
         is_positive: bool,
         learning_rate: float,
-        signal_strength: float = 1.0,
     ) -> None:
-        """Batched FF update — computes all node updates via tensor ops."""
-        living = [n for n in self.nodes if n.alive]
-        if not living:
-            return
-
-        sign = 1.0 if is_positive else -1.0
-
-        # Batch: stack activations and inputs, compute all updates at once
-        acts = torch.tensor([n.activation_history[-1] if n.activation_history else 0.0 for n in living])
-        plasticities = torch.tensor([n.plasticity for n in living])
-        magnitudes = plasticities * learning_rate * acts.abs() * signal_strength  # (N,)
-
-        # All nodes share the same last_input (set during forward)
-        last_input = living[0]._last_input
-        if last_input is None:
-            return
-
-        # Update = sign * magnitude * input * (1 - act²), per node: (N, 512)
-        updates = sign * magnitudes.unsqueeze(1) * last_input.unsqueeze(0) * (1 - acts.pow(2)).unsqueeze(1)
-
-        # Apply momentum and update weights per node
-        for i, node in enumerate(living):
-            if node._momentum is None:
-                node._momentum = torch.zeros_like(node.weights)
-            node._momentum = 0.9 * node._momentum + 0.1 * updates[i]
-            node.weights = F.normalize(node.weights + node._momentum, dim=0)
-
-        self._identity_cache = None
+        """Calls ff_update on each living node."""
+        for node in self.nodes:
+            if node.alive:
+                activation = node.activation_history[-1] if node.activation_history else 0.0
+                node.ff_update(activation, is_positive, learning_rate)
+        self._identity_cache = None  # weights changed, invalidate
