@@ -13,6 +13,7 @@ from .cluster import Cluster
 from .graph import Graph, Edge
 from .growth import GrowthMonitor, bud, insert_layer, extend_top
 from .forward_forward import PlasticitySchedule
+from .weight_store import WeightStore
 
 
 class BabyModel:
@@ -73,6 +74,39 @@ class BabyModel:
         self._identity_dirty: set[str] = set()              # clusters needing row refresh
 
         self._init_clusters(initial_clusters, nodes_per_cluster, initial_plasticity)
+
+        # GPU weight store — centralizes all node weights and edge gates
+        self._weight_store = WeightStore(dim=input_dim)
+        self._attach_store()
+
+    def _attach_store(self) -> None:
+        """Register all nodes and edge gates with the centralized GPU store."""
+        store = self._weight_store
+        self.graph._weight_store = store
+        for cluster in self.graph.clusters:
+            cluster._store = store
+            for node in cluster.nodes:
+                idx = store.alloc_node(node.id, node.weights, node.bias)
+                node._store_idx = idx
+        for edge in self.graph.edges:
+            if edge.gate is not None:
+                store.alloc_gate(edge.from_id, edge.to_id, edge.gate)
+        # Move activation buffer to store device
+        self._activation_buffer = self._activation_buffer.to(store.device)
+        print(f"[store] attached: {len(store._node_map)} nodes, {len(store._edge_map)} gates on {store.device}", flush=True)
+
+    def _sync_to_store(self, cluster_ids: set[str] | None = None) -> None:
+        """Push changed node weights back to GPU store after FF updates."""
+        store = self._weight_store
+        targets = cluster_ids or self._identity_dirty
+        for cid in targets:
+            cluster = self.graph.get_cluster(cid)
+            if cluster is None:
+                continue
+            for node in cluster.nodes:
+                if node.alive and node._store_idx >= 0:
+                    store.weights[node._store_idx] = node.weights.to(store.device)
+                    store.biases[node._store_idx] = node.bias.squeeze().to(store.device)
 
     def restore_from_checkpoint(self, checkpoint: dict) -> None:
         """
@@ -179,6 +213,9 @@ class BabyModel:
         else:
             self._activation_buffer = torch.zeros(self.input_dim)
 
+        # Re-attach GPU weight store
+        self._weight_store = WeightStore(dim=self.input_dim)
+        self._attach_store()
         print(f"[restore] loaded step={self.step} clusters={nc} edges={ne}", flush=True)
 
     def cleanup_excess_clusters(self) -> None:
@@ -265,7 +302,7 @@ class BabyModel:
         if self._identity_matrix is None:
             return {}
 
-        input_norm = F.normalize(input_vec, dim=0)
+        input_norm = F.normalize(input_vec.to(self._identity_matrix.device), dim=0)
 
         # Single matrix-vector multiply: (N, 512) @ (512,) → (N,)
         sims = (self._identity_matrix @ input_norm).tolist()
@@ -312,6 +349,7 @@ class BabyModel:
 
     def _apply_buffer(self, x: torch.Tensor) -> torch.Tensor:
         """Mix activation buffer into input. Returns effective input for resonance + forward."""
+        x = x.to(self._weight_store.device)
         if self._activation_buffer.norm().item() < 1e-6:
             return x
         return F.normalize(x + self.buffer_weight * self._activation_buffer, dim=0)
@@ -505,7 +543,7 @@ class BabyModel:
         else:
             result = torch.zeros(self.input_dim)
 
-        return result, activations
+        return result.cpu(), activations
 
     def forward(
         self,
@@ -654,6 +692,7 @@ class BabyModel:
             else:
                 result = F.normalize(torch.randn(self.input_dim), dim=0)
 
+        result = result.cpu() if result.device.type != 'cpu' else result
         if return_activations:
             return result, activations
         return result, {}
@@ -797,8 +836,9 @@ class BabyModel:
 
                     # C.1: Staged per-cluster signal
                     if blend > 0.0 and teacher_vec is not None and cid in self._last_outputs:
+                        out_cpu = self._last_outputs[cid].cpu()
                         cluster_sim = torch.dot(
-                            self._last_outputs[cid], F.normalize(teacher_vec, dim=0)
+                            out_cpu, F.normalize(teacher_vec, dim=0)
                         ).item()
                         cluster_is_positive = cluster_sim > 0.0
                         if random.random() < blend:
@@ -820,6 +860,9 @@ class BabyModel:
                     self._identity_dirty.add(cid)
 
             all_activations.append(dict(self._last_activations))
+
+        # Sync updated weights back to GPU store
+        self._sync_to_store()
 
         # Hebbian update: average activations across batch
         avg_activations: dict[str, float] = {}
@@ -848,7 +891,7 @@ class BabyModel:
                 for cid in self._last_visited:
                     if cid not in self._last_outputs:
                         continue
-                    cid_positive = torch.dot(self._last_outputs[cid], teacher_norm).item() > 0.0
+                    cid_positive = torch.dot(self._last_outputs[cid].cpu(), teacher_norm).item() > 0.0
                     edges = self.graph.incoming_edges(cid)
                     if not edges:
                         continue
@@ -1068,6 +1111,16 @@ class BabyModel:
                     metadata=event["metadata"],
                 )
                 events.append(event)
+
+        # Register any new nodes/edges from growth with the GPU store
+        if events and hasattr(self, '_weight_store'):
+            ws = self._weight_store
+            for cluster in self.graph.clusters:
+                cluster._store = ws
+                for node in cluster.nodes:
+                    if node._store_idx < 0:
+                        idx = ws.alloc_node(node.id, node.weights, node.bias)
+                        node._store_idx = idx
 
         return events
 

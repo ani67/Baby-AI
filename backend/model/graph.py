@@ -258,6 +258,8 @@ class Graph:
         self._node_counter: int = 0
         self._cluster_counter: int = 0
 
+        self._weight_store = None  # WeightStore reference (set by BabyModel)
+
         # Edge adjacency index — O(1) lookups instead of O(E) scans
         self._edges_to: dict[str, list[Edge]] = {}    # cluster_id → edges where to_id matches
         self._edges_from: dict[str, list[Edge]] = {}   # cluster_id → edges where from_id matches
@@ -331,6 +333,8 @@ class Graph:
         self.edges.append(edge)
         self._edges_from.setdefault(from_id, []).append(edge)
         self._edges_to.setdefault(to_id, []).append(edge)
+        if self._weight_store is not None:
+            self._weight_store.alloc_gate(from_id, to_id, gate)
 
     def remove_edge(self, edge: Edge) -> None:
         self.edges = [e for e in self.edges if e is not edge]

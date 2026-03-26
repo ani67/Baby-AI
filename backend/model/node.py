@@ -9,14 +9,15 @@ import torch.nn.functional as F
 class Node:
     id: str                                        # "n_042"
     cluster_id: str                                # which cluster owns this node
-    weights: torch.Tensor                          # shape (512,) — input dim
-    bias: torch.Tensor                             # shape (1,)
+    weights: torch.Tensor = None                   # shape (512,)
+    bias: torch.Tensor = None                      # shape (1,)
     plasticity: float = 1.0                        # 0.0 to 1.0
     age: int = 0                                   # steps since creation
     activation_history: deque = field(default_factory=lambda: deque(maxlen=64))
     alive: bool = True                             # False = dormant
 
     _last_input: torch.Tensor = field(default=None, repr=False)
+    _store_idx: int = field(default=-1, repr=False)  # row in WeightStore (-1 = not attached)
 
     def activate(self, x: torch.Tensor) -> float:
         """
