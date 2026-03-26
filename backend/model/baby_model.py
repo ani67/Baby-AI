@@ -56,6 +56,9 @@ class BabyModel:
         self.per_cluster_global_steps = 5000
         self.per_cluster_blend_steps = 10000
 
+        # C.2: Gate activation delay (gates are noise before clusters differentiate)
+        self.gate_activation_step = 2000
+
         # FF Signal Enrichment Experiments (all OFF by default)
         self.exp_per_cluster_sign = False  # superseded by C.1
         self.exp_error_direction = False
@@ -294,6 +297,10 @@ class BabyModel:
 
         return passed
 
+    def _gates_active(self) -> bool:
+        """Gates are noise before clusters differentiate. Skip until gate_activation_step."""
+        return self.step >= self.gate_activation_step
+
     def _per_cluster_blend(self) -> float:
         """Returns blend ratio: 0.0 = all global signal, 1.0 = all per-cluster signal."""
         if self.step < self.per_cluster_global_steps:
@@ -443,16 +450,31 @@ class BabyModel:
         effective_x = self._apply_buffer(x)
         activations = {}
         outputs = {}
+        use_gates = self._gates_active()
 
         for cid, edges_info in traversal:
             cluster = self.graph.get_cluster(cid)
             if not cluster:
                 continue
 
-            incoming = {}
-            for src_id, edge in edges_info:
-                if src_id in outputs:
-                    incoming[src_id] = (outputs[src_id], edge.gated_strength(effective_x))
+            # Vectorized gate computation: one matmul per cluster instead of per-edge loops
+            ready_edges = [(src_id, edge) for src_id, edge in edges_info if src_id in outputs]
+            if ready_edges and use_gates:
+                gates = [e.gate for _, e in ready_edges if e.gate is not None]
+                if gates:
+                    gate_matrix = torch.stack(gates)  # (K, 512)
+                    gate_scores = torch.sigmoid(gate_matrix @ effective_x).tolist()  # (K,)
+                    gi = 0
+                    for src_id, edge in ready_edges:
+                        if edge.gate is not None:
+                            incoming[src_id] = (outputs[src_id], edge.strength * gate_scores[gi])
+                            gi += 1
+                        else:
+                            incoming[src_id] = (outputs[src_id], edge.strength)
+                else:
+                    incoming = {src_id: (outputs[src_id], edge.strength) for src_id, edge in ready_edges}
+            else:
+                incoming = {src_id: (outputs[src_id], edge.strength) for src_id, edge in ready_edges}
 
             output = cluster.forward(effective_x, incoming)
             outputs[cid] = output
@@ -525,12 +547,30 @@ class BabyModel:
             visited.add(cluster.id)
 
             incoming = {}
-            for edge in self.graph.incoming_edges(cluster.id):
-                src = edge.from_id
-                if src == cluster.id:
-                    src = edge.to_id
+            inc_edges = self.graph.incoming_edges(cluster.id)
+            ready = []
+            for edge in inc_edges:
+                src = edge.from_id if edge.from_id != cluster.id else edge.to_id
                 if src in outputs:
-                    incoming[src] = (outputs[src], edge.gated_strength(effective_x))
+                    ready.append((src, edge))
+            if ready and self._gates_active():
+                gates = [e.gate for _, e in ready if e.gate is not None]
+                if gates:
+                    gate_matrix = torch.stack(gates)
+                    gate_scores = torch.sigmoid(gate_matrix @ effective_x).tolist()
+                    gi = 0
+                    for src, edge in ready:
+                        if edge.gate is not None:
+                            incoming[src] = (outputs[src], edge.strength * gate_scores[gi])
+                            gi += 1
+                        else:
+                            incoming[src] = (outputs[src], edge.strength)
+                else:
+                    for src, edge in ready:
+                        incoming[src] = (outputs[src], edge.strength)
+            else:
+                for src, edge in ready:
+                    incoming[src] = (outputs[src], edge.strength)
 
             output = cluster.forward(effective_x, incoming)
             outputs[cluster.id] = output
@@ -776,10 +816,6 @@ class BabyModel:
                     if self.exp_multi_target and cluster_positive and teacher_vec is not None:
                         cluster.ff_update(F.normalize(teacher_vec, dim=0), True, batch_lr * 0.5)
 
-                    # C.2: Gate learning — nudge edge gates based on downstream signal
-                    for edge in self.graph.incoming_edges(cid):
-                        edge.gate_update(x, cluster_positive)
-
                     self._identity_dirty.add(cid)
 
             all_activations.append(dict(self._last_activations))
@@ -801,6 +837,30 @@ class BabyModel:
             for edge in self.graph._edges_to.get(cid, []):
                 from_act = avg_activations.get(edge.from_id, 0.0)
                 edge.hebbian_update(from_act, avg_activations[cid])
+
+        # C.2: Batched gate learning — once per batch using last sample's signal
+        if self._gates_active() and samples:
+            last_x = samples[-1][0]
+            last_teacher = samples[-1][2] if len(samples[-1]) > 2 else None
+            if last_teacher is not None:
+                teacher_norm = F.normalize(last_teacher, dim=0)
+                for cid in self._last_visited:
+                    if cid not in self._last_outputs:
+                        continue
+                    cid_positive = torch.dot(self._last_outputs[cid], teacher_norm).item() > 0.0
+                    edges = self.graph.incoming_edges(cid)
+                    if not edges:
+                        continue
+                    gated = [e for e in edges if e.gate is not None]
+                    if not gated:
+                        continue
+                    # Vectorized gate update
+                    gate_stack = torch.stack([e.gate for e in gated])  # (K, 512)
+                    sign = 1.0 if cid_positive else -1.0
+                    gate_stack = gate_stack + sign * 0.001 * last_x.unsqueeze(0)
+                    gate_stack = F.normalize(gate_stack, dim=1)
+                    for i, e in enumerate(gated):
+                        e.gate = gate_stack[i]
 
         # Compute weight changes
         changes: dict[str, float] = {}

@@ -44,6 +44,9 @@ class Config:
     per_cluster_blend_steps: int = 10000  # Steps 5K–10K: linear blend global→per-cluster
     # After 10K: 100% per-cluster signal
 
+    # C.2: Content-aware routing
+    gate_activation_step: int = 2000      # Gates inactive before this (sigmoid≈0.5 is noise)
+
     # FF Signal Enrichment Experiments (all default OFF for baseline)
     exp_per_cluster_sign: bool = False    # Exp 1 (superseded by C.1 above)
     exp_error_direction: bool = False     # Exp 2: push toward teacher answer, not just input
