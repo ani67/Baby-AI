@@ -875,7 +875,14 @@ class BabyModel:
                     if error is not None and cid in outputs_cpu:
                         cluster_act = abs(self._last_activations.get(cid, 0.0))
                         share = cluster_act / total_act if total_act > 0 else 0.0
-                        local_target = F.normalize(outputs_cpu[cid] + share * error, dim=0)
+                        # C.3: blend patch-specific target with global error.
+                        # Each cluster's target is biased toward its best-matching patch,
+                        # so clusters specialize for different spatial regions.
+                        base_target = outputs_cpu[cid] + share * error
+                        if cid in cluster_patch_input:
+                            patch_vec = cluster_patch_input[cid]
+                            base_target = base_target + 0.3 * patch_vec
+                        local_target = F.normalize(base_target, dim=0)
                         cluster.local_target_update(local_target, batch_lr)
                     else:
                         cluster.ff_update(update_vec, cluster_positive, batch_lr)

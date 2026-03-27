@@ -296,10 +296,10 @@ class GrowthMonitor:
         # Useful clusters have high mean (resonate often AND with high similarity).
         # Dead-weight clusters have near-zero mean (rarely resonate, or with minimal similarity).
         mean_sim = sum(hits) / len(hits)
-        # Dormant if mean contribution < 0.005 over window AND old enough.
-        # For context: a cluster resonating 4% of the time with avg sim 0.15 → mean 0.006 (survives).
-        # A cluster resonating 4% of the time with avg sim 0.10 → mean 0.004 (dormant).
-        return mean_sim < 0.005 and cluster.age > 500
+        # Dormant if mean contribution < 0.01 over window AND old enough.
+        # At 400 clusters: 5% resonance * 0.19 avg_sim = 0.0095 → borderline (culls weak ones).
+        # At 200 clusters: 10% resonance * 0.19 avg_sim = 0.019 → safe.
+        return mean_sim < 0.01 and cluster.age > 500
 
     def clean_dormant(self, dormant_ids: set) -> None:
         """Remove stale tracking data for dormant clusters."""
