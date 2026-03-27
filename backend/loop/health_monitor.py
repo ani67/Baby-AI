@@ -11,7 +11,6 @@ LIMITS = {
     "resonance_threshold":    (0.005, 0.15),
     "resonance_min_pass":     (4, 30),
     "inhibition_radius":      (0.80, 0.98),
-    "growth_check_interval":  (30, 200),
     "bud_cooldown":           (200, 1500),
 }
 
@@ -120,10 +119,9 @@ class HealthMonitor:
                 self._adjust(step, "resonance_min_pass", model, "resonance_min_pass", -0.10)
 
         elif metric == "growth_rate":
-            # Too much growth -> increase bud cooldown and growth interval
+            # Too much growth -> increase bud cooldown
             if not too_low:
                 self._adjust(step, "bud_cooldown", monitor, "bud_cooldown_steps", 0.20)
-                self._adjust(step, "growth_check_interval", model, "growth_check_interval", 0.20)
 
         elif metric == "active_per_step":
             if too_low:

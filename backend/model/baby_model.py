@@ -33,7 +33,7 @@ class BabyModel:
         self.growth_warning_threshold = 256  # soft warning only, no blocking
         self.inhibition_radius = 0.92
         self.suppression_factor = 0.5
-        self.resonance_threshold = 0.05
+        self.resonance_threshold = 0.10
         self.resonance_min_pass = 12
         self.growth_check_interval = growth_check_interval
         self.snapshot_interval = snapshot_interval
@@ -314,14 +314,22 @@ class BabyModel:
         std_s = (sum((v - mean_s) ** 2 for v in sims) / n) ** 0.5
         z_threshold = mean_s + 1.0 * std_s
 
-        passed = {cid: s for cid, s in zip(ids, sims) if s > z_threshold}
+        # Two-gate filter: z-score (relative) AND absolute floor.
+        # The absolute floor prevents low-quality clusters from participating
+        # even when they're above the relative z-score threshold.
+        abs_floor = self.resonance_threshold
+        effective_threshold = max(z_threshold, abs_floor)
+        passed = {cid: s for cid, s in zip(ids, sims) if s > effective_threshold}
 
-        # Guarantee minimum clusters pass
+        # Guarantee minimum clusters pass (only from above absolute floor)
         min_pass = self.resonance_min_pass
         if len(passed) < min_pass:
-            top_indices = sorted(range(n), key=lambda i: sims[i], reverse=True)[:min_pass]
-            for i in top_indices:
-                passed[ids[i]] = sims[i]
+            above_floor = sorted(
+                [(i, sims[i]) for i in range(n) if sims[i] > abs_floor],
+                key=lambda x: x[1], reverse=True,
+            )
+            for i, s in above_floor[:min_pass]:
+                passed[ids[i]] = s
 
         # Hard cap at 20
         MAX_ACTIVE = 20
@@ -569,6 +577,8 @@ class BabyModel:
 
         # Resonance pre-screening — only clusters relevant to this input participate
         resonant_ids = _precomputed_resonance if _precomputed_resonance is not None else self._compute_resonance(effective_x)
+        self._last_input_vec = effective_x.detach()
+        self._growth_monitor.record_resonance(resonant_ids, self.step)
 
         # Seed BFS from ALL resonant clusters, sorted by layer.
         # Old approach only seeded from layer-0 entry clusters, which broke
@@ -768,9 +778,9 @@ class BabyModel:
 
         batch_size = len(samples)
         base_lr = self._plasticity_schedule.current_rate(self.step, self.stage)
-        # Scale learning rate by 1/batch_size so total weight movement
-        # matches a single step — just in a better-informed direction.
-        batch_lr = base_lr / batch_size
+        # Scale by sqrt(batch_size) — standard scaling for SGD with larger batches.
+        # Linear scaling (÷batch_size) killed learning at batch_size=128.
+        batch_lr = base_lr / math.sqrt(batch_size)
 
         # Compute resonance + traversal order ONCE for the batch.
         # All 32 samples reuse the same BFS path (same clusters, same edges).
@@ -866,7 +876,7 @@ class BabyModel:
                         cluster_act = abs(self._last_activations.get(cid, 0.0))
                         share = cluster_act / total_act if total_act > 0 else 0.0
                         local_target = F.normalize(outputs_cpu[cid] + share * error, dim=0)
-                        cluster.local_target_update(local_target, batch_lr * 0.1)
+                        cluster.local_target_update(local_target, batch_lr)
                     else:
                         cluster.ff_update(update_vec, cluster_positive, batch_lr)
 
@@ -974,13 +984,11 @@ class BabyModel:
         if len(active_clusters) > self.growth_warning_threshold:
             print(f"[growth] WARNING: {len(active_clusters)} active clusters exceeds soft threshold {self.growth_warning_threshold}", flush=True)
 
-        # Check BUD — rate scales with cluster count, skip if on cooldown.
-        # Hard pause above 500 clusters to prevent performance collapse.
+        # Check BUD — rate scales with cluster count (more clusters = more splits).
+        # Dormancy is the sole population regulator — no artificial cap on BUD.
         bud_count = 0
         bud_skipped = 0
-        if len(active_clusters) >= 500:
-            max_buds_per_check = 0
-        elif bud_on_cooldown:
+        if bud_on_cooldown:
             max_buds_per_check = 0
         else:
             max_buds_per_check = max(1, len(active_clusters) // 50)
@@ -1059,8 +1067,8 @@ class BabyModel:
         if pruned_count > 0:
             print(f"[prune] step={self.step} removed {pruned_count} edges, total={len(self.graph.edges)}", flush=True)
 
-        # Check INSERT — paused above 500 clusters (same as BUD)
-        growth_allowed = len(active_clusters) < 500
+        # Check INSERT — always allowed, dormancy regulates population
+        growth_allowed = True
         insert_count = 0
         max_inserts_per_check = 2
         if growth_allowed:
@@ -1109,7 +1117,7 @@ class BabyModel:
 
         # Check DORMANT
         for cluster in self.graph.clusters:
-            if monitor.should_dormant(cluster):
+            if monitor.should_dormant(cluster, self.step):
                 cluster.dormant = True
                 event = {
                     "event_type": "DORMANT",
@@ -1124,6 +1132,47 @@ class BabyModel:
                     metadata=event["metadata"],
                 )
                 events.append(event)
+
+        # Clean up edges and tracking data for newly dormant clusters
+        dormant_ids = {e["cluster_a"] for e in events if e["event_type"] == "DORMANT"}
+        if dormant_ids:
+            edges_before = len(self.graph.edges)
+            self.graph.edges = [
+                e for e in self.graph.edges
+                if e.from_id not in dormant_ids and e.to_id not in dormant_ids
+            ]
+            self.graph.rebuild_edge_index()
+            removed = edges_before - len(self.graph.edges)
+            if removed:
+                print(f"[dormant] cleaned {removed} edges from {len(dormant_ids)} dormant clusters", flush=True)
+            monitor.clean_dormant(dormant_ids)
+
+        # Check WAKE — test a sample of dormant clusters against recent input
+        dormant_clusters = [c for c in self.graph.clusters if c.dormant]
+        input_vec = getattr(self, '_last_input_vec', None)
+        if dormant_clusters and input_vec is not None:
+            sample = random.sample(dormant_clusters, min(5, len(dormant_clusters)))
+            input_norm = F.normalize(input_vec, dim=0)
+            for cluster in sample:
+                sim = F.cosine_similarity(
+                    cluster.identity.unsqueeze(0), input_norm.unsqueeze(0)
+                ).item()
+                if sim > 0.3:
+                    cluster.dormant = False
+                    cluster.age = 0
+                    monitor._last_resonance_step[cluster.id] = self.step
+                    event = {
+                        "event_type": "WAKE",
+                        "cluster_a": cluster.id,
+                        "metadata": {"reason": "dormant_resonance_match", "similarity": round(sim, 3)},
+                    }
+                    store.log_graph_event(
+                        step=self.step, event_type="WAKE",
+                        cluster_a=cluster.id, cluster_b=None,
+                        metadata=event["metadata"],
+                    )
+                    events.append(event)
+                    print(f"[wake] step={self.step} revived {cluster.id} (sim={sim:.3f})", flush=True)
 
         # Register any new nodes/edges from growth with the GPU store
         if events and hasattr(self, '_weight_store'):

@@ -18,6 +18,7 @@ class Node:
 
     _last_input: torch.Tensor = field(default=None, repr=False)
     _store_idx: int = field(default=-1, repr=False)  # row in WeightStore (-1 = not attached)
+    _updates_since_norm: int = field(default=0, repr=False)
 
     def activate(self, x: torch.Tensor) -> float:
         """
@@ -47,7 +48,10 @@ class Node:
         magnitude = self.plasticity * learning_rate * abs(activation)
         update = sign * magnitude * self._last_input * (1 - activation ** 2)
         self.weights = self.weights + update
-        self.weights = F.normalize(self.weights, dim=0)
+        self._updates_since_norm += 1
+        if self._updates_since_norm >= 10:
+            self.weights = F.normalize(self.weights, dim=0)
+            self._updates_since_norm = 0
 
     def local_target_update(
         self,
@@ -72,7 +76,10 @@ class Node:
         error = local_target - current_direction  # (512,) rich signal
         update = magnitude * error * (1 - activation ** 2)
         self.weights = self.weights + update
-        self.weights = F.normalize(self.weights, dim=0)
+        self._updates_since_norm += 1
+        if self._updates_since_norm >= 10:
+            self.weights = F.normalize(self.weights, dim=0)
+            self._updates_since_norm = 0
 
     @property
     def mean_activation(self) -> float:

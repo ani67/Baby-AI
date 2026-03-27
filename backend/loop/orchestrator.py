@@ -269,6 +269,7 @@ class LearningLoop:
         prediction, activations = self.model.forward(
             input_vec, return_activations=True,
         )
+
         # Adaptive threshold from step 0 — no stage gating
         is_positive = self._compute_is_positive(
             prediction=prediction,
@@ -323,7 +324,7 @@ class LearningLoop:
                 )
 
         # ── 10b. HEALTH MONITOR ──
-        active_count = sum(1 for c in self.model.graph.clusters if not c.dormant)
+        active_count = len(activations)  # clusters that actually fired this step
         total_clusters = len(self.model.graph.clusters)
         self.health_monitor.record_step(active_count, total_clusters)
         self.health_monitor.check(
@@ -465,6 +466,7 @@ class LearningLoop:
         # Unpack results from the sync computation
         changes, prediction, activations, anchor_pred, elapsed_ms = result
 
+
         # ── Main-thread work: growth, health, co-firing, logging, viz ──
 
         # Category tracking — extract dominant noun from caption
@@ -481,7 +483,7 @@ class LearningLoop:
         growth_events = self.model.growth_check(self.store)
 
         # Health monitor
-        active_count = sum(1 for c in self.model.graph.clusters if not c.dormant)
+        active_count = len(activations)  # clusters that actually fired this step
         total_clusters = len(self.model.graph.clusters)
         self.health_monitor.record_step(active_count, total_clusters)
         self.health_monitor.check(
@@ -504,8 +506,11 @@ class LearningLoop:
 
         # Log
         teacher_answer = items[-1].description or ""
+        wcm = sum(changes.values())
+        if self._batch_count % 10 == 0:
+            print(f"[learn] step={self.model.step} weight_change={wcm:.6f} clusters_updated={len(changes)}", flush=True)
         delta_summary = {
-            "weight_change_magnitude": sum(changes.values()),
+            "weight_change_magnitude": wcm,
             "edges_formed": [], "edges_pruned": [],
             "clusters_budded": [], "layers_inserted": [],
             "is_positive": True, "curiosity_score": 0.0,

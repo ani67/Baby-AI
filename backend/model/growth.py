@@ -179,6 +179,8 @@ class GrowthMonitor:
         self._activation_history: dict[str, deque] = {}
         self._bud_cooldown: dict[str, int] = {}  # cluster_id → step when last budded
         self.bud_cooldown_steps: int = 500
+        self._last_resonance_step: dict[str, int] = {}  # cluster_id → last step it resonated
+        self._resonance_hits: dict[str, deque] = {}  # cluster_id → rolling hit/miss (1.0/0.0)
 
     def record_step(
         self,
@@ -270,9 +272,46 @@ class GrowthMonitor:
         # Extend when top-layer clusters show diverse activation patterns
         return all(c.activation_bimodality > 0.3 for c in top_clusters)
 
-    def should_dormant(self, cluster: Cluster) -> bool:
-        history = self._activation_history.get(cluster.id, deque())
-        if len(history) < 500:
+    def record_resonance(self, resonant_ids: dict, step: int) -> None:
+        """Called each forward pass with {cluster_id: similarity} for resonant clusters."""
+        # Track mean similarity rank for all non-dormant clusters.
+        # Clusters that resonate get their actual similarity; others get 0.
+        for cluster in self._graph.clusters:
+            if cluster.dormant:
+                continue
+            if cluster.id not in self._resonance_hits:
+                self._resonance_hits[cluster.id] = deque(maxlen=500)
+            sim = resonant_ids.get(cluster.id, 0.0)
+            self._resonance_hits[cluster.id].append(sim)
+        for cid in resonant_ids:
+            self._last_resonance_step[cid] = step
+
+    def should_dormant(self, cluster: Cluster, current_step: int) -> bool:
+        if cluster.dormant:
             return False
-        mean = sum(history) / len(history)
-        return mean < 0.05 and cluster.age > 500
+        hits = self._resonance_hits.get(cluster.id)
+        if hits is None or len(hits) < 200:
+            return False  # not enough data yet
+        # Mean similarity across all forward passes (0.0 for passes where it didn't resonate).
+        # Useful clusters have high mean (resonate often AND with high similarity).
+        # Dead-weight clusters have near-zero mean (rarely resonate, or with minimal similarity).
+        mean_sim = sum(hits) / len(hits)
+        # Dormant if mean contribution < 0.005 over window AND old enough.
+        # For context: a cluster resonating 4% of the time with avg sim 0.15 → mean 0.006 (survives).
+        # A cluster resonating 4% of the time with avg sim 0.10 → mean 0.004 (dormant).
+        return mean_sim < 0.005 and cluster.age > 500
+
+    def clean_dormant(self, dormant_ids: set) -> None:
+        """Remove stale tracking data for dormant clusters."""
+        self._coactivation = {
+            k: v for k, v in self._coactivation.items()
+            if k[0] not in dormant_ids and k[1] not in dormant_ids
+        }
+        self._residuals = {
+            k: v for k, v in self._residuals.items()
+            if k[0] not in dormant_ids and k[1] not in dormant_ids
+        }
+        for cid in dormant_ids:
+            self._activation_history.pop(cid, None)
+            self._last_resonance_step.pop(cid, None)
+            self._resonance_hits.pop(cid, None)
