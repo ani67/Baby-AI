@@ -18,6 +18,7 @@ class Cluster:
     age: int = 0
     dormant: bool = False
     _identity_cache: torch.Tensor | None = field(default=None, repr=False)
+    _store: object | None = field(default=None, repr=False)  # WeightStore reference
 
     _output_history: deque = field(default_factory=lambda: deque(maxlen=64), repr=False)
 
@@ -52,7 +53,11 @@ class Cluster:
         living = [n for n in self.nodes if n.alive]
         if not living:
             return torch.zeros(512)
-        weights = torch.stack([n.weights for n in living])
+        if self._store is not None and living[0]._store_idx >= 0:
+            indices = [n._store_idx for n in living]
+            weights = self._store.weights[indices]
+        else:
+            weights = torch.stack([n.weights for n in living])
         self._identity_cache = F.normalize(weights.mean(dim=0), dim=0)
         return self._identity_cache
 
@@ -111,7 +116,8 @@ class Cluster:
         incoming_edge_signals: dict,
     ) -> torch.Tensor:
         """
-        Activate all living nodes, return weighted-sum output (512,).
+        Activate all living nodes via batched matmul, return weighted-sum output (512,).
+        One matmul for all nodes instead of per-node dot products.
         """
         combined = x.clone()
         for value in incoming_edge_signals.values():
@@ -121,20 +127,38 @@ class Cluster:
             else:
                 combined = combined + 0.3 * value
 
-        node_activations = []
-        for node in self.nodes:
-            if node.alive:
-                act = node.activate(combined)
-                node_activations.append((node, act))
-
-        if not node_activations:
+        living = [n for n in self.nodes if n.alive]
+        if not living:
             return torch.zeros(512)
 
-        output = torch.zeros(512)
-        total_weight = sum(abs(act) for _, act in node_activations)
+        # Batched activation: index into GPU store or stack from CPU
+        if self._store is not None and living[0]._store_idx >= 0:
+            indices = [n._store_idx for n in living]
+            weight_matrix = self._store.weights[indices]  # (K, 512) — GPU index
+            biases = self._store.biases[indices]           # (K,) — GPU index
+            combined = combined.to(weight_matrix.device)
+        else:
+            weight_matrix = torch.stack([n.weights for n in living])  # (K, 512)
+            biases = torch.stack([n.bias for n in living]).squeeze(-1)  # (K,)
+        raw = weight_matrix @ combined + biases  # (K,) — one matmul
+        acts = torch.tanh(raw)  # (K,)
+
+        # Write back side effects: _last_input, activation_history, age
+        acts_list = acts.tolist()
+        combined_cpu = combined.detach().cpu()
+        for i, node in enumerate(living):
+            node._last_input = combined_cpu
+            node.activation_history.append(acts_list[i])
+            node.age += 1
+
+        # Batched output computation: weighted sum of node weights by activation
+        abs_acts = acts.abs()  # (K,)
+        total_weight = abs_acts.sum()
         if total_weight > 0:
-            for node, act in node_activations:
-                output += (act / total_weight) * node.weights
+            coeffs = (acts / total_weight).unsqueeze(1)  # (K, 1)
+            output = (coeffs * weight_matrix).sum(dim=0)  # (512,)
+        else:
+            output = torch.zeros(512)
 
         output = F.normalize(output, dim=0)
         self._output_history.append(output.detach().clone())
@@ -153,3 +177,27 @@ class Cluster:
                 activation = node.activation_history[-1] if node.activation_history else 0.0
                 node.ff_update(activation, is_positive, learning_rate)
         self._identity_cache = None  # weights changed, invalidate
+
+    def local_target_update(
+        self,
+        teacher_vec: torch.Tensor,
+        learning_rate: float,
+    ) -> None:
+        """
+        Rich local learning: project teacher target into each node's space.
+        Each node gets its own 512-d direction to learn toward.
+        """
+        for node in self.nodes:
+            if node.alive:
+                activation = node.activation_history[-1] if node.activation_history else 0.0
+                if abs(activation) < 0.001:
+                    continue
+                # Each node's local target: blend of teacher direction
+                # and its own specialization (so nodes don't all converge)
+                node_sim = torch.dot(node.weights, teacher_vec).item()
+                # Scale target by how relevant this node is to the teacher
+                local_target = F.normalize(
+                    teacher_vec + 0.5 * node.weights, dim=0
+                )
+                node.local_target_update(activation, local_target, learning_rate)
+        self._identity_cache = None

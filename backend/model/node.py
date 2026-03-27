@@ -9,14 +9,15 @@ import torch.nn.functional as F
 class Node:
     id: str                                        # "n_042"
     cluster_id: str                                # which cluster owns this node
-    weights: torch.Tensor                          # shape (512,) — input dim
-    bias: torch.Tensor                             # shape (1,)
+    weights: torch.Tensor = None                   # shape (512,)
+    bias: torch.Tensor = None                      # shape (1,)
     plasticity: float = 1.0                        # 0.0 to 1.0
     age: int = 0                                   # steps since creation
     activation_history: deque = field(default_factory=lambda: deque(maxlen=64))
     alive: bool = True                             # False = dormant
 
     _last_input: torch.Tensor = field(default=None, repr=False)
+    _store_idx: int = field(default=-1, repr=False)  # row in WeightStore (-1 = not attached)
 
     def activate(self, x: torch.Tensor) -> float:
         """
@@ -45,6 +46,31 @@ class Node:
         sign = 1.0 if is_positive else -1.0
         magnitude = self.plasticity * learning_rate * abs(activation)
         update = sign * magnitude * self._last_input * (1 - activation ** 2)
+        self.weights = self.weights + update
+        self.weights = F.normalize(self.weights, dim=0)
+
+    def local_target_update(
+        self,
+        activation: float,
+        local_target: torch.Tensor,
+        learning_rate: float,
+    ) -> None:
+        """
+        Rich local learning: each node gets a 512-d target direction
+        instead of a binary +/-. The node pushes its weights toward
+        producing output aligned with the target.
+
+        update = lr * (target - weighted_output_direction) * (1 - act²)
+        Still local — no backprop. But 512x more information than FF.
+        """
+        if self._last_input is None:
+            return
+        # How much this node contributed to the cluster output
+        magnitude = self.plasticity * learning_rate * abs(activation)
+        # Error: difference between what the node "sees" and what the target wants
+        current_direction = self.weights
+        error = local_target - current_direction  # (512,) rich signal
+        update = magnitude * error * (1 - activation ** 2)
         self.weights = self.weights + update
         self.weights = F.normalize(self.weights, dim=0)
 

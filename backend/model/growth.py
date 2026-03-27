@@ -106,7 +106,7 @@ def insert_layer(
     Creates new cluster between cluster_a and cluster_b.
     Initializes node weights from PCA of residual_samples.
     """
-    U, S, V = torch.pca_lowrank(residual_samples, q=8)
+    U, S, V = torch.pca_lowrank(residual_samples.cpu(), q=8)
     initial_weights = V.T  # shape (8, 512)
 
     new_nodes = []
@@ -208,8 +208,8 @@ class GrowthMonitor:
                 key = tuple(sorted([edge.from_id, edge.to_id]))
                 if key not in self._residuals:
                     self._residuals[key] = deque(maxlen=200)
-                residual = outputs[edge.to_id] - outputs[edge.from_id]
-                self._residuals[key].append(residual.detach())
+                residual = (outputs[edge.to_id] - outputs[edge.from_id]).detach().cpu()
+                self._residuals[key].append(residual)
 
     def should_bud(self, cluster: Cluster) -> bool:
         # With L2-normalized weights, output_coherence stays near 1.0.
@@ -254,7 +254,7 @@ class GrowthMonitor:
     def should_insert(self, residuals: torch.Tensor) -> bool:
         if len(residuals) < 100:
             return False
-        U, S, V = torch.pca_lowrank(residuals, q=4)
+        U, S, V = torch.pca_lowrank(residuals.cpu(), q=4)
         explained = (S[:2] ** 2).sum() / (S ** 2).sum()
         return explained.item() > 0.4
 

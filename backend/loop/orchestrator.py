@@ -181,7 +181,7 @@ class LearningLoop:
             )
 
         if use_batch:
-            return await self._step_batch(32)
+            return await self._step_batch(128)
         return await self._step_single()
 
     async def _step_single(self) -> StepResult:
