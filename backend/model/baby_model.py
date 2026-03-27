@@ -531,17 +531,26 @@ class BabyModel:
         # Run inhibition + record
         self._growth_monitor.record_step(activations, outputs)
 
-        # Convergence round (same as forward — clusters share with confident neighbors)
+        # Convergence round — surprise-based (same logic as forward)
         visited_ids = {cid for cid, _ in traversal}
-        confidence = {cid: activations.get(cid, 0.0) for cid in visited_ids}
+        raw_conf = {cid: activations.get(cid, 0.0) for cid in visited_ids}
+        if raw_conf:
+            mean_c = sum(raw_conf.values()) / len(raw_conf)
+            std_c = (sum((v - mean_c) ** 2 for v in raw_conf.values()) / len(raw_conf)) ** 0.5
+            surprise = {
+                cid: (raw_conf[cid] - mean_c) / std_c if std_c > 1e-6 else 0.0
+                for cid in raw_conf
+            }
+        else:
+            surprise = {}
         for cid in list(visited_ids):
-            if cid not in outputs:
+            if cid not in outputs or surprise.get(cid, 0) <= 0:
                 continue
             neighbor_signals = []
             for edge in self.graph.incoming_edges(cid):
                 nid = edge.from_id if edge.from_id != cid else edge.to_id
-                if nid in outputs and nid in confidence and confidence[nid] > confidence[cid]:
-                    weight = edge.strength * confidence[nid]
+                if nid in outputs and nid in surprise and surprise[nid] < surprise[cid]:
+                    weight = edge.strength * surprise[cid]
                     neighbor_signals.append((outputs[nid], weight))
             if neighbor_signals:
                 total_w = sum(w for _, w in neighbor_signals)
@@ -555,14 +564,14 @@ class BabyModel:
         self._last_activations = activations
         self._last_outputs = outputs
 
-        # Confidence-weighted output across all visited clusters
+        # Confidence-weighted output (raw resonance, not surprise)
         if not traversal:
             return torch.zeros(self.input_dim), {}
         weighted_parts = []
         total_conf = 0.0
         for cid in visited_ids:
-            if cid in outputs and cid in confidence:
-                c = confidence[cid]
+            if cid in outputs and cid in raw_conf:
+                c = raw_conf[cid]
                 weighted_parts.append(outputs[cid] * c)
                 total_conf += c
         if weighted_parts and total_conf > 0:
@@ -677,17 +686,29 @@ class BabyModel:
                 pre_inhibition_top4 = F.normalize(torch.stack(top4_vecs).mean(dim=0), dim=0)
 
         # ── Convergence round: clusters share outputs with neighbors ──
-        # More-confident clusters influence less-confident ones via edges.
-        # Confidence = resonance similarity (how well this cluster matched the input).
-        confidence = {cid: resonant_ids.get(cid, 0.0) for cid in visited}
+        # Use SURPRISE (confidence relative to this step's mean) not absolute confidence.
+        # Generalists have high absolute confidence on every input — they'd homogenize
+        # the network. Surprise measures "I match THIS input unusually well" which is
+        # input-specific, creating diverse communities instead of one mega-community.
+        raw_conf = {cid: resonant_ids.get(cid, 0.0) for cid in visited}
+        if raw_conf:
+            mean_conf = sum(raw_conf.values()) / len(raw_conf)
+            std_conf = (sum((v - mean_conf) ** 2 for v in raw_conf.values()) / len(raw_conf)) ** 0.5
+            surprise = {
+                cid: (raw_conf[cid] - mean_conf) / std_conf if std_conf > 1e-6 else 0.0
+                for cid in raw_conf
+            }
+        else:
+            surprise = {}
+        # Only clusters with positive surprise (above-average match) influence neighbors
         for cid in list(visited):
-            if cid not in outputs:
+            if cid not in outputs or surprise.get(cid, 0) <= 0:
                 continue
             neighbor_signals = []
             for edge in self.graph.incoming_edges(cid):
                 nid = edge.from_id if edge.from_id != cid else edge.to_id
-                if nid in outputs and nid in confidence and confidence[nid] > confidence[cid]:
-                    weight = edge.strength * confidence[nid]
+                if nid in outputs and nid in surprise and surprise[nid] < surprise[cid]:
+                    weight = edge.strength * surprise[cid]
                     neighbor_signals.append((outputs[nid], weight))
             if neighbor_signals:
                 total_w = sum(w for _, w in neighbor_signals)
@@ -695,10 +716,8 @@ class BabyModel:
                 outputs[cid] = F.normalize(
                     outputs[cid] + 0.3 * neighbor_blend, dim=0
                 )
-                agreement = F.cosine_similarity(
-                    outputs[cid].unsqueeze(0), neighbor_blend.unsqueeze(0)
-                ).item()
-                confidence[cid] *= (1 + 0.2 * max(0, agreement))
+        # Confidence for output weighting = raw resonance (not surprise)
+        confidence = raw_conf
 
         # THEN apply lateral inhibition — only affects signal/learning, not growth tracking
         activations = self._apply_inhibition(activations)
