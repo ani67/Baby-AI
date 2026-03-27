@@ -829,16 +829,30 @@ class BabyModel:
 
             self._forward_fast(x, traversal)
             blend = self._per_cluster_blend() if self.per_cluster_signal else 0.0
+
+            # Pre-compute distributed error ONCE per sample (not per cluster)
+            error = None
+            total_act = 0.0
+            outputs_cpu: dict[str, torch.Tensor] = {}
+            if teacher_vec is not None and self._last_outputs:
+                teacher_norm = F.normalize(teacher_vec, dim=0)
+                for k, v in self._last_outputs.items():
+                    if k in self._last_activations and abs(self._last_activations[k]) > 0.01:
+                        outputs_cpu[k] = v.cpu() if v.device.type != 'cpu' else v
+                if outputs_cpu:
+                    model_output = torch.stack(list(outputs_cpu.values())).mean(dim=0)
+                    error = teacher_norm - F.normalize(model_output, dim=0)
+                    total_act = sum(abs(v) for v in self._last_activations.values())
+
             for cid in self._last_visited:
                 cluster = self.graph.get_cluster(cid)
                 if cluster and not cluster.dormant:
                     cluster_positive = is_positive
 
                     # C.1: Staged per-cluster signal
-                    if blend > 0.0 and teacher_vec is not None and cid in self._last_outputs:
-                        out_cpu = self._last_outputs[cid].cpu()
+                    if blend > 0.0 and teacher_vec is not None and cid in outputs_cpu:
                         cluster_sim = torch.dot(
-                            out_cpu, F.normalize(teacher_vec, dim=0)
+                            outputs_cpu[cid], teacher_norm
                         ).item()
                         cluster_is_positive = cluster_sim > 0.0
                         if random.random() < blend:
@@ -847,27 +861,12 @@ class BabyModel:
                     # C.3: Use patch-specific input if available
                     update_vec = cluster_patch_input.get(cid, x)
 
-                    # Distributed error: each cluster fixes its SHARE of the gap
-                    if teacher_vec is not None and self._last_outputs:
-                        teacher_norm = F.normalize(teacher_vec, dim=0)
-                        # Model's combined output (same as forward result)
-                        active_outputs = {
-                            k: v.cpu() for k, v in self._last_outputs.items()
-                            if k in self._last_activations and abs(self._last_activations[k]) > 0.01
-                        }
-                        if active_outputs:
-                            model_output = torch.stack(list(active_outputs.values())).mean(dim=0)
-                            error = teacher_norm - F.normalize(model_output, dim=0)
-                            # This cluster's share proportional to its activation
-                            total_act = sum(abs(v) for v in self._last_activations.values())
-                            cluster_act = abs(self._last_activations.get(cid, 0.0))
-                            share = cluster_act / total_act if total_act > 0 else 0.0
-                            # Cluster's local target: its current output + its share of the error
-                            cluster_out = self._last_outputs[cid].cpu() if cid in self._last_outputs else torch.zeros(512)
-                            local_target = F.normalize(cluster_out + share * error, dim=0)
-                            cluster.local_target_update(local_target, batch_lr * 0.1)
-                        else:
-                            cluster.ff_update(update_vec, cluster_positive, batch_lr)
+                    # Distributed error: each cluster fixes its SHARE
+                    if error is not None and cid in outputs_cpu:
+                        cluster_act = abs(self._last_activations.get(cid, 0.0))
+                        share = cluster_act / total_act if total_act > 0 else 0.0
+                        local_target = F.normalize(outputs_cpu[cid] + share * error, dim=0)
+                        cluster.local_target_update(local_target, batch_lr * 0.1)
                     else:
                         cluster.ff_update(update_vec, cluster_positive, batch_lr)
 
