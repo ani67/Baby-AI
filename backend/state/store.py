@@ -369,14 +369,14 @@ class StateStore:
         return [{"a": r["cluster_a"], "b": r["cluster_b"], "count": r["count"], "last_updated": r["last_updated"]} for r in rows]
 
     def update_category_performance(self, category: str, similarity: float, is_positive: bool, step: int) -> None:
-        """Update running stats for a category."""
+        """Update running stats for a category. Uses EMA (alpha=0.01) so recent values are visible."""
         self._conn.execute(
             """INSERT INTO category_performance (category, total, positive, avg_sim, last_step)
                VALUES (?, 1, ?, ?, ?)
                ON CONFLICT(category) DO UPDATE SET
                  total = total + 1,
                  positive = positive + ?,
-                 avg_sim = (avg_sim * total + ?) / (total + 1),
+                 avg_sim = avg_sim * 0.99 + ? * 0.01,
                  last_step = ?""",
             (category, int(is_positive), similarity, step,
              int(is_positive), similarity, step),

@@ -893,10 +893,12 @@ class BabyModel:
                 for i, cid in enumerate(self._identity_ids):
                     cluster_patch_input[cid] = patches[best_patch_indices[i].item()]
 
-            self._forward_fast(x, traversal)
+            model_result, _ = self._forward_fast(x, traversal)
             blend = self._per_cluster_blend() if self.per_cluster_signal else 0.0
 
             # Pre-compute distributed error ONCE per sample (not per cluster)
+            # Use the ACTUAL model output (confidence-weighted, post-convergence)
+            # not a plain mean of cluster outputs.
             error = None
             total_act = 0.0
             outputs_cpu: dict[str, torch.Tensor] = {}
@@ -906,7 +908,7 @@ class BabyModel:
                     if k in self._last_activations and abs(self._last_activations[k]) > 0.01:
                         outputs_cpu[k] = v.cpu() if v.device.type != 'cpu' else v
                 if outputs_cpu:
-                    model_output = torch.stack(list(outputs_cpu.values())).mean(dim=0)
+                    model_output = model_result.cpu() if model_result.device.type != 'cpu' else model_result
                     error = teacher_norm - F.normalize(model_output, dim=0)
                     total_act = sum(abs(v) for v in self._last_activations.values())
 
