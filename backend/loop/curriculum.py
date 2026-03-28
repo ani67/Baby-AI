@@ -148,20 +148,14 @@ class _EmbeddingCache:
 
     def sample_sequential(self) -> CurriculumItem | None:
         """Return next item from current episode, starting a new one if needed."""
-        # Start new episode if current is exhausted
-        new_episode = False
         if self._episode_cursor >= len(self._episode_ids):
             if not self._start_episode():
                 return self.sample()
-            new_episode = True
         if self._episode_cursor >= len(self._episode_ids):
             return self.sample()
         iid = self._episode_ids[self._episode_cursor]
         self._episode_cursor += 1
-        item = self._fetch_item(iid)
-        if item and new_episode:
-            item.context = "__new_episode__"
-        return item
+        return self._fetch_item(iid)
 
     def _fetch_item(self, iid: int) -> CurriculumItem | None:
         """Fetch a single CurriculumItem by image_id."""

@@ -823,12 +823,10 @@ class BabyModel:
     def update_batch(
         self,
         samples: list[tuple],
-        episode_boundaries: list[int] | None = None,
     ) -> tuple[dict, list[dict]]:
         """
         Accumulate FF updates across a batch of sample tuples.
         Supports: (vec, is_positive) or (vec, is_positive, teacher_vec) for enriched signal.
-        episode_boundaries: sample indices where a new episode starts (zero the buffer).
         Increments step by len(samples). Returns (per-cluster weight changes, per-sample activations).
         """
         if not samples:
@@ -879,15 +877,7 @@ class BabyModel:
                     paired_samples.append((vec_b, True, teacher_b))
             samples = paired_samples
 
-        _boundaries = set(episode_boundaries or [])
-        _buffer_cleared = False
         for sample_idx, sample in enumerate(samples):
-            # Palate cleanser: zero buffer at FIRST episode boundary only
-            # (zeroing at every boundary kills the buffer — norm drops to 0)
-            if not _buffer_cleared and sample_idx in _boundaries:
-                self._activation_buffer.zero_()
-                _buffer_cleared = True
-
             x = sample[0]
             is_positive = sample[1]
             teacher_vec = sample[2] if len(sample) > 2 else None
