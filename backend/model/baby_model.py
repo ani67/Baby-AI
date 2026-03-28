@@ -947,8 +947,9 @@ class BabyModel:
                             base_target = base_target + 0.3 * patch_vec
                         local_target = F.normalize(base_target, dim=0)
                         cluster.local_target_update(local_target, batch_lr)
-                        # Per-cluster lens: nudge toward reducing this cluster's error
-                        cluster.update_lens(error, cluster_act, batch_lr)
+                        # Per-cluster lens: use THIS cluster's error, not global
+                        cluster_error = teacher_norm - F.normalize(outputs_cpu[cid], dim=0)
+                        cluster.update_lens(cluster_error, cluster_act, batch_lr)
                     else:
                         cluster.ff_update(update_vec, cluster_positive, batch_lr)
 
