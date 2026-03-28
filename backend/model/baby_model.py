@@ -213,12 +213,6 @@ class BabyModel:
         else:
             self._activation_buffer = torch.zeros(self.input_dim)
 
-        # Restore per-cluster lenses if present
-        for c in self.graph.clusters:
-            lens_key = f"{c.id}.lens"
-            if lens_key in state_dict:
-                c.lens = state_dict[lens_key]
-
         # Re-attach GPU weight store
         self._weight_store = WeightStore(dim=self.input_dim)
         self._attach_store()
@@ -954,9 +948,6 @@ class BabyModel:
                             base_target = base_target + 0.3 * patch_vec
                         local_target = F.normalize(base_target, dim=0)
                         cluster.local_target_update(local_target, batch_lr)
-                        # Per-cluster lens: use THIS cluster's error, not global
-                        cluster_error = teacher_norm - F.normalize(outputs_cpu[cid], dim=0)
-                        cluster.update_lens(cluster_error, cluster_act, batch_lr)
                     else:
                         cluster.ff_update(update_vec, cluster_positive, batch_lr)
 
