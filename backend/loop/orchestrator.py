@@ -633,6 +633,10 @@ class LearningLoop:
         # Use ONE forward pass to get model's current output direction,
         # then determine positive/negative for each sample via cosine
         # similarity — avoids 32 forward passes per batch.
+        # Palate cleanser: zero activation buffer at episode boundaries
+        # to prevent category A's signal from contaminating category B
+        episode_boundaries = [i for i, item in enumerate(items) if getattr(item, 'context', '') == '__new_episode__']
+
         anchor_vec = items[0].expected_vector if items[0].expected_vector is not None else torch.randn(self.model.input_dim)
         anchor_pred, _ = self.model.forward(anchor_vec, return_activations=False)
 
@@ -660,7 +664,7 @@ class LearningLoop:
             samples.extend(replay_samples)
 
         # Batched forward+update
-        changes, all_activations = self.model.update_batch(samples)
+        changes, all_activations = self.model.update_batch(samples, episode_boundaries=episode_boundaries)
 
         # Final forward for activations (viz)
         last_vec = items[-1].expected_vector if items[-1].expected_vector is not None else torch.randn(self.model.input_dim)
