@@ -618,8 +618,7 @@ def _compute_cluster_labels(store, graph) -> dict[str, list[str]]:
             cluster_list = json.loads(clusters_json)
         except (json.JSONDecodeError, TypeError):
             continue
-        top3 = cluster_list[:3]
-        for cid in top3:
+        for cid in cluster_list:
             if cid in cluster_texts and len(cluster_texts[cid]) < 50:
                 cluster_texts[cid].append(answer)
 

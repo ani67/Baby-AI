@@ -61,7 +61,8 @@ class _EmbeddingCache:
         self._cursor_idx: int = 0  # sequential position for round-robin
         self._step_times: list[float] = []
         self._has_image_url: bool = False
-        self._patches: dict[int, torch.Tensor] = {}  # C.3: image_id → (49, 512)
+        self._patches: dict[int, torch.Tensor] | None = None  # C.3: lazy-loaded
+        self._patches_path: str | None = None
 
     def open(self) -> int:
         """Open the database and index image_ids.  Returns count."""
@@ -88,11 +89,11 @@ class _EmbeddingCache:
             # Detect image_url column for backwards compat
             cols = {r[1] for r in self._conn.execute("PRAGMA table_info(embedding_cache)").fetchall()}
             self._has_image_url = "image_url" in cols
-            # C.3: Load patch features if available
+            # C.3: Defer patch features loading until first access
             patches_path = os.path.join(os.path.dirname(self._db_path), "patch_features.pt")
             if os.path.exists(patches_path):
-                self._patches = torch.load(patches_path, weights_only=False)
-                print(f"[curriculum] loaded {len(self._patches)} patch features", flush=True)
+                self._patches_path = patches_path
+                print(f"[curriculum] patch features available (lazy-load)", flush=True)
         except Exception as e:
             print(f"[curriculum] embedding_cache open error: {e}", flush=True)
             self._conn = None
@@ -128,7 +129,11 @@ class _EmbeddingCache:
         caption_text = row["caption_text"]
         image_url = row["image_url"] if self._has_image_url else None
 
-        patches = self._patches.get(iid)  # (49, 512) or None
+        # Lazy-load patch features on first access
+        if self._patches is None and self._patches_path is not None:
+            self._patches = torch.load(self._patches_path, weights_only=False)
+            print(f"[curriculum] loaded {len(self._patches)} patch features", flush=True)
+        patches = self._patches.get(iid) if self._patches else None
 
         return CurriculumItem(
             id=f"coco_{iid}",
