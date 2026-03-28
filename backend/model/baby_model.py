@@ -922,7 +922,8 @@ class BabyModel:
                     # Train projection layer using distributed error
                     raw_input = sample[4] if len(sample) > 4 else None
                     if raw_input is not None:
-                        self.projection.update(raw_input, error)
+                        active_count = len(self._last_activations)
+                        self.projection.update(raw_input, error, active_clusters=active_count)
 
             for cid in self._last_visited:
                 cluster = self.graph.get_cluster(cid)

@@ -17,10 +17,8 @@ class LearnedProjection:
         self.dim = dim
         self.warmup_steps = warmup_steps
         self._delta = torch.zeros(dim, dim)
-        self._momentum = torch.zeros(dim, dim)
         self._step = 0
-        self._lr = 0.001
-        self._momentum_decay = 0.9
+        self._base_lr = 0.001
 
     @property
     def alpha(self) -> float:
@@ -38,16 +36,19 @@ class LearnedProjection:
         projected = x + self.alpha * (x @ self._delta.T)
         return F.normalize(projected, dim=-1)
 
-    def update(self, raw_input: torch.Tensor, error: torch.Tensor):
+    def update(self, raw_input: torch.Tensor, error: torch.Tensor, active_clusters: int = 20):
         """Update projection using distributed error signal.
 
         raw_input: un-projected CLIP vector (512,)
         error: teacher_projected - model_output (512,)
+        active_clusters: number of clusters affected (scales LR down)
         """
         # Outer product = exact gradient of ||teacher - P(input)||^2 w.r.t. Delta
         grad = error.unsqueeze(0).T @ raw_input.unsqueeze(0)  # (512, 512)
-        self._momentum = self._momentum_decay * self._momentum + (1 - self._momentum_decay) * grad
-        self._delta = self._delta + self._lr * self.alpha * self._momentum
+        # Scale by 1/active_clusters: one projection step affects all clusters,
+        # so step size must be proportionally smaller to match graph's per-cluster pace
+        lr = self._base_lr * self.alpha / max(active_clusters, 1)
+        self._delta = self._delta + lr * grad
         self._step += 1
         # Periodic norm clamp to prevent explosion
         if self._step % 100 == 0:
@@ -64,13 +65,11 @@ class LearnedProjection:
     def state_dict(self) -> dict:
         return {
             "projection_delta": self._delta.clone(),
-            "projection_momentum": self._momentum.clone(),
             "projection_step": self._step,
         }
 
     def load_state_dict(self, d: dict):
         self._delta = d.get("projection_delta", torch.zeros(self.dim, self.dim))
-        self._momentum = d.get("projection_momentum", torch.zeros(self.dim, self.dim))
         self._step = d.get("projection_step", 0)
         print(
             f"[projection] restored step={self._step} alpha={self.alpha:.3f} "
