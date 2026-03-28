@@ -766,37 +766,30 @@ class LearningLoop:
     async def human_message(self, text: str) -> str:
         _, text_encoder, _ = self.encoders
 
-        # Replay recent conversation through brain to rebuild context.
-        # Light: only last 3 human messages, max 6 words each (skip model babble).
-        history = self.store.get_human_chat(limit=6)  # 3 exchanges
-        history.reverse()
-        replayed = 0
-        for msg in history:
-            if replayed >= 3:
+        # Briefly pause training so the brain is free for chat.
+        # Without this, chat blocks until the current batch completes (~5-30s).
+        was_running = self._state == LoopState.RUNNING
+        if was_running:
+            self._state = LoopState.PAUSED
+            await asyncio.sleep(0.1)  # let current step finish yielding
+
+        # Replay last human message only (1 message, max 4 words — fast).
+        history = self.store.get_human_chat(limit=2)
+        for msg in reversed(history):
+            if msg.get("role") == "human" and not msg.get("message", "").startswith("["):
+                short = " ".join(msg["message"].split()[:4])
+                self.decoder.encode_sequence(short, brain=self.model.brain, text_encoder=text_encoder)
                 break
-            role = msg.get("role", "")
-            content = msg.get("message", "")
-            if role != "human" or content.startswith("[correction]"):
-                continue
-            # Cap to 6 words to keep replay fast
-            short = " ".join(content.split()[:6])
-            self.decoder.encode_sequence(
-                short, brain=self.model.brain, text_encoder=text_encoder,
-            )
-            replayed += 1
 
-        # Sequence input: process each word through the brain, building context
-        # via the activation buffer. Falls back to CLIP for unknown words.
-        output_vector = self.decoder.encode_sequence(
-            text, brain=self.model.brain, text_encoder=text_encoder,
-        )
-        # One more forward to get activations for logging
-        _, activations = self.model.forward(output_vector, return_activations=True)
+        # Encode input — single CLIP vector for speed (skip per-word at scale).
+        # Per-word tokenization is slow at 1K+ neurons. CLIP captures sentence meaning.
+        input_vector = text_encoder.encode(text)
+        output_vector, activations = self.model.forward(input_vector, return_activations=True)
 
-        # Autoregressive output: brain generates token by token
+        # Generate response — 6 tokens max (fast, focused)
         response = self.decoder.generate(
             output_vector, brain=self.model.brain,
-            max_tokens=12, model_step=self.model.step,
+            max_tokens=6, model_step=self.model.step,
         )
 
         active_clusters = list(activations.keys())
@@ -817,6 +810,10 @@ class LearningLoop:
             message=response,
             clusters_active=active_clusters,
         )
+
+        # Resume training if it was running before chat
+        if was_running:
+            asyncio.ensure_future(self.start())
 
         return response
 
