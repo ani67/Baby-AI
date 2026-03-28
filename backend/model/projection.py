@@ -18,7 +18,7 @@ class LearnedProjection:
         self.warmup_steps = warmup_steps
         self._delta = torch.zeros(dim, dim)
         self._step = 0
-        self._base_lr = 0.001
+        self._base_lr = 0.005
 
     @property
     def alpha(self) -> float:
