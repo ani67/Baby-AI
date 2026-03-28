@@ -401,8 +401,10 @@ class LearningLoop:
             self.store.prune_old_snapshots()
 
         # ── 12. EMIT ──
+        # Train decoder on teacher's description
+        self.decoder.train_step(prediction, teacher_answer)
         # Decode model's prediction into words for the frontend
-        model_response = self.decoder.decode(prediction, max_words=15)
+        model_response = self.decoder.decode(prediction, max_words=15, model_step=self.model.step)
 
         if self.viz_emitter is not None:
             asyncio.ensure_future(self.viz_emitter.emit_step(
@@ -587,8 +589,10 @@ class LearningLoop:
             if self._batch_count % 50 == 0 or evicted:
                 print(f"[memory] total={mem_count} evicted={evicted}", flush=True)
 
+        # Train decoder on teacher's description
+        self.decoder.train_step(prediction, teacher_answer)
         # Emit viz (non-blocking)
-        model_response = self.decoder.decode(prediction, max_words=15)
+        model_response = self.decoder.decode(prediction, max_words=15, model_step=self.model.step)
         if self.viz_emitter is not None:
             asyncio.ensure_future(self.viz_emitter.emit_step(
                 step=self.model.step, stage=self._stage,
@@ -705,7 +709,7 @@ class LearningLoop:
         output_vector, activations = self.model.forward(
             input_vector, return_activations=True,
         )
-        response = self.decoder.decode(output_vector, max_words=30)
+        response = self.decoder.decode(output_vector, max_words=30, model_step=self.model.step)
 
         active_clusters = list(activations.keys())
 
