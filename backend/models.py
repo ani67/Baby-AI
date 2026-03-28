@@ -14,6 +14,10 @@ class ChatRequest(BaseModel):
     message: str
 
 
+class ChatCorrectRequest(BaseModel):
+    correction: str
+
+
 class ChatResponse(BaseModel):
     message: str
     step: int

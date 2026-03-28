@@ -28,8 +28,9 @@ class GraphAdapter:
 
     @property
     def edges(self):
-        """Return list of edge-like objects."""
+        """Return list of edge-like objects. Capped at 5000 for API speed at scale."""
         result = []
+        limit = 5000
         for (i, j), s in self._brain._edge_strengths.items():
             if i < self._brain.n and j < self._brain.n:
                 result.append(_EdgeView(
@@ -37,6 +38,8 @@ class GraphAdapter:
                     self._brain.cluster_ids[j],
                     s,
                 ))
+                if len(result) >= limit:
+                    break
         return result
 
     def summary(self) -> dict:
@@ -66,6 +69,7 @@ class GraphAdapter:
             })
 
         edges = []
+        edge_limit = 10000  # cap serialization for speed at scale
         for (i, j), s in self._brain._edge_strengths.items():
             if i < self._brain.n and j < self._brain.n:
                 edges.append({
@@ -78,6 +82,8 @@ class GraphAdapter:
                     "direction": "forward",
                     "steps_since_activation": 0,
                 })
+                if len(edges) >= edge_limit:
+                    break
 
         return {
             "step": 0,  # filled by caller

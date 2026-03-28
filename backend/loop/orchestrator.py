@@ -339,21 +339,25 @@ class LearningLoop:
             similarity_history=self._similarity_history,
         )
 
-        # ── 10c. CO-FIRING ──
-        # Record which clusters fired together; batch write every 50 step_once() calls
-        active_cids = [cid for cid, v in activations.items() if v > 0.01]
-        for i in range(len(active_cids)):
-            for j in range(i + 1, len(active_cids)):
-                self._cofiring_buffer.append((active_cids[i], active_cids[j]))
-        # Temporal co-firing: top-5 from previous step → top-5 from this step
-        top5 = sorted(activations.items(), key=lambda x: -x[1])[:5]
-        top5_cids = [cid for cid, _ in top5]
-        if self._prev_active_cids:
-            for prev_cid in self._prev_active_cids:
-                for curr_cid in top5_cids:
-                    if prev_cid != curr_cid:
-                        self._cofiring_buffer.append((prev_cid, curr_cid))
-        self._prev_active_cids = top5_cids
+        # ── 10c. CO-FIRING (z-score filtered) ──
+        # Only co-fire clusters that fired UNUSUALLY strongly for this input.
+        # v2 fires 100+ clusters; threshold creates one blob. Z-score captures specialization.
+        if activations:
+            scores = list(activations.values())
+            mean_s = sum(scores) / len(scores)
+            std_s = (sum((s - mean_s) ** 2 for s in scores) / len(scores)) ** 0.5
+            z_threshold = mean_s + 1.0 * std_s  # 1 sigma above mean
+            significant = [cid for cid, v in activations.items() if v > z_threshold]
+            for i in range(len(significant)):
+                for j in range(i + 1, len(significant)):
+                    self._cofiring_buffer.append((significant[i], significant[j]))
+            # Temporal co-firing: z-score filtered from previous step
+            if self._prev_active_cids:
+                for prev_cid in self._prev_active_cids:
+                    for curr_cid in significant[:5]:
+                        if prev_cid != curr_cid:
+                            self._cofiring_buffer.append((prev_cid, curr_cid))
+            self._prev_active_cids = significant[:5]
         self._cofiring_steps_since_flush += 1
         if (self._cofiring_steps_since_flush >= 50 or len(self._cofiring_buffer) >= 50000) and self._cofiring_buffer:
             print(f"[cofiring] flushed {len(self._cofiring_buffer)} pairs at step {self.model.step}", flush=True)
@@ -361,14 +365,21 @@ class LearningLoop:
             self._cofiring_buffer = []
             self._cofiring_steps_since_flush = 0
 
-        # ── 11. LOG ──
+        # ── 11. LOG (z-score filtered clusters) ──
+        if activations:
+            a_vals = list(activations.values())
+            a_mean = sum(a_vals) / len(a_vals)
+            a_std = (sum((v - a_mean) ** 2 for v in a_vals) / max(len(a_vals), 1)) ** 0.5
+            sig_active = [c for c, v in activations.items() if v > a_mean + a_std]
+        else:
+            sig_active = []
         self.store.log_dialogue(
             step=self.model.step,
             stage=self._stage,
             question=question,
             answer=teacher_answer,
             curiosity_score=curiosity_score,
-            clusters_active=list(activations.keys()),
+            clusters_active=sig_active,
             delta_summary=delta_summary,
         )
 
@@ -679,12 +690,20 @@ class LearningLoop:
         anchor_pred, _ = self.model.forward(anchor_vec, return_activations=False)
 
         samples: list[tuple] = []
-        for item in items:
+        skipped = 0
+        for idx, item in enumerate(items):
             vec = item.expected_vector if item.expected_vector is not None else torch.randn(self.model.input_dim)
             teacher_vec = vec.clone()
             # Cheap signal: cosine similarity between model's anchor prediction and this sample
             sim = torch.dot(anchor_pred, F.normalize(vec, dim=0)).item()
             self._similarity_history.append(sim)
+
+            # Diff-based skip: if model already predicts this item well, don't re-learn it.
+            # Never skip the first item (anchor) or if we'd empty the batch.
+            if idx > 0 and sim > 0.85 and len(items) - skipped > 4:
+                skipped += 1
+                continue
+
             if len(self._similarity_history) >= 10:
                 sorted_sims = sorted(self._similarity_history)
                 threshold = sorted_sims[len(sorted_sims) // 2]
@@ -696,6 +715,10 @@ class LearningLoop:
                 vec = F.normalize(torch.randn(self.model.input_dim), dim=0)
             patches = getattr(item, "patches", None)  # C.3: (49, 512) or None
             samples.append((vec, is_positive, teacher_vec, patches))
+
+        # Log skip rate periodically
+        if skipped > 0 and self._batch_count % 50 == 0:
+            print(f"[diff-skip] {skipped}/{len(items)} items skipped (sim>0.85), training on {len(samples)}", flush=True)
 
         # Append episodic replay samples
         if replay_samples:
@@ -747,6 +770,11 @@ class LearningLoop:
 
         active_clusters = list(activations.keys())
 
+        # Store state for correction-based learning
+        self._last_chat_input = input_vector
+        self._last_chat_output = output_vector
+        self._last_chat_text = text
+
         self.store.log_human_message(
             step=self.model.step,
             role="human",
@@ -760,6 +788,45 @@ class LearningLoop:
         )
 
         return response
+
+    async def human_correct(self, correction: str) -> str:
+        """Baby spoke wrong → human corrects → baby learns from the correction."""
+        _, text_encoder, _ = self.encoders
+        last_input = getattr(self, '_last_chat_input', None)
+        if last_input is None:
+            return "(nothing to correct — send a message first)"
+
+        # Encode correction as the teacher vector
+        correction_vector = text_encoder.encode(correction)
+
+        # Re-forward to set brain state, then update toward correction
+        self.model.forward(last_input, return_activations=False)
+        self.model.brain.update(last_input, correction_vector)
+
+        # Train decoder on the correction text
+        self.decoder.train_step(correction_vector, correction)
+
+        # Log the correction
+        self.store.log_human_message(
+            step=self.model.step,
+            role="human",
+            message=f"[correction] {correction}",
+        )
+
+        # Verify what baby says now
+        new_output, _ = self.model.forward(last_input, return_activations=False)
+        new_response = self.decoder.decode(new_output, max_words=30, model_step=self.model.step)
+
+        self.store.log_human_message(
+            step=self.model.step,
+            role="model",
+            message=f"[after correction] {new_response}",
+        )
+
+        # Clear last chat state
+        self._last_chat_input = None
+
+        return new_response
 
     # ── Reset ──
 

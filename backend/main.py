@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from models import (
     StatusResponse, StepResponse, StageRequest, SpeedRequest,
-    ChatRequest, ChatResponse, ImageUrlRequest, ImageUploadResponse,
+    ChatRequest, ChatCorrectRequest, ChatResponse, ImageUrlRequest, ImageUploadResponse,
     BulkImageUrlRequest, BulkImageResult, BulkImageUploadResponse,
     SnapshotResponse, ResetRequest,
 )
@@ -411,6 +411,19 @@ async def set_speed(body: SpeedRequest):
 async def chat(body: ChatRequest):
     loop = app.state.loop
     response = await loop.human_message(body.message)
+    return ChatResponse(
+        message=response,
+        step=loop.model.step,
+        stage=loop.get_status().stage,
+    )
+
+
+@app.post("/chat/correct", response_model=ChatResponse)
+async def chat_correct(body: ChatCorrectRequest):
+    """Baby spoke wrong → human corrects → baby learns.
+    Send the correct answer; baby updates its weights and responds with its new output."""
+    loop = app.state.loop
+    response = await loop.human_correct(body.correction)
     return ChatResponse(
         message=response,
         step=loop.model.step,

@@ -132,14 +132,35 @@ class BrainState:
         return (from_idx, to_idx) in self._edge_strengths
 
     def _build_edge_matrix(self) -> torch.Tensor:
-        """Build dense edge matrix for message passing. Cached until edges change."""
+        """Build sparse COO edge matrix for message passing. Cached until edges change.
+        At 10K neurons: sparse ~2MB vs dense ~400MB. Message passing stays O(E) not O(N²).
+        """
         if self._edge_matrix_cache is not None and self._edge_matrix_n == self.n:
             return self._edge_matrix_cache
         n = self.n
-        mat = torch.zeros(n, n, device=self.device)
-        for (i, j), s in self._edge_strengths.items():
-            if i < n and j < n:
-                mat[i, j] = s
+        if not self._edge_strengths:
+            mat = torch.sparse_coo_tensor(
+                torch.empty(2, 0, dtype=torch.long, device=self.device),
+                torch.empty(0, device=self.device),
+                size=(n, n),
+            ).coalesce()
+        else:
+            indices = []
+            values = []
+            for (i, j), s in self._edge_strengths.items():
+                if i < n and j < n:
+                    indices.append((i, j))
+                    values.append(s)
+            if indices:
+                idx_t = torch.tensor(indices, dtype=torch.long, device=self.device).t()
+                val_t = torch.tensor(values, dtype=torch.float32, device=self.device)
+                mat = torch.sparse_coo_tensor(idx_t, val_t, size=(n, n)).coalesce()
+            else:
+                mat = torch.sparse_coo_tensor(
+                    torch.empty(2, 0, dtype=torch.long, device=self.device),
+                    torch.empty(0, device=self.device),
+                    size=(n, n),
+                ).coalesce()
         self._edge_matrix_cache = mat
         self._edge_matrix_n = n
         return mat
@@ -185,16 +206,18 @@ class BrainState:
         self._step_count = getattr(self, '_step_count', 0) + 1
         do_message_pass = (self._step_count % 5 == 0) and self._edge_strengths and fired.sum() > 0
         if do_message_pass:
-            edge_mat = self._build_edge_matrix()
+            edge_mat = self._build_edge_matrix()  # sparse COO
             for _ in range(self.max_rounds):
                 fired_idx = fired.nonzero().squeeze(1)
                 if len(fired_idx) == 0:
                     break
 
-                # Messages from fired neurons propagate along edges
-                # edge_mat[i, j] = strength of j→i connection
-                # messages[i] = sum of edge_mat[i, fired] * scores[fired]
-                message_strength = edge_mat[:n, :][:, fired_idx] @ scores[fired_idx]  # (N,)
+                # Messages from fired neurons propagate along edges.
+                # Sparse matmul: build a dense column vector of fired scores,
+                # then sparse @ dense = dense. O(E) not O(N²).
+                score_vec = torch.zeros(n, device=self.device)
+                score_vec[fired_idx] = scores[fired_idx]
+                message_strength = torch.sparse.mm(edge_mat, score_vec.unsqueeze(1)).squeeze(1)
                 new_scores = scores + 0.05 * message_strength
 
                 # Check for new firings
@@ -371,17 +394,37 @@ class BrainState:
 
     def growth_check(self, step: int) -> list[dict]:
         """Check for growth triggers. Returns list of events."""
+        # Check interval: capped at 500 steps so growth doesn't stall at scale.
+        # At 410 neurons: every 200 steps. At 10K: every 500 steps (not 10K).
+        check_interval = min(200 + self.n // 5, 500)
+        last_check = getattr(self, '_last_growth_step', -check_interval)
+        if step - last_check < check_interval:
+            return []
+        self._last_growth_step = step
+
         events = []
         n = self.n
+        active_count = int((~self.dormant[:n]).sum().item())
+        active_fr = self.fire_rates[:n][~self.dormant[:n]]
+        print(
+            f"[brain-growth] step={step} active={active_count} total={n} "
+            f"edges={len(self._edge_strengths)} "
+            f"fire_rate min={active_fr.min():.4f} max={active_fr.max():.4f} mean={active_fr.mean():.4f}",
+            flush=True,
+        )
 
         # BUD: neurons with high fire rate and high age → split
+        # Threshold at 1.5x target (not 2x) — homeostatic adaptation keeps fire rates
+        # tightly around target, so 2x is unreachable. 1.5x still means overworked.
+        max_buds = max(4, active_count // 25)
+        bud_count = 0
+        bud_threshold = self.target_fire_rate * 1.5
         for i in range(n):
             if self.dormant[i]:
                 continue
             if self.ages[i] < 200:
                 continue
-            if self.fire_rates[i] > self.target_fire_rate * 2:
-                # This neuron is overworked → split
+            if self.fire_rates[i] > bud_threshold:
                 cid = self.cluster_ids[i]
                 result = self.bud(cid)
                 if result:
@@ -391,14 +434,21 @@ class BrainState:
                         "cluster_b": result[1],
                         "metadata": {"parent": cid, "step": step},
                     })
-                    if len(events) >= 4:
-                        break  # rate limit
+                    bud_count += 1
+                    if bud_count >= max_buds:
+                        break
+        if bud_count > 0:
+            print(f"[brain-growth] BUD {bud_count} neurons (max_buds={max_buds})", flush=True)
 
         # DORMANCY: neurons that never fire → sleep
+        # Adaptive threshold: gentler at scale to allow growth.
+        # At 400: 0.005. At 1K: 0.002. At 10K: 0.001.
+        # Min age 1000 (not 500) — give new neurons time to find their niche.
+        dormancy_threshold = self.target_fire_rate * max(0.02, 100.0 / max(active_count, 1))
         for i in range(n):
             if self.dormant[i]:
                 continue
-            if self.ages[i] > 500 and self.fire_rates[i] < self.target_fire_rate * 0.1:
+            if self.ages[i] > 1000 and self.fire_rates[i] < dormancy_threshold:
                 self.dormant[i] = True
                 events.append({
                     "event_type": "DORMANT",
@@ -406,6 +456,9 @@ class BrainState:
                     "cluster_b": None,
                     "metadata": {"step": step, "fire_rate": self.fire_rates[i].item()},
                 })
+        dormant_count = sum(1 for e in events if e["event_type"] == "DORMANT")
+        if dormant_count > 0:
+            print(f"[brain-growth] DORMANT {dormant_count} neurons (threshold={dormancy_threshold:.4f})", flush=True)
 
         # CONNECT: frequently co-firing neurons that aren't connected
         # (simplified — just check top co-fired pairs from last forward)
@@ -425,10 +478,14 @@ class BrainState:
                                 "metadata": {"step": step},
                             })
 
-        # PRUNE: weak edges
-        to_prune = [(k, s) for k, s in self._edge_strengths.items() if s < 0.01]
-        for k, _ in to_prune[:10]:
-            del self._edge_strengths[k]
+        # PRUNE: weak edges — remove bottom 5% each check (self-scaling)
+        if self._edge_strengths:
+            weak = [(k, s) for k, s in self._edge_strengths.items() if s < 0.01]
+            max_prune = max(10, len(self._edge_strengths) // 20)
+            for k, _ in weak[:max_prune]:
+                del self._edge_strengths[k]
+            if weak:
+                self._invalidate_edge_cache()
 
         return events
 
