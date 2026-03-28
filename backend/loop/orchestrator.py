@@ -769,7 +769,11 @@ class LearningLoop:
         output_vector, activations = self.model.forward(
             input_vector, return_activations=True,
         )
-        response = self.decoder.decode(output_vector, max_words=30, model_step=self.model.step)
+        # Autoregressive: brain generates token by token, each feeding back
+        response = self.decoder.generate(
+            output_vector, brain=self.model.brain,
+            max_tokens=12, model_step=self.model.step,
+        )
 
         active_clusters = list(activations.keys())
 

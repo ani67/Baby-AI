@@ -169,6 +169,52 @@ class GroundedDecoder:
             selected.append(self.vocab.id_to_word[top_ids[0].item()])
         return " ".join(selected)
 
+    def generate(
+        self,
+        initial_vector: torch.Tensor,
+        brain,
+        max_tokens: int = 12,
+        model_step: int = 0,
+    ) -> str:
+        """
+        Autoregressive generation: predict one word at a time, feed it back
+        through the brain, repeat. The brain's activation buffer carries
+        context forward — each generated word primes the next.
+
+        This is the brain SPEAKING, not just labeling.
+        """
+        tokens = []
+        hidden = initial_vector
+        seen = set()  # suppress repeats
+
+        for _ in range(max_tokens):
+            # Decode top-1 word from current brain state
+            v = F.normalize(hidden.detach(), dim=-1)
+            sims = v @ self.word_embeddings.T
+            sims[:_NUM_SPECIAL] = -1.0
+
+            # Suppress already-generated words
+            for word in seen:
+                idx = self.vocab.word_to_id.get(word)
+                if idx is not None:
+                    sims[idx] = -1.0
+
+            best_idx = sims.argmax().item()
+            best_sim = sims[best_idx].item()
+
+            if best_sim < 0.05:  # confidence too low — stop
+                break
+
+            word = self.vocab.id_to_word[best_idx]
+            tokens.append(word)
+            seen.add(word)
+
+            # Feed generated word's embedding back through brain
+            word_emb = self.word_embeddings[best_idx]
+            hidden, _ = brain.forward(word_emb)
+
+        return " ".join(tokens) if tokens else self.decode(initial_vector, max_words=1, model_step=model_step)
+
     def train_step(
         self,
         output_vector: torch.Tensor,
