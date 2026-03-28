@@ -384,6 +384,45 @@ memories:    600+
 
 ---
 
+## Chapter 11: Turn Down the Echo (Buffer Fix, March 28)
+
+The echo chamber was so loud that sorters couldn't hear the mail.
+Buffer norm 21.7 × weight 0.15 = 3.26 contribution vs input 1.0.
+The input was 1% of the signal. EVERY experiment in v1 ran at 4% input.
+
+```
+┌──────────────────────────────────────────────────────┐
+│                                                      │
+│  Before: ECHO drowns the MAIL                        │
+│                                                      │
+│  MAIL: "dog!"    ECHO: "DOOOOOG..."                  │
+│  volume: 1       volume: 3.26                        │
+│                                                      │
+│  sorters hear: 96% echo, 4% mail                    │
+│  → same clusters fire regardless of mail             │
+│  → one blob, "oil" forever                          │
+│                                                      │
+│  After: echo WHISPERS the hint                       │
+│                                                      │
+│  MAIL: "dog!"    echo: "dog..."                      │
+│  volume: 1       volume: 0.15                        │
+│                                                      │
+│  sorters hear: 87% mail, 13% echo                   │
+│  → different mail fires different clusters           │
+│  → diversity, communities, decoder works            │
+│                                                      │
+│  Fix: normalize buffer to unit vector before mixing  │
+│  One line. The most important fix of the project.    │
+│                                                      │
+└──────────────────────────────────────────────────────┘
+
+negatives: 5→1 (nearly zero)
+positive rates: train 76%, fork 72%, couch 64%
+best sim: 0.232 (3x old baseline)
+```
+
+---
+
 ## The Numbers, Start to Finish
 
 ```
@@ -397,25 +436,47 @@ Chapter  What Changed             Spatial  Comms  Best sim  Step
 5  Focus group (multi-round)       0.579    4      0.076    41K
 6  Textbook (sequential)           0.650    28     0.076    64K
 7  Failed renovations (proj/lens)  0.270    1      -0.33    various
-8  Palate cleanser (buffer reset)  0.591    2      0.18     50K
-9  Filing cabinet (memory)         active   active active   ongoing
-10 Let them grow (maturity)        0.591    2→?    0.17     58K→100K
+8  Palate cleanser (attempt)       0.591    2      0.18     50K
+9  Filing cabinet (memory)         0.591    2      0.17     58K
+10 Turn down the echo (buffer fix) 0.445    2      0.232    67K
 ```
 
 ---
 
-## Next Chapter: Learning to Speak
-
-The office can sort mail perfectly. Next: teach the sorters to describe
-what they're sorting. Currently they shout random words ("fish the bright").
-The fix: give each word a position in the same space as the mail. "Dog" sits
-near dog-mail. Decoding becomes: "what words are closest to this letter?"
+## V1 Final State (Step 67K)
 
 ```
-Coming soon:
+train     0.232  (76% positive rate)
+couch     0.223  (64%)
+knife     0.223  (56%)
+fork      0.207  (72%)
+man       0.202  (50%)
+...
+car      -0.012  (nearly zero, last negative)
 
-  sorted mail (512-dim) ──→ nearest words ──→ "dog grass green"
-                                                 ↑ grounded
-                                                 ↑ compositional
-                                                 ↑ developmental
+spatial: 0.445, climbing
+communities: 2 (co-firing rebuilding under new dynamics)
+decoder: grounded, 4 words, diversifying
+memory: episodic store active
+buffer: normalized, input-dominant
 ```
+
+---
+
+## What V1 Proved
+
+1. Forward-Forward learning WORKS for structural organization
+2. Sequential curriculum > signal enrichment (biggest lever)
+3. The buffer was the hidden bottleneck (96% → 13% = everything changed)
+4. Negatives are early-training thrashing, not architectural
+5. Episodic memory + temporal co-firing add real value
+6. Grounded decoder (image-mean embeddings) produces category words
+7. The architecture is parallelizable — we just haven't parallelized it
+
+## What V2 Needs
+
+1. PARALLEL: all clusters evaluate via GPU matmul, not Python loops
+2. SELF-ACTIVATION: clusters fire by threshold, no centralized cap of 20
+3. CORRECTION-BASED: baby tries → gets corrected → learns from DIFF
+4. DIFF-BASED: only update what changed, cache the rest
+5. SCALE: 10K+ clusters (40M+ params), utilizing full M1 compute
