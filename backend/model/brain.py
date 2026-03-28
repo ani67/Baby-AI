@@ -12,6 +12,12 @@ import torch
 import torch.nn.functional as F
 
 
+_MPS_AVAILABLE = torch.backends.mps.is_available()
+# MPS crossover: GPU wins at 2K+ neurons. Below that, CPU is faster due to
+# Metal dispatch overhead (~0.8ms/call). Benchmarked on M1 Pro.
+_MPS_NEURON_THRESHOLD = 2000
+
+
 class BrainState:
     def __init__(
         self,
@@ -114,6 +120,22 @@ class BrainState:
         idx = self._id_to_idx.get(cluster_id)
         if idx is not None:
             self.dormant[idx] = True
+
+    def _maybe_migrate_to_mps(self):
+        """Switch to MPS when neuron count crosses threshold. One-time migration."""
+        if not _MPS_AVAILABLE or self.device.type == "mps":
+            return
+        active = int((~self.dormant[:self.n]).sum().item())
+        if active < _MPS_NEURON_THRESHOLD:
+            return
+        print(f"[brain] migrating to MPS (active={active} > {_MPS_NEURON_THRESHOLD})", flush=True)
+        new_device = torch.device("mps")
+        for attr in ['weights', 'thresholds', 'fire_rates', 'layer_indices', 'ages']:
+            setattr(self, attr, getattr(self, attr).to(new_device))
+        self.dormant = self.dormant.to(new_device)
+        self.activation_buffer = self.activation_buffer.to(new_device)
+        self._invalidate_edge_cache()
+        self.device = new_device
 
     # ── Edges ──
 
@@ -395,11 +417,13 @@ class BrainState:
     def growth_check(self, step: int) -> list[dict]:
         """Check for growth triggers. Returns list of events."""
         # Check interval: capped at 500 steps so growth doesn't stall at scale.
-        # At 410 neurons: every 200 steps. At 10K: every 500 steps (not 10K).
         check_interval = min(200 + self.n // 5, 500)
         last_check = getattr(self, '_last_growth_step', -check_interval)
         if step - last_check < check_interval:
             return []
+
+        # Auto-migrate to MPS when large enough to benefit
+        self._maybe_migrate_to_mps()
         self._last_growth_step = step
 
         events = []
@@ -492,16 +516,17 @@ class BrainState:
     # ── Serialization ──
 
     def state_dict(self) -> dict:
+        # Always save to CPU for checkpoint portability
         return {
-            "weights": self.weights[:self.n].clone(),
-            "thresholds": self.thresholds[:self.n].clone(),
-            "fire_rates": self.fire_rates[:self.n].clone(),
-            "layer_indices": self.layer_indices[:self.n].clone(),
-            "dormant": self.dormant[:self.n].clone(),
-            "ages": self.ages[:self.n].clone(),
+            "weights": self.weights[:self.n].cpu().clone(),
+            "thresholds": self.thresholds[:self.n].cpu().clone(),
+            "fire_rates": self.fire_rates[:self.n].cpu().clone(),
+            "layer_indices": self.layer_indices[:self.n].cpu().clone(),
+            "dormant": self.dormant[:self.n].cpu().clone(),
+            "ages": self.ages[:self.n].cpu().clone(),
             "cluster_ids": list(self.cluster_ids),
             "edge_strengths": dict(self._edge_strengths),
-            "activation_buffer": self.activation_buffer.clone(),
+            "activation_buffer": self.activation_buffer.cpu().clone(),
             "n": self.n,
         }
 
@@ -518,8 +543,10 @@ class BrainState:
         self.cluster_ids = d["cluster_ids"]
         self._id_to_idx = {cid: i for i, cid in enumerate(self.cluster_ids)}
         self._edge_strengths = d["edge_strengths"]
-        self.activation_buffer = d["activation_buffer"]
-        print(f"[brain] restored {n} neurons, {len(self._edge_strengths)} edges", flush=True)
+        self.activation_buffer = d["activation_buffer"].to(self.device)
+        print(f"[brain] restored {n} neurons, {len(self._edge_strengths)} edges, device={self.device}", flush=True)
+        # Check if we should be on MPS given restored size
+        self._maybe_migrate_to_mps()
 
     # ── Stats ──
 
