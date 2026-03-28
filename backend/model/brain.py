@@ -466,9 +466,10 @@ class BrainState:
 
         # DORMANCY: neurons that never fire → sleep
         # Adaptive threshold: gentler at scale to allow growth.
-        # At 400: 0.005. At 1K: 0.002. At 10K: 0.001.
-        # Min age 1000 (not 500) — give new neurons time to find their niche.
-        dormancy_threshold = self.target_fire_rate * max(0.02, 100.0 / max(active_count, 1))
+        # At 100: 0.005. At 1K: 0.005. At 10K: 0.001.
+        # Capped at target * 0.1 so it's always reachable.
+        # Min age 1000 — give new neurons time to find their niche.
+        dormancy_threshold = self.target_fire_rate * min(0.1, max(0.02, 100.0 / max(active_count, 1)))
         for i in range(n):
             if self.dormant[i]:
                 continue
