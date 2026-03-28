@@ -69,6 +69,8 @@ class GraphAdapter:
         for (i, j), s in self._brain._edge_strengths.items():
             if i < self._brain.n and j < self._brain.n:
                 edges.append({
+                    "from": self._brain.cluster_ids[i],
+                    "to": self._brain.cluster_ids[j],
                     "from_id": self._brain.cluster_ids[i],
                     "to_id": self._brain.cluster_ids[j],
                     "strength": s,
@@ -218,8 +220,31 @@ class BabyModelV2:
         # Graph adapter for API compatibility
         self.graph = GraphAdapter(self.brain)
 
-        # Buffer alias (orchestrator accesses this directly for checkpoints)
+        # Buffer alias (orchestrator/dashboard access these directly)
         self._activation_buffer = self.brain.activation_buffer
+        self.buffer_decay = self.brain.buffer_decay
+        self.buffer_weight = self.brain.buffer_weight
+        self.buffer_top_k = 5
+
+        # Growth monitor stub (v2 growth is in BrainState)
+        self._growth_monitor = _GrowthMonitorStub()
+        self._last_bud_step = -20
+        self._restore_step = -200
+
+        # V1 compat attributes (health monitor reads/writes these via setattr)
+        self.resonance_threshold = 0.10
+        self.resonance_min_pass = 12
+        self.inhibition_radius = 0.92
+        self.suppression_factor = 0.5
+        self.per_cluster_signal = True
+        self.per_cluster_global_steps = 5000
+        self.per_cluster_blend_steps = 10000
+        self.gate_activation_step = float('inf')
+        self.exp_per_cluster_sign = False
+        self.exp_error_direction = False
+        self.exp_contrastive_pairs = False
+        self.exp_multi_target = False
+        self.growth_warning_threshold = 256
 
     def forward(
         self,
@@ -296,8 +321,21 @@ class BabyModelV2:
         # For now, just log and start fresh
         print("[v2] no v2 checkpoint found, starting fresh", flush=True)
 
+    def _per_cluster_blend(self) -> float:
+        """V1 compat — always 1.0 (per-cluster mode)."""
+        return 1.0
+
     def cleanup_excess_clusters(self):
         pass
 
     def reconnect_orphaned_clusters(self):
         pass
+
+
+class _GrowthMonitorStub:
+    """Stub for API compatibility. V2 growth is in BrainState."""
+    bud_cooldown_steps = 500
+    def record_step(self, *a, **kw): pass
+    def check(self, *a, **kw): pass
+    def __setattr__(self, name, value):
+        object.__setattr__(self, name, value)
