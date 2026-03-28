@@ -283,8 +283,15 @@ class BrainState:
 
     def update(self, x: torch.Tensor, teacher_vec: torch.Tensor):
         """
-        All fired neurons learn in parallel.
-        Error = teacher - prediction. Each neuron's update scaled by its activation.
+        Per-neuron differentiated learning.
+
+        Each fired neuron independently asks: "am I aligned with the teacher?"
+          - Yes (positive dot product) → move toward teacher (attractive)
+          - No  (negative dot product) → move away from teacher (repulsive)
+
+        This is the critical force that creates specialization. Without it,
+        all neurons chase the same target and converge into one blob.
+        Like electrons: attraction alone = collapse. Repulsion creates structure.
         """
         if self._last_fired is None or self._last_scores is None:
             return
@@ -299,14 +306,19 @@ class BrainState:
         if len(fired_idx) == 0:
             return
 
-        # Error = what teacher said - what baby said
+        # Per-neuron signal: each neuron decides its own relationship to teacher.
+        # Neurons aligned with teacher → attract (move toward).
+        # Neurons misaligned → repel (move away). This IS the repulsive force.
+        fired_weights = self.weights[fired_idx]  # (K, 512)
+        neuron_teacher_sim = (fired_weights * teacher_vec.unsqueeze(0)).sum(dim=1)  # (K,)
+        signs = torch.where(neuron_teacher_sim > 0, 1.0, -0.5)  # asymmetric: repel gently
+
+        # Error direction per neuron: sign × score × (teacher - prediction)
         prediction = self._last_prediction.to(self.device)
         error = teacher_vec - prediction  # (512,)
-
-        # All fired neurons update in parallel
-        # Each neuron's update = its score × the error direction
-        active_scores = scores[fired_idx].unsqueeze(1)  # (K, 1)
-        updates = active_scores * error.unsqueeze(0)  # (K, 512)
+        active_scores = scores[fired_idx]  # (K,)
+        scale = (signs * active_scores).unsqueeze(1)  # (K, 1)
+        updates = scale * error.unsqueeze(0)  # (K, 512)
         self.weights[fired_idx] = self.weights[fired_idx] + self.lr * updates
 
         # Re-normalize (keep unit vectors)
