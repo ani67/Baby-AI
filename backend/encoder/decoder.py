@@ -169,6 +169,64 @@ class GroundedDecoder:
             selected.append(self.vocab.id_to_word[top_ids[0].item()])
         return " ".join(selected)
 
+    def encode_sequence(
+        self,
+        text: str,
+        brain,
+        text_encoder=None,
+    ) -> torch.Tensor:
+        """
+        Process an input sentence token by token through the brain.
+
+        For each word with a known embedding: feed it through brain.forward().
+        The activation buffer accumulates context across tokens — by the end,
+        the brain's state represents the full sentence meaning.
+
+        Words not in vocabulary fall back to CLIP text encoder (full phrase).
+        This bridges known words (fast, grounded) and unknown phrases (slow, CLIP).
+
+        Returns the brain's final prediction after processing all tokens.
+        """
+        # Tokenize: split into words, look up embeddings
+        words = text.lower().split()
+        token_vectors = []
+        unknown_words = []
+
+        for word in words:
+            clean = word.strip(".,!?;:\"'()-[]{}").lower()
+            if not clean:
+                continue
+            idx = self.vocab.word_to_id.get(clean)
+            if idx is not None and idx >= _NUM_SPECIAL:
+                emb = self.word_embeddings[idx]
+                if emb.norm() > 1e-6:
+                    token_vectors.append(emb)
+                    continue
+            unknown_words.append(clean)
+
+        # Fall back to CLIP for unknown words or if no known words found
+        if not token_vectors and text_encoder is not None:
+            clip_vec = text_encoder.encode(text)
+            return clip_vec
+
+        # Process each token through the brain sequentially.
+        # The buffer builds up context — "the big red dog" becomes:
+        #   forward("the") → buffer primed
+        #   forward("big") → buffer = the + big
+        #   forward("red") → buffer = the + big + red
+        #   forward("dog") → buffer = the + big + red + dog ← final state
+        prediction = torch.zeros(512)
+        for vec in token_vectors:
+            prediction, _ = brain.forward(vec)
+
+        # If there were unknown words, also encode them via CLIP and blend
+        if unknown_words and text_encoder is not None:
+            clip_vec = text_encoder.encode(" ".join(unknown_words))
+            blend_pred, _ = brain.forward(clip_vec)
+            prediction = F.normalize(prediction + blend_pred, dim=0)
+
+        return prediction
+
     def generate(
         self,
         initial_vector: torch.Tensor,

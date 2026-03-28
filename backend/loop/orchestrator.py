@@ -765,11 +765,16 @@ class LearningLoop:
 
     async def human_message(self, text: str) -> str:
         _, text_encoder, _ = self.encoders
-        input_vector = text_encoder.encode(text)
-        output_vector, activations = self.model.forward(
-            input_vector, return_activations=True,
+
+        # Sequence input: process each word through the brain, building context
+        # via the activation buffer. Falls back to CLIP for unknown words.
+        output_vector = self.decoder.encode_sequence(
+            text, brain=self.model.brain, text_encoder=text_encoder,
         )
-        # Autoregressive: brain generates token by token, each feeding back
+        # One more forward to get activations for logging
+        _, activations = self.model.forward(output_vector, return_activations=True)
+
+        # Autoregressive output: brain generates token by token
         response = self.decoder.generate(
             output_vector, brain=self.model.brain,
             max_tokens=12, model_step=self.model.step,
@@ -778,7 +783,7 @@ class LearningLoop:
         active_clusters = list(activations.keys())
 
         # Store state for correction-based learning
-        self._last_chat_input = input_vector
+        self._last_chat_input = output_vector  # the brain's encoded state after processing input
         self._last_chat_output = output_vector
         self._last_chat_text = text
 
