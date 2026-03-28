@@ -211,8 +211,8 @@ class BrainState:
         else:
             active_weights = self.weights[fired_idx]  # (K, 512)
             active_scores = scores[fired_idx]  # (K,)
-            # Softmax-weighted combination
-            attn = F.softmax(active_scores * 5.0, dim=0)  # sharpen
+            # Softmax-weighted combination (gentle — let multiple neurons contribute)
+            attn = F.softmax(active_scores * 2.0, dim=0)
             prediction = attn @ active_weights  # (512,)
             prediction = F.normalize(prediction, dim=0)
 
@@ -340,8 +340,9 @@ class BrainState:
         child_a_id = f"{cluster_id}a"
         child_b_id = f"{cluster_id}b"
 
+        # Children at different depths — creates hierarchy over time
         idx_a = self.add_neuron(child_a_id, child_a_w, layer, threshold)
-        idx_b = self.add_neuron(child_b_id, child_b_w, layer, threshold)
+        idx_b = self.add_neuron(child_b_id, child_b_w, layer + 0.5, threshold)
 
         # Transfer edges from parent to children
         to_remove = []

@@ -529,18 +529,18 @@ class LearningLoop:
         for i in range(len(top_cofiring)):
             for j in range(i + 1, len(top_cofiring)):
                 self._cofiring_buffer.append((top_cofiring[i], top_cofiring[j]))
-        # Temporal co-firing: consecutive samples within batch (top-5 per sample)
+        # Temporal co-firing: consecutive samples within batch (top-3 per sample)
         if all_activations:
             for t in range(1, len(all_activations)):
-                prev = sorted(all_activations[t - 1].items(), key=lambda x: -x[1])[:5]
-                curr = sorted(all_activations[t].items(), key=lambda x: -x[1])[:5]
+                prev = sorted(all_activations[t - 1].items(), key=lambda x: -x[1])[:3]
+                curr = sorted(all_activations[t].items(), key=lambda x: -x[1])[:3]
                 for p_cid, _ in prev:
                     for c_cid, _ in curr:
                         if p_cid != c_cid:
                             self._cofiring_buffer.append((p_cid, c_cid))
-            # Across-batch temporal: last of this batch for next batch's first
-            last_top5 = sorted(all_activations[-1].items(), key=lambda x: -x[1])[:5]
-            self._prev_active_cids = [cid for cid, _ in last_top5]
+            # Across-batch temporal
+            last_top = sorted(all_activations[-1].items(), key=lambda x: -x[1])[:3]
+            self._prev_active_cids = [cid for cid, _ in last_top]
         self._cofiring_steps_since_flush += 1
         if (self._cofiring_steps_since_flush >= 50 or len(self._cofiring_buffer) >= 50000) and self._cofiring_buffer:
             print(f"[cofiring] flushed {len(self._cofiring_buffer)} pairs at step {self.model.step}", flush=True)
