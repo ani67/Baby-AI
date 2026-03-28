@@ -37,6 +37,8 @@ class BrainState:
 
         # Sparse edge matrix — (N, N) but stored as dict for growth flexibility
         self._edge_strengths: dict[tuple[int, int], float] = {}
+        self._edge_matrix_cache: torch.Tensor | None = None
+        self._edge_matrix_n: int = 0
 
         # Metadata
         self.cluster_ids: list[str] = []
@@ -120,6 +122,7 @@ class BrainState:
         to_idx = self._id_to_idx.get(to_id)
         if from_idx is not None and to_idx is not None:
             self._edge_strengths[(from_idx, to_idx)] = strength
+            self._invalidate_edge_cache()
 
     def edge_exists(self, from_id: str, to_id: str) -> bool:
         from_idx = self._id_to_idx.get(from_id)
@@ -129,13 +132,20 @@ class BrainState:
         return (from_idx, to_idx) in self._edge_strengths
 
     def _build_edge_matrix(self) -> torch.Tensor:
-        """Build dense edge matrix for message passing. Called per forward."""
+        """Build dense edge matrix for message passing. Cached until edges change."""
+        if self._edge_matrix_cache is not None and self._edge_matrix_n == self.n:
+            return self._edge_matrix_cache
         n = self.n
         mat = torch.zeros(n, n, device=self.device)
         for (i, j), s in self._edge_strengths.items():
             if i < n and j < n:
                 mat[i, j] = s
+        self._edge_matrix_cache = mat
+        self._edge_matrix_n = n
         return mat
+
+    def _invalidate_edge_cache(self):
+        self._edge_matrix_cache = None
 
     # ── Forward Pass: The Stadium Wave ──
 
@@ -171,8 +181,10 @@ class BrainState:
                 if active[idx]:
                     fired[idx] = True
 
-        # 3. THINK — message passing rounds
-        if self._edge_strengths and fired.sum() > 0:
+        # 3. THINK — message passing rounds (skip most steps for speed)
+        self._step_count = getattr(self, '_step_count', 0) + 1
+        do_message_pass = (self._step_count % 5 == 0) and self._edge_strengths and fired.sum() > 0
+        if do_message_pass:
             edge_mat = self._build_edge_matrix()
             for _ in range(self.max_rounds):
                 fired_idx = fired.nonzero().squeeze(1)
@@ -259,18 +271,20 @@ class BrainState:
         self._hebbian_update(fired_idx, scores)
 
     def _hebbian_update(self, fired_idx: torch.Tensor, scores: torch.Tensor):
-        """Strengthen edges between neurons that fire together."""
+        """Strengthen edges between neurons that fire together. Batched for speed."""
         if len(fired_idx) < 2:
             return
-        # Only update existing edges (don't create new ones here — that's growth)
-        for i in range(len(fired_idx)):
-            for j in range(i + 1, len(fired_idx)):
-                idx_i, idx_j = fired_idx[i].item(), fired_idx[j].item()
+        # Only update existing edges, sample top-5 pairs for speed
+        fired_list = fired_idx[:5].tolist()  # cap at 5 to avoid O(N^2)
+        for i in range(len(fired_list)):
+            for j in range(i + 1, len(fired_list)):
+                idx_i, idx_j = fired_list[i], fired_list[j]
+                co_act = scores[idx_i].item() * scores[idx_j].item()
                 for pair in [(idx_i, idx_j), (idx_j, idx_i)]:
                     if pair in self._edge_strengths:
-                        co_act = scores[pair[0]].item() * scores[pair[1]].item()
-                        self._edge_strengths[pair] += 0.001 * co_act
-                        self._edge_strengths[pair] = min(self._edge_strengths[pair], 1.0)
+                        self._edge_strengths[pair] = min(
+                            self._edge_strengths[pair] + 0.001 * co_act, 1.0
+                        )
 
     # ── Homeostatic Threshold Adaptation ──
 

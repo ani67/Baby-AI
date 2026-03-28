@@ -856,7 +856,10 @@ async def dashboard():
     # 4. Co-firing communities
     # Cluster the co-firing pairs into groups using connected components.
     cofiring_pairs = store.get_cofiring_pairs()
-    strong_pairs = [p for p in cofiring_pairs if p["count"] > 10]
+    # V2 fires more neurons per step → more pairs → higher threshold needed
+    median_count = sorted([p["count"] for p in cofiring_pairs])[len(cofiring_pairs) // 2] if cofiring_pairs else 10
+    threshold = max(median_count * 2, 10)
+    strong_pairs = [p for p in cofiring_pairs if p["count"] > threshold]
     if strong_pairs:
         # Simple union-find for connected components
         parent_map: dict[str, str] = {}
