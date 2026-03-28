@@ -128,7 +128,10 @@ class GroundedDecoder:
             selected.append(self.vocab.id_to_word[idx])
             selected_vecs.append(emb)
 
-        return " ".join(selected) if selected else ""
+        # Always return at least the top-1 word (even if below threshold)
+        if not selected and k > 0:
+            selected.append(self.vocab.id_to_word[top_ids[0].item()])
+        return " ".join(selected)
 
     def train_step(
         self,
