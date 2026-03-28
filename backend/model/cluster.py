@@ -17,6 +17,7 @@ class Cluster:
     plasticity: float = 1.0
     age: int = 0
     dormant: bool = False
+    lens: torch.Tensor = field(default_factory=lambda: torch.zeros(512))
     _identity_cache: torch.Tensor | None = field(default=None, repr=False)
     _store: object | None = field(default=None, repr=False)  # WeightStore reference
 
@@ -119,7 +120,10 @@ class Cluster:
         Activate all living nodes via batched matmul, return weighted-sum output (512,).
         One matmul for all nodes instead of per-node dot products.
         """
-        combined = x.clone()
+        if self.lens.norm() > 1e-6:
+            combined = F.normalize(x + self.lens, dim=0)
+        else:
+            combined = x.clone()
         for value in incoming_edge_signals.values():
             if isinstance(value, tuple):
                 signal, strength = value
@@ -201,4 +205,10 @@ class Cluster:
                 )
                 node.local_target_update(activation, local_target, learning_rate)
         self._identity_cache = None
+
+    def update_lens(self, error: torch.Tensor, activation: float, lr: float):
+        """Nudge lens toward reducing this cluster's error."""
+        if abs(activation) < 0.01:
+            return
+        self.lens = self.lens + lr * activation * error
 

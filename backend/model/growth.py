@@ -82,12 +82,14 @@ def bud(cluster: Cluster, graph: Graph) -> tuple[Cluster, Cluster] | None:
         nodes=nodes_a,
         layer_index=cluster.layer_index,
         plasticity=cluster.plasticity,
+        lens=cluster.lens.clone(),
     )
     child_b = Cluster(
         id=f"{cluster.id}b",
         nodes=nodes_b,
         layer_index=cluster.layer_index,
         plasticity=cluster.plasticity,
+        lens=cluster.lens.clone(),
     )
 
     graph.replace_cluster(cluster, [child_a, child_b])

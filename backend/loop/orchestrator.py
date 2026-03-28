@@ -388,6 +388,8 @@ class LearningLoop:
                     state_dict[f"{node.id}.weights"] = node.weights
                     state_dict[f"{node.id}.bias"] = node.bias
             state_dict["_activation_buffer"] = self.model._activation_buffer
+            for cluster in self.model.graph.clusters:
+                state_dict[f"{cluster.id}.lens"] = cluster.lens
             graph_json = self.model.graph.to_json()
             nc = len(graph_json["clusters"])
             ne = len(graph_json["edges"])
@@ -573,6 +575,8 @@ class LearningLoop:
                     state_dict[f"{node.id}.weights"] = node.weights
                     state_dict[f"{node.id}.bias"] = node.bias
             state_dict["_activation_buffer"] = self.model._activation_buffer
+            for cluster in self.model.graph.clusters:
+                state_dict[f"{cluster.id}.lens"] = cluster.lens
             graph_json = self.model.graph.to_json()
             self.store.save_checkpoint(
                 step=self.model.step, stage=self._stage,
