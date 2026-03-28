@@ -149,13 +149,17 @@ curl -s localhost:8000/dashboard           # full metrics
 
 ## Roadmap
 
-See [docs-v2/ROADMAP.md](docs-v2/ROADMAP.md) for the full arc: Phases A-F, decision framework, and metrics targets.
+See [docs/where-we-are.md](docs/where-we-are.md) for current state and [docs/architecture-genealogy.md](docs/architecture-genealogy.md) for the full evolution.
 
 ```
-Phase A ✅  Memory buffer + adversarial curriculum
-Phase B 🔄  Multi-prototype resonance + curiosity growth
-Phase C ○   Cluster roles + typed edges
-Phase D ○   Learned encoders (replace CLIP)
-Phase E ○   Temporal reasoning + prediction
-Phase F ○   Environment interaction + agency
+V1 (complete):
+  ✅ Memory buffer, multi-prototype resonance, distributed error
+  ✅ Multi-round attention, sequential curriculum, temporal co-firing
+  ✅ Episodic memory, grounded decoder, buffer normalization
+  Best: avg_sim 0.232, 76% positive rate, zero negatives
+
+V2 (planned):
+  ○ Parallel GPU evaluation, self-activating clusters
+  ○ Correction-based learning, diff-based updates
+  ○ Scale to 10K+ clusters, full M1 utilization
 ```

@@ -177,15 +177,11 @@ error distribution (global vs per-cluster). Richer curriculum > richer signal.
 ## Key Documents
 
 ```
-docs-v3/
-  reference-modern-ml.md              — Transformer/LLM architecture reference
-  evaluation-against-modern-ml.md      — Baby AI vs transformer comparison
-  RCA-failed-optimizations.md          — 6 detailed root cause analyses
-  experiment-plan-signal-enrichment.md — Test protocol for 5 experiments
-  experiment-results-signal-enrichment.md — Results + analysis
-  session-2026-03-28.md                — Full session log: attention → curriculum → projection → memory
+docs/
+  architecture-genealogy.md            — Visual evolution from blob to brain
+  session-2026-03-28.md                — Full session log
   where-we-are.md                      — This document
-
-doc/
-  design-multi-round-attention.md      — Multi-round attention design doc
+  design/                              — Design docs
+  experiments/                         — RCAs and experiment results
+  archive/v1/, archive/v2/             — Historical (superseded)
 ```
