@@ -401,8 +401,9 @@ class LearningLoop:
             self.store.prune_old_snapshots()
 
         # ── 12. EMIT ──
-        # Train decoder on teacher's description
-        self.decoder.train_step(prediction, teacher_answer)
+        # Train decoder on teacher's CLIP vector (not model prediction!)
+        teacher_clip = answer_vectors[0] if answer_vectors else prediction
+        self.decoder.train_step(teacher_clip, teacher_answer)
         # Decode model's prediction into words for the frontend
         model_response = self.decoder.decode(prediction, max_words=15, model_step=self.model.step)
 
@@ -589,8 +590,9 @@ class LearningLoop:
             if self._batch_count % 50 == 0 or evicted:
                 print(f"[memory] total={mem_count} evicted={evicted}", flush=True)
 
-        # Train decoder on teacher's description
-        self.decoder.train_step(prediction, teacher_answer)
+        # Train decoder on teacher's CLIP vector (not model prediction!)
+        teacher_clip = items[-1].expected_vector if items[-1].expected_vector is not None else prediction
+        self.decoder.train_step(teacher_clip, teacher_answer)
         # Emit viz (non-blocking)
         model_response = self.decoder.decode(prediction, max_words=15, model_step=self.model.step)
         if self.viz_emitter is not None:
