@@ -61,6 +61,13 @@ class BrainState:
         self._last_scores: torch.Tensor | None = None
         self._last_prediction: torch.Tensor | None = None
 
+        # Learned projection layer (ported from v1 Phase D)
+        # Residual linear transform: P(x) = normalize(x + α·Δ·x)
+        # α ramps 0→1 over 10K steps so early learning isn't distorted.
+        self.projection = torch.zeros(dim, dim, device=self.device)
+        self.projection_alpha = 0.0
+        self._update_count = 0
+
         # Activation buffer (carried from v1)
         self.activation_buffer = torch.zeros(dim, device=self.device)
         self.buffer_decay = 0.9
@@ -134,6 +141,7 @@ class BrainState:
             setattr(self, attr, getattr(self, attr).to(new_device))
         self.dormant = self.dormant.to(new_device)
         self.activation_buffer = self.activation_buffer.to(new_device)
+        self.projection = self.projection.to(new_device)
         self._invalidate_edge_cache()
         self.device = new_device
 
@@ -209,6 +217,14 @@ class BrainState:
         else:
             effective_x = F.normalize(x, dim=0)
 
+        # 0. PROJECT — learned residual transform (Phase D from v1)
+        if self.projection_alpha > 0:
+            projected = F.normalize(
+                effective_x + self.projection_alpha * (self.projection @ effective_x),
+                dim=0,
+            )
+            effective_x = projected
+
         # 1. SENSE — all neurons evaluate (1 matmul)
         identities = F.normalize(self.weights[:n], dim=1)
         scores = identities @ effective_x  # (N,)
@@ -224,7 +240,20 @@ class BrainState:
                 if active[idx]:
                     fired[idx] = True
 
-        # 3. THINK — message passing rounds (skip most steps for speed)
+        # 3. THINK — confidence-weighted message passing (ported from v1 deliberation)
+        #
+        # V1 insight: raw scores let generalists dominate. Instead, compute
+        # "surprise" — a z-scored confidence that measures how well each neuron
+        # matches THIS input relative to the cohort. Only surprised (above-average)
+        # neurons send messages, weighted by their surprise. This creates diverse
+        # communities instead of one mega-cluster.
+        #
+        # confidence = margin above threshold (how strongly it fired)
+        # surprise   = z-score of scores across fired neurons (input-specific signal)
+        thresholds_n = self.thresholds[:n]
+        confidence = torch.zeros(n, device=self.device)
+        confidence[fired] = (scores[fired] - thresholds_n[fired]) / thresholds_n[fired].clamp(min=0.01)
+
         self._step_count = getattr(self, '_step_count', 0) + 1
         do_message_pass = (self._step_count % 5 == 0) and self._edge_strengths and fired.sum() > 0
         if do_message_pass:
@@ -234,30 +263,51 @@ class BrainState:
                 if len(fired_idx) == 0:
                     break
 
-                # Messages from fired neurons propagate along edges.
-                # Sparse matmul: build a dense column vector of fired scores,
-                # then sparse @ dense = dense. O(E) not O(N²).
+                # Surprise: z-score of fired scores (input-specific, not absolute)
+                fired_scores = scores[fired_idx]
+                mean_s = fired_scores.mean()
+                std_s = fired_scores.std()
+                if std_s > 1e-6:
+                    surprise = (scores - mean_s) / std_s
+                else:
+                    surprise = torch.zeros(n, device=self.device)
+
+                # Only positive-surprise neurons send messages (above-average match).
+                # Message strength = score * clamp(surprise, min=0) — confident
+                # experts influence uncertain neighbors, not the reverse.
+                send_weight = scores * surprise.clamp(min=0.0)
                 score_vec = torch.zeros(n, device=self.device)
-                score_vec[fired_idx] = scores[fired_idx]
+                score_vec[fired_idx] = send_weight[fired_idx]
                 message_strength = torch.sparse.mm(edge_mat, score_vec.unsqueeze(1)).squeeze(1)
                 new_scores = scores + 0.05 * message_strength
 
+                # Update confidence with neighbor reinforcement
+                confidence = torch.zeros(n, device=self.device)
+                confidence[fired] = (new_scores[fired] - thresholds_n[fired]) / thresholds_n[fired].clamp(min=0.01)
+
                 # Check for new firings
-                newly_fired = (new_scores > self.thresholds[:n]) & active & ~fired
+                newly_fired = (new_scores > thresholds_n) & active & ~fired
                 if newly_fired.sum() == 0:
                     break
                 fired = fired | newly_fired
+                confidence[newly_fired] = (new_scores[newly_fired] - thresholds_n[newly_fired]) / thresholds_n[newly_fired].clamp(min=0.01)
                 scores = new_scores
 
-        # 4. OUTPUT — weighted aggregate of fired neurons
+        # 4. OUTPUT — confidence-weighted aggregate (v1: "confident experts contribute more")
+        #
+        # Instead of uniform softmax over raw scores, weight by post-deliberation
+        # confidence: neurons that fired strongly AND were reinforced by neighbors
+        # contribute more. Confidence = margin above threshold — input-specific,
+        # not dominated by generalists.
         fired_idx = fired.nonzero().squeeze(1)
         if len(fired_idx) == 0:
             prediction = torch.zeros(self.dim, device=self.device)
         else:
             active_weights = self.weights[fired_idx]  # (K, 512)
-            active_scores = scores[fired_idx]  # (K,)
-            # Softmax-weighted combination (gentle — let multiple neurons contribute)
-            attn = F.softmax(active_scores * 2.0, dim=0)
+            active_conf = confidence[fired_idx].clamp(min=0.0)  # (K,)
+            # Gentle softmax on confidence preserves multi-contributor property
+            # while letting confident experts lead.
+            attn = F.softmax(active_conf * 2.0, dim=0)
             prediction = attn @ active_weights  # (512,)
             prediction = F.normalize(prediction, dim=0)
 
@@ -313,16 +363,27 @@ class BrainState:
         neuron_teacher_sim = (fired_weights * teacher_vec.unsqueeze(0)).sum(dim=1)  # (K,)
         signs = torch.where(neuron_teacher_sim > 0, 1.0, -0.5)  # asymmetric: repel gently
 
-        # Error direction per neuron: sign × score × (teacher - prediction)
+        # Distributed error: each neuron fixes its SHARE of the error, proportional
+        # to its activation. A neuron contributing 10% of total activation corrects
+        # 10% of the gap. This prevents convergence collapse — neurons near the target
+        # get small corrections, neurons far away get large ones.
         prediction = self._last_prediction.to(self.device)
         error = teacher_vec - prediction  # (512,)
         active_scores = scores[fired_idx]  # (K,)
-        scale = (signs * active_scores).unsqueeze(1)  # (K, 1)
-        updates = scale * error.unsqueeze(0)  # (K, 512)
+        total_score = active_scores.sum().clamp(min=1e-6)
+        shares = (active_scores / total_score).unsqueeze(1)  # (K, 1) — each neuron's share
+        local_targets = F.normalize(fired_weights + shares * error.unsqueeze(0), dim=1)  # (K, 512)
+        deltas = local_targets - fired_weights  # direction toward local target
+        updates = signs.unsqueeze(1) * deltas  # attract/repel preserved
         self.weights[fired_idx] = self.weights[fired_idx] + self.lr * updates
 
         # Re-normalize (keep unit vectors)
         self.weights[fired_idx] = F.normalize(self.weights[fired_idx], dim=1)
+
+        # Train projection: outer product of error ⊗ input, scaled small
+        self._update_count += 1
+        self.projection += 0.0001 * torch.outer(error, x)
+        self.projection_alpha = min(1.0, self._update_count / 10000)
 
         # Hebbian edge update: strengthen connections between co-fired neurons
         self._hebbian_update(fired_idx, scores)
@@ -551,6 +612,9 @@ class BrainState:
             "cluster_ids": list(self.cluster_ids),
             "edge_strengths": dict(self._edge_strengths),
             "activation_buffer": self.activation_buffer.cpu().clone(),
+            "projection": self.projection.cpu().clone(),
+            "projection_alpha": self.projection_alpha,
+            "update_count": self._update_count,
             "n": self.n,
         }
 
@@ -568,6 +632,11 @@ class BrainState:
         self._id_to_idx = {cid: i for i, cid in enumerate(self.cluster_ids)}
         self._edge_strengths = d["edge_strengths"]
         self.activation_buffer = d["activation_buffer"].to(self.device)
+        # Projection layer (backward-compatible with older checkpoints)
+        if "projection" in d:
+            self.projection = d["projection"].to(self.device)
+            self.projection_alpha = d["projection_alpha"]
+            self._update_count = d["update_count"]
         print(f"[brain] restored {n} neurons, {len(self._edge_strengths)} edges, device={self.device}", flush=True)
         # Check if we should be on MPS given restored size
         self._maybe_migrate_to_mps()
