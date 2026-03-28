@@ -68,6 +68,12 @@ class BrainState:
         self.projection_alpha = 0.0
         self._update_count = 0
 
+        # Neighbor prediction (predictive coding)
+        # Each neuron predicts whether connected neighbors will fire.
+        # prediction_weights[i] = 512-dim vector: dot(pred_w[i], neighbor_w[j]) → expected co-firing
+        # Trained when predictions are wrong → pressure toward consistent, predictable behavior.
+        self.prediction_weights = torch.zeros(cap, dim, device=self.device)
+
         # Activation buffer (carried from v1)
         self.activation_buffer = torch.zeros(dim, device=self.device)
         self.buffer_decay = 0.9
@@ -88,7 +94,7 @@ class BrainState:
         if needed <= self._cap:
             return
         new_cap = max(self._cap * 2, needed)
-        for attr in ['weights', 'thresholds', 'fire_rates', 'layer_indices', 'ages']:
+        for attr in ['weights', 'thresholds', 'fire_rates', 'layer_indices', 'ages', 'prediction_weights']:
             old = getattr(self, attr)
             new = torch.zeros(new_cap, *old.shape[1:], dtype=old.dtype, device=self.device)
             new[:self._cap] = old
@@ -142,6 +148,7 @@ class BrainState:
         self.dormant = self.dormant.to(new_device)
         self.activation_buffer = self.activation_buffer.to(new_device)
         self.projection = self.projection.to(new_device)
+        self.prediction_weights = self.prediction_weights.to(new_device)
         self._invalidate_edge_cache()
         self.device = new_device
 
@@ -380,6 +387,45 @@ class BrainState:
         # Re-normalize (keep unit vectors)
         self.weights[fired_idx] = F.normalize(self.weights[fired_idx], dim=1)
 
+        # ── ERROR BACKFLOW ──
+        # Propagate error backward along edges. If neuron A sent a message
+        # to neuron B during THINK, and B had high error, A should learn too.
+        # This is NOT backprop (no chain rule). It's local: each neuron sees
+        # only its direct neighbors' error, weighted by edge strength.
+        #
+        # Forward (THINK): messages = edges @ scores      (columns → rows)
+        # Backward:        upstream_err = edges.T @ error  (rows → columns)
+        #
+        # Only runs when message passing ran (every 5 steps).
+        if getattr(self, '_step_count', 0) % 5 == 0 and self._edge_strengths:
+            n = self.n
+            # Per-neuron error magnitude: how far was each fired neuron from teacher?
+            neuron_errors = torch.zeros(n, device=self.device)
+            neuron_errors[fired_idx] = 1.0 - neuron_teacher_sim.clamp(-1, 1)  # 0=perfect, 2=opposite
+
+            # Backflow: upstream neurons get weighted error from downstream
+            edge_mat = self._build_edge_matrix()  # sparse COO, cached
+            backflow = torch.sparse.mm(
+                edge_mat.t(),  # transpose: reverse direction
+                neuron_errors.unsqueeze(1),
+            ).squeeze(1)  # (N,)
+
+            # Neurons with high backflow error and that fired → small correction
+            # toward teacher. Scale is tiny (0.1× lr) — this is a hint, not a command.
+            backflow_mask = (backflow > 0.1) & fired & (backflow > neuron_errors)
+            if backflow_mask.sum() > 0:
+                bf_idx = backflow_mask.nonzero().squeeze(1)
+                bf_weights = self.weights[bf_idx]
+                bf_teacher_sim = (bf_weights * teacher_vec.unsqueeze(0)).sum(dim=1)
+                # Only correct neurons that are somewhat aligned (avoid pushing random neurons)
+                aligned = bf_teacher_sim > -0.3
+                if aligned.sum() > 0:
+                    aligned_idx = bf_idx[aligned]
+                    bf_scale = backflow[aligned_idx].clamp(max=1.0).unsqueeze(1) * 0.1
+                    bf_direction = teacher_vec.unsqueeze(0) - self.weights[aligned_idx]
+                    self.weights[aligned_idx] += self.lr * bf_scale * bf_direction
+                    self.weights[aligned_idx] = F.normalize(self.weights[aligned_idx], dim=1)
+
         # Train projection: outer product of error ⊗ input, scaled small
         self._update_count += 1
         self.projection += 0.0001 * torch.outer(error, x)
@@ -419,6 +465,33 @@ class BrainState:
                     if pair in self._edge_strengths:
                         self._edge_strengths[pair] = min(
                             self._edge_strengths[pair] + 0.001 * co_act, 1.0
+                        )
+
+        # 3. Predictive coding — each neuron learns to predict its neighbors
+        # If neuron i predicted neuron j would fire and j didn't (or vice versa),
+        # nudge i's prediction_weights toward j's actual weight vector.
+        # This creates pressure for CONSISTENT co-firing patterns = specialization.
+        if self._decay_counter % 50 == 0 and len(fired_idx) >= 2:
+            fired_set = set(fired_idx[:10].tolist())
+            for idx_i in list(fired_set)[:5]:
+                pred_w = self.prediction_weights[idx_i]
+                if pred_w.norm() < 1e-6:
+                    # Initialize prediction weights from neuron's own weights
+                    self.prediction_weights[idx_i] = self.weights[idx_i].detach().clone()
+                    continue
+                # Check connected neighbors
+                for (a, b), s in list(self._edge_strengths.items())[:20]:
+                    if a != idx_i:
+                        continue
+                    neighbor_w = self.weights[b]
+                    # Predicted co-firing: dot(pred_w, neighbor_w)
+                    predicted = torch.dot(pred_w, neighbor_w).item()
+                    actual = 1.0 if b in fired_set else 0.0
+                    # Prediction error → nudge prediction weights
+                    if abs(predicted - actual) > 0.3:
+                        direction = neighbor_w if actual > predicted else -neighbor_w
+                        self.prediction_weights[idx_i] = F.normalize(
+                            pred_w + 0.001 * direction, dim=0
                         )
 
     # ── Homeostatic Threshold Adaptation ──
@@ -612,6 +685,7 @@ class BrainState:
             "cluster_ids": list(self.cluster_ids),
             "edge_strengths": dict(self._edge_strengths),
             "activation_buffer": self.activation_buffer.cpu().clone(),
+            "prediction_weights": self.prediction_weights[:self.n].cpu().clone(),
             "projection": self.projection.cpu().clone(),
             "projection_alpha": self.projection_alpha,
             "update_count": self._update_count,
@@ -632,6 +706,8 @@ class BrainState:
         self._id_to_idx = {cid: i for i, cid in enumerate(self.cluster_ids)}
         self._edge_strengths = d["edge_strengths"]
         self.activation_buffer = d["activation_buffer"].to(self.device)
+        if "prediction_weights" in d:
+            self.prediction_weights[:n] = d["prediction_weights"]
         # Projection layer (backward-compatible with older checkpoints)
         if "projection" in d:
             self.projection = d["projection"].to(self.device)
