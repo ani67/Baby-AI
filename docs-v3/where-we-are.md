@@ -1,6 +1,6 @@
 # Where We Are — Grand Scheme Assessment
 
-*Updated 2026-03-26 after completing all Phase A-C experiments and 5 signal enrichment tests.*
+*Updated 2026-03-28 after multi-round attention, sequential curriculum, memory, and projection experiments.*
 
 ---
 
@@ -10,6 +10,10 @@
 v2.2 baseline:   spatial 0.012, 1 community    (the blob)
 v3 confirmed:    spatial 0.375, 7 communities   (31x improvement)
 Exp 4 peak:      spatial 0.157, 12 communities  (most structural diversity)
++distributed err: spatial 0.539, 4 communities  (3.5x v3)
++multi-round attn: spatial 0.579, 4 communities (convergence-based forward)
++sequential curr:  spatial 0.650, 28 communities (episode-based feeding)
+current run @50K:  spatial 0.591, 2 communities  (fresh graph, maturing)
 ```
 
 ---
@@ -24,6 +28,15 @@ Exp 4 peak:      spatial 0.157, 12 communities  (most structural diversity)
 ✅ Growth cap prevents collapse (500 cluster limit)
 ✅ Capped adversarial curriculum prevents starvation
 ✅ The architecture CAN produce structural differentiation
+--- 2026-03-28 session ---
+✅ Multi-round attention (convergence) improves spatial (0.54→0.58)
+✅ Sequential curriculum is the biggest lever (communities 4→28, avg_sim 2.4x)
+✅ Temporal co-firing enriches wiring signal
+✅ Per-sample buffer update gives coherent within-episode priming
+✅ Palate cleanser (buffer zero at episode boundary) fixes cross-category bleed
+✅ Episodic memory (store high-error, replay worst categories) — active, TBD
+✅ Negatives are early-training thrashing, resolve by 40-60K on mature graphs
+✅ The FF signal ceiling is NOT 0.375 — distributed error + sequential broke it
 ```
 
 ## What's Disproven
@@ -37,6 +50,11 @@ Exp 4 peak:      spatial 0.157, 12 communities  (most structural diversity)
 ❌ Per-cluster sign from step 0 (noisy before specialization)
 ❌ Teacher direction as update target (kills per-cluster uniqueness)
 ❌ Topology alone encodes knowledge (weights are the knowledge)
+--- 2026-03-28 session ---
+❌ Global 512x512 projection (cross-category interference, whipsaw with momentum)
+❌ Per-cluster lens from step 0 (disrupts spatial formation on young graphs)
+❌ Momentum on projection updates (amplifies sequential episode oscillation)
+❌ "Frosted window" hypothesis — graph learns fine in CLIP space, projection not needed
 ```
 
 ## The Fundamental Discovery
@@ -89,10 +107,26 @@ Transformer-Inspired:
   Momentum .................................. ❌ FAILED (cancels in +/- alternation)
   Activation normalization ................... ✅ DONE (stabilizes signal)
 
-Phase D-F: NOT YET STARTED
-  D  Learned encoder (replace CLIP) .......... ○
-  E  Temporal reasoning + prediction ......... ○
-  F  Environment interaction ................. ○
+Phase D: Input Adaptation (2026-03-28)
+  D.1 Global projection (3 variants) ........ ❌ FAILED (cross-category)
+  D.2 Per-cluster lens (2 variants) ......... ❌ FAILED (hurts spatial early)
+  D.3 Conclusion: CLIP space is fine, no projection needed
+
+Phase D': Sequential Learning (2026-03-28) — THE BREAKTHROUGH
+  D'.1 Sequential curriculum (16-item episodes) ✅ DONE (communities 4→28)
+  D'.2 Temporal co-firing ................... ✅ DONE (cross-step pairs)
+  D'.3 Palate cleanser ...................... ✅ DONE (buffer zero at boundaries)
+  D'.4 Episodic memory ...................... ✅ DONE (store/replay, active)
+  D'.5 Per-sample buffer update ............. ✅ DONE (coherent priming)
+
+Phase E: Language Grounding — PLANNED
+  E.1 Grounded word embeddings (CLIP-bootstrapped) ... ○ planned
+  E.2 Developmental staging (1→2→4 words) ............ ○ planned
+  E.3 Decoder training (currently never called!) ...... ○ planned
+
+Phase F-G: NOT YET STARTED
+  F  Agency (curiosity-driven exploration) ... ○
+  G  Environment interaction ................. ○
 ```
 
 ---
@@ -100,70 +134,43 @@ Phase D-F: NOT YET STARTED
 ## The Honest Assessment
 
 ### What we achieved
-- 31x improvement in spatial score (0.012 → 0.375)
-- 7 stable communities (was 1 blob for 170K steps)
-- 32 categories tracked with diverse curriculum
+- 49x improvement in spatial score (0.012 → 0.591 and climbing)
+- 28 communities on mature graph (was 1 blob for 170K steps)
+- 49 categories tracked (all COCO categories)
+- avg_sim 0.18 for best categories (was 0.076)
 - Deep understanding of FF learning dynamics
-- Comprehensive RCAs for every failure
+- Comprehensive RCAs for every failure (including 5 projection variants)
 
 ### What we didn't achieve
-- Spatial target of 0.50 (stuck at 0.375)
-- Community target of 20 (stuck at 7, Exp 4 hit 12 but traded spatial)
-- Category similarity above 0.20
+- Zero negatives from fresh start (5 mild negatives at 50K, shrinking)
+- Community formation from fresh start is slow (2 at 50K vs 28 on mature graph)
+- Language output (decoder was never trained — discovered this session)
 
-### The ceiling
-The FF binary signal has a hard ceiling around spatial 0.375, 7 communities.
-This is not an architecture problem — it's a signal richness problem.
-The binary +/- signal carries ~1 bit per step. More structure requires more
-information per step, which requires a richer learning signal.
+### The ceiling (REVISED)
+The FF binary signal ceiling of 0.375 was broken by distributed error +
+sequential curriculum. Spatial 0.59+ with room to grow. The ceiling was not
+the signal richness — it was the curriculum (random vs sequential) and the
+error distribution (global vs per-cluster). Richer curriculum > richer signal.
 
 ---
 
-## What This Means for Phase D+
+## What's Next
 
-### The fork in the road
+### Current run (step 50K, no resets planned)
+- Let it mature to 80-100K
+- Watch negatives resolve (expected by 60K based on prior data)
+- Watch communities split (need more co-firing history)
+- If negatives persist at 80K: add per-cluster lens to mature graph (not from step 0)
 
-```
-Option 1: Stay with FF, enrich the signal carefully
-  ─────────────────────────────────────────────────
-  - Tune Exp 4 (multi-target at 0.05x) for communities without spatial loss
-  - Fix Exp 3 (contrastive pairs, stateless)
-  - NEW: self-referential signals (per-cluster novelty, neighbor contrast)
-  - Estimated ceiling: spatial ~0.45, communities ~15
+### Language grounding (Phase E, planned)
+- Replace broken TextDecoder with CLIP-bootstrapped grounded word embeddings
+- Nearest-neighbor retrieval: "what words describe what I'm seeing?"
+- Developmental staging: 1 word → 2 words → 4 words
+- ACTUALLY TRAIN the decoder (train_step was never called — found this session)
 
-  Pro: preserves the FF philosophy (no backprop, local learning)
-  Con: may never reach 0.50+ spatial with binary signal
-
-Option 2: Hybrid approach — keep architecture, upgrade signal
-  ─────────────────────────────────────────────────
-  - Replace binary FF with continuous contrastive signal
-  - Each node gets a real-valued error, not just +/-
-  - Still local (no backprop through graph), but richer per-node
-  - Essentially: local contrastive learning on the FF architecture
-
-  Pro: preserves self-growing graph, interpretability, sparsity
-  Con: moves away from pure FF, needs careful design
-
-Option 3: Phase D — learned encoder
-  ─────────────────────────────────────────────────
-  - Replace CLIP with a small learned encoder
-  - The brain learns to see, not just sort
-  - Requires richer signal (can't learn an encoder on binary +/-)
-  - Implies Option 2 is a prerequisite
-
-  Pro: true developmental AI — learns representations from scratch
-  Con: massive undertaking, requires solving Option 2 first
-```
-
-### Recommendation
-
-**Option 1 first** — spend one more session tuning the enrichment experiments.
-If spatial doesn't break 0.45 with the refined experiments, **move to Option 2**
-(hybrid contrastive signal). Option 3 depends on Option 2 succeeding.
-
-The architecture is proven. The learning rule is the bottleneck. The question
-is whether the rule can be improved within the FF framework or needs to be
-replaced with something stronger.
+### After language
+- Agency: baby chooses what to look at (curiosity-driven curriculum)
+- Interaction: coherent multi-turn dialogue
 
 ---
 
@@ -176,10 +183,9 @@ docs-v3/
   RCA-failed-optimizations.md          — 6 detailed root cause analyses
   experiment-plan-signal-enrichment.md — Test protocol for 5 experiments
   experiment-results-signal-enrichment.md — Results + analysis
+  session-2026-03-28.md                — Full session log: attention → curriculum → projection → memory
   where-we-are.md                      — This document
 
-docs-v2/
-  ROADMAP.md                           — Original phase plan (A-F)
-  ARCHITECTURE-CURRENT.md              — Technical architecture
-  ARCHITECTURAL-LIMITS-AND-SOLUTIONS.md — Game-theoretic analysis
+doc/
+  design-multi-round-attention.md      — Multi-round attention design doc
 ```

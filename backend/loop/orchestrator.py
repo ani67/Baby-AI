@@ -401,8 +401,11 @@ class LearningLoop:
             self.store.prune_old_snapshots()
 
         # ── 12. EMIT ──
+        # Train decoder on teacher's CLIP vector (not model prediction!)
+        teacher_clip = answer_vectors[0] if answer_vectors else prediction
+        self.decoder.train_step(teacher_clip, teacher_answer)
         # Decode model's prediction into words for the frontend
-        model_response = self.decoder.decode(prediction, max_words=15)
+        model_response = self.decoder.decode(prediction, max_words=15, model_step=self.model.step)
 
         if self.viz_emitter is not None:
             asyncio.ensure_future(self.viz_emitter.emit_step(
@@ -587,8 +590,11 @@ class LearningLoop:
             if self._batch_count % 50 == 0 or evicted:
                 print(f"[memory] total={mem_count} evicted={evicted}", flush=True)
 
+        # Train decoder on teacher's CLIP vector (not model prediction!)
+        teacher_clip = items[-1].expected_vector if items[-1].expected_vector is not None else prediction
+        self.decoder.train_step(teacher_clip, teacher_answer)
         # Emit viz (non-blocking)
-        model_response = self.decoder.decode(prediction, max_words=15)
+        model_response = self.decoder.decode(prediction, max_words=15, model_step=self.model.step)
         if self.viz_emitter is not None:
             asyncio.ensure_future(self.viz_emitter.emit_step(
                 step=self.model.step, stage=self._stage,
@@ -633,10 +639,6 @@ class LearningLoop:
         # Use ONE forward pass to get model's current output direction,
         # then determine positive/negative for each sample via cosine
         # similarity — avoids 32 forward passes per batch.
-        # Palate cleanser: zero activation buffer at episode boundaries
-        # to prevent category A's signal from contaminating category B
-        episode_boundaries = [i for i, item in enumerate(items) if getattr(item, 'context', '') == '__new_episode__']
-
         anchor_vec = items[0].expected_vector if items[0].expected_vector is not None else torch.randn(self.model.input_dim)
         anchor_pred, _ = self.model.forward(anchor_vec, return_activations=False)
 
@@ -664,7 +666,7 @@ class LearningLoop:
             samples.extend(replay_samples)
 
         # Batched forward+update
-        changes, all_activations = self.model.update_batch(samples, episode_boundaries=episode_boundaries)
+        changes, all_activations = self.model.update_batch(samples)
 
         # Final forward for activations (viz)
         last_vec = items[-1].expected_vector if items[-1].expected_vector is not None else torch.randn(self.model.input_dim)
@@ -705,7 +707,7 @@ class LearningLoop:
         output_vector, activations = self.model.forward(
             input_vector, return_activations=True,
         )
-        response = self.decoder.decode(output_vector, max_words=30)
+        response = self.decoder.decode(output_vector, max_words=30, model_step=self.model.step)
 
         active_clusters = list(activations.keys())
 

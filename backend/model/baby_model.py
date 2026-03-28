@@ -356,11 +356,15 @@ class BabyModel:
         return 1.0
 
     def _apply_buffer(self, x: torch.Tensor) -> torch.Tensor:
-        """Mix activation buffer into input. Returns effective input for resonance + forward."""
+        """Mix activation buffer into input. Returns effective input for resonance + forward.
+        Buffer is normalized before mixing so it provides DIRECTION (recent category)
+        without drowning the INPUT (current item). Input retains ~87% influence."""
         x = x.to(self._weight_store.device)
-        if self._activation_buffer.norm().item() < 1e-6:
+        buf_norm = self._activation_buffer.norm().item()
+        if buf_norm < 1e-6:
             return x
-        return F.normalize(x + self.buffer_weight * self._activation_buffer, dim=0)
+        buf_direction = self._activation_buffer / buf_norm  # unit vector
+        return F.normalize(x + self.buffer_weight * buf_direction, dim=0)
 
     def _update_activation_buffer(self) -> None:
         """Decay buffer and add top-K cluster identity vectors weighted by activation."""
@@ -823,12 +827,10 @@ class BabyModel:
     def update_batch(
         self,
         samples: list[tuple],
-        episode_boundaries: list[int] | None = None,
     ) -> tuple[dict, list[dict]]:
         """
         Accumulate FF updates across a batch of sample tuples.
         Supports: (vec, is_positive) or (vec, is_positive, teacher_vec) for enriched signal.
-        episode_boundaries: sample indices where a new episode starts (zero the buffer).
         Increments step by len(samples). Returns (per-cluster weight changes, per-sample activations).
         """
         if not samples:
@@ -879,12 +881,7 @@ class BabyModel:
                     paired_samples.append((vec_b, True, teacher_b))
             samples = paired_samples
 
-        _boundaries = set(episode_boundaries or [])
         for sample_idx, sample in enumerate(samples):
-            # Palate cleanser: zero buffer at episode boundaries
-            if sample_idx in _boundaries:
-                self._activation_buffer.zero_()
-
             x = sample[0]
             is_positive = sample[1]
             teacher_vec = sample[2] if len(sample) > 2 else None

@@ -53,8 +53,10 @@ def _build_components_mock():
             return F.normalize(torch.randn(512), dim=0)
 
     class MockTextDecoder:
-        def decode(self, vector, max_words=30, temperature=0.7):
+        def decode(self, vector, max_words=30, model_step=0):
             return "hello world"
+        def train_step(self, output_vector, teacher_text):
+            pass
 
     class MockCurriculum:
         def __init__(self):
@@ -115,7 +117,7 @@ def _build_components_real(config):
     from loop.curriculum import Curriculum
     from encoder.clip_mlx import CLIPWrapper
     from encoder.encoder import ImageEncoder, TextEncoder, VideoEncoder
-    from encoder.decoder import TextDecoder
+    from encoder.decoder import GroundedDecoder
     from teacher.bridge import TeacherBridge
 
     store = StateStore(config.db_path)
@@ -125,7 +127,7 @@ def _build_components_real(config):
     image_enc = ImageEncoder(clip)
     text_enc = TextEncoder(clip)
     video_enc = VideoEncoder(image_enc)
-    decoder = TextDecoder(vocab_size=2048)
+    decoder = GroundedDecoder(text_encoder=text_enc, db_path=config.db_path)
     print("Encoders ready.")
 
     teacher = TeacherBridge(
