@@ -36,21 +36,25 @@ _NUM_SPECIAL = len(Vocabulary.SPECIAL_TOKENS)
 
 
 class GroundedDecoder:
-    def __init__(self, text_encoder=None, vocab_size: int = 2048):
+    def __init__(self, text_encoder=None, vocab_size: int = 2048, db_path: str | None = None):
         self.vocab = Vocabulary(max_size=8192)
         self._text_encoder = text_encoder
         self._alpha_teacher = 0.005   # nudge toward teacher context
-        self._alpha_model = 0.001     # nudge toward model output
 
-        # Bootstrap word embeddings from CLIP
+        # Bootstrap word embeddings from images (better separated) + CLIP text fallback
         n_words = len(self.vocab.word_to_id)
         self.word_embeddings = torch.zeros(n_words, 512)
 
         if text_encoder is not None:
-            self._bootstrap_embeddings()
+            self._bootstrap_embeddings(db_path=db_path)
 
-    def _bootstrap_embeddings(self):
-        """Encode every vocabulary word via CLIP. Special tokens stay zero."""
+    def _bootstrap_embeddings(self, db_path: str | None = None):
+        """Bootstrap word embeddings. Uses mean of actual images per category
+        from the embedding cache (much better separated than CLIP text).
+        Falls back to CLIP text phrases for words without image data."""
+        import sqlite3
+        import struct
+
         words = []
         indices = []
         for idx in range(_NUM_SPECIAL, len(self.vocab.id_to_word)):
@@ -61,18 +65,50 @@ class GroundedDecoder:
         if not words:
             return
 
-        # Batch encode in chunks of 64 to avoid memory issues
-        all_vecs = []
-        for i in range(0, len(words), 64):
-            batch = words[i:i + 64]
-            vecs = self._text_encoder.encode_batch(batch)
-            all_vecs.append(vecs)
+        # Try image-mean embeddings from embedding cache (dog-bus: 0.62 vs 0.85 text)
+        image_embs = {}
+        if db_path:
+            try:
+                conn = sqlite3.connect(db_path)
+                for word in words:
+                    rows = conn.execute(
+                        "SELECT image_emb FROM embedding_cache WHERE category=? ORDER BY RANDOM() LIMIT 20",
+                        (word,),
+                    ).fetchall()
+                    if len(rows) >= 5:
+                        vecs = []
+                        for r in rows:
+                            n = len(r[0]) // 4
+                            vals = struct.unpack(f"{n}f", r[0])
+                            vecs.append(torch.tensor(vals, dtype=torch.float32))
+                        image_embs[word] = F.normalize(torch.stack(vecs).mean(dim=0), dim=0)
+                conn.close()
+            except Exception:
+                pass
 
-        embeddings = torch.cat(all_vecs, dim=0)  # (N, 512)
+        # Encode remaining words via CLIP text (phrase template)
+        text_words = [w for w in words if w not in image_embs]
+        text_vecs = {}
+        if text_words and self._text_encoder is not None:
+            for i in range(0, len(text_words), 64):
+                batch = [f"a photo of a {w}" for w in text_words[i:i + 64]]
+                vecs = self._text_encoder.encode_batch(batch)
+                for j, w in enumerate(text_words[i:i + 64]):
+                    text_vecs[w] = vecs[j]
+
+        # Fill embedding matrix
         for i, idx in enumerate(indices):
-            self.word_embeddings[idx] = embeddings[i]
+            word = words[i]
+            if word in image_embs:
+                self.word_embeddings[idx] = image_embs[word]
+            elif word in text_vecs:
+                self.word_embeddings[idx] = text_vecs[word]
 
-        print(f"[decoder] bootstrapped {len(words)} word embeddings from CLIP", flush=True)
+        print(
+            f"[decoder] bootstrapped {len(words)} words "
+            f"({len(image_embs)} from images, {len(text_vecs)} from text)",
+            flush=True,
+        )
 
     def decode(
         self,
@@ -84,13 +120,13 @@ class GroundedDecoder:
         Find the nearest words to the output vector.
         Developmental staging: fewer words at early steps.
         """
-        # Developmental staging
+        # Developmental staging (overrides caller's max_words)
         if model_step < 5000:
             max_words = 1
         elif model_step < 20000:
             max_words = 2
-        elif model_step < 50000:
-            max_words = 3
+        else:
+            max_words = min(max_words, 4)
 
         v = F.normalize(vector.detach(), dim=-1)
 
@@ -190,7 +226,7 @@ class GroundedDecoder:
         if idx >= self.word_embeddings.shape[0]:
             extra = torch.zeros(idx - self.word_embeddings.shape[0] + 1, 512)
             self.word_embeddings = torch.cat([self.word_embeddings, extra], dim=0)
-        vec = self._text_encoder.encode(word)
+        vec = self._text_encoder.encode(f"a photo of a {word}")
         self.word_embeddings[idx] = vec
 
     def state_dict(self) -> dict:

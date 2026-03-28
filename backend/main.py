@@ -127,7 +127,7 @@ def _build_components_real(config):
     image_enc = ImageEncoder(clip)
     text_enc = TextEncoder(clip)
     video_enc = VideoEncoder(image_enc)
-    decoder = GroundedDecoder(text_encoder=text_enc)
+    decoder = GroundedDecoder(text_encoder=text_enc, db_path=config.db_path)
     print("Encoders ready.")
 
     teacher = TeacherBridge(
