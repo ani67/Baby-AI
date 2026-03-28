@@ -13,6 +13,7 @@ from .cluster import Cluster
 from .graph import Graph, Edge
 from .growth import GrowthMonitor, bud, insert_layer, extend_top
 from .forward_forward import PlasticitySchedule
+from .projection import LearnedProjection
 from .weight_store import WeightStore
 
 
@@ -72,6 +73,9 @@ class BabyModel:
         self._identity_ids: list[str] = []                  # cluster_id per row
         self._identity_id_to_row: dict[str, int] = {}       # cluster_id → row index
         self._identity_dirty: set[str] = set()              # clusters needing row refresh
+
+        # Phase D: learned projection (CLIP → graph space)
+        self.projection = LearnedProjection(dim=input_dim, warmup_steps=5000)
 
         self._init_clusters(initial_clusters, nodes_per_cluster, initial_plasticity)
 
@@ -212,6 +216,10 @@ class BabyModel:
             self._activation_buffer = state_dict["_activation_buffer"]
         else:
             self._activation_buffer = torch.zeros(self.input_dim)
+
+        # Restore learned projection if present
+        if "projection_delta" in state_dict:
+            self.projection.load_state_dict(state_dict)
 
         # Re-attach GPU weight store
         self._weight_store = WeightStore(dim=self.input_dim)
@@ -911,6 +919,10 @@ class BabyModel:
                     model_output = model_result.cpu() if model_result.device.type != 'cpu' else model_result
                     error = teacher_norm - F.normalize(model_output, dim=0)
                     total_act = sum(abs(v) for v in self._last_activations.values())
+                    # Train projection layer using distributed error
+                    raw_input = sample[4] if len(sample) > 4 else None
+                    if raw_input is not None:
+                        self.projection.update(raw_input, error)
 
             for cid in self._last_visited:
                 cluster = self.graph.get_cluster(cid)
