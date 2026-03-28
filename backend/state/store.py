@@ -391,6 +391,75 @@ class StateStore:
         return [{"category": r[0], "total": r[1], "positive": r[2],
                  "avg_sim": r[3], "last_step": r[4]} for r in rows]
 
+    # ── Episodic memory ──
+
+    def store_episodic_memory(self, step: int, category: str | None,
+                              input_vec: bytes, expected_vec: bytes,
+                              error_magnitude: float, trigger: str) -> int:
+        """Insert one episodic memory. Returns row id."""
+        import time
+        cursor = self._conn.execute(
+            """INSERT INTO episodic_memories
+               (step, category, input_vec, expected_vec, error_magnitude, trigger, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (step, category, input_vec, expected_vec, error_magnitude, trigger, time.time()),
+        )
+        self._conn.commit()
+        return cursor.lastrowid
+
+    def sample_episodic_memories(self, categories: list[str], current_step: int,
+                                 limit: int = 8) -> list[dict]:
+        """Fetch replay candidates, prioritizing high-error recent memories."""
+        results = []
+        per_cat = max(1, limit // max(len(categories), 1))
+        for cat in categories[:limit]:
+            rows = self._conn.execute(
+                """SELECT id, input_vec, expected_vec, error_magnitude, replay_count
+                   FROM episodic_memories
+                   WHERE category = ? AND replay_count < 10
+                   ORDER BY error_magnitude DESC
+                   LIMIT ?""",
+                (cat, per_cat),
+            ).fetchall()
+            for r in rows:
+                results.append({
+                    "id": r[0], "input_vec": r[1], "expected_vec": r[2],
+                    "error_magnitude": r[3], "replay_count": r[4],
+                })
+        return results[:limit]
+
+    def increment_replay_count(self, memory_ids: list[int], step: int) -> None:
+        """Batch-update replay_count and last_replayed."""
+        for mid in memory_ids:
+            self._conn.execute(
+                "UPDATE episodic_memories SET replay_count = replay_count + 1, last_replayed = ? WHERE id = ?",
+                (step, mid),
+            )
+        self._conn.commit()
+
+    def evict_episodic_memories(self, keep: int = 2000) -> int:
+        """Delete excess memories. Returns count deleted."""
+        count = self._conn.execute("SELECT COUNT(*) FROM episodic_memories").fetchone()[0]
+        if count <= keep:
+            return 0
+        # Evict fully-consolidated first, then oldest low-error
+        self._conn.execute(
+            "DELETE FROM episodic_memories WHERE id IN ("
+            "  SELECT id FROM episodic_memories ORDER BY "
+            "  CASE WHEN replay_count >= 10 THEN 0 ELSE 1 END, "
+            "  error_magnitude ASC, step ASC "
+            "  LIMIT ?)",
+            (count - keep,),
+        )
+        self._conn.commit()
+        return count - keep
+
+    def get_episodic_memory_count(self) -> int:
+        try:
+            return self._conn.execute("SELECT COUNT(*) FROM episodic_memories").fetchone()[0]
+        except Exception:
+            return 0
+
     def export_dialogue_csv(self, path: str) -> None:
         rows = self._conn.execute("SELECT * FROM dialogues ORDER BY id ASC").fetchall()
         if not rows:

@@ -75,3 +75,18 @@ CREATE TABLE IF NOT EXISTS category_performance (
     avg_sim     REAL    DEFAULT 0.0,
     last_step   INTEGER DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS episodic_memories (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    step            INTEGER NOT NULL,
+    category        TEXT,
+    input_vec       BLOB    NOT NULL,
+    expected_vec    BLOB    NOT NULL,
+    error_magnitude REAL    NOT NULL,
+    trigger         TEXT    NOT NULL,
+    replay_count    INTEGER DEFAULT 0,
+    last_replayed   INTEGER DEFAULT 0,
+    created_at      REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_episodic_category ON episodic_memories(category);

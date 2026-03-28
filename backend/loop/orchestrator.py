@@ -113,6 +113,10 @@ class LearningLoop:
         self._batch_count: int = 0
         self._batch_total_ms: float = 0.0
 
+        # Episodic memory
+        from .memory import EpisodicMemory
+        self.memory = EpisodicMemory(store, capacity=2000)
+
     # ── Control ──
 
     async def start(self) -> None:
@@ -384,8 +388,6 @@ class LearningLoop:
                     state_dict[f"{node.id}.weights"] = node.weights
                     state_dict[f"{node.id}.bias"] = node.bias
             state_dict["_activation_buffer"] = self.model._activation_buffer
-            for cluster in self.model.graph.clusters:
-                state_dict[f"{cluster.id}.lens"] = cluster.lens
             graph_json = self.model.graph.to_json()
             nc = len(graph_json["clusters"])
             ne = len(graph_json["edges"])
@@ -470,9 +472,12 @@ class LearningLoop:
                     flush=True,
                 )
 
+        # ── Episodic replay: mix into batch ──
+        replay_samples = self.memory.sample_replay(n=8, category_weights=cat_weights)
+
         # ── Run heavy computation in thread pool ──
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, self._batch_compute, items)
+        result = await loop.run_in_executor(None, self._batch_compute, items, replay_samples)
 
         # Unpack results from the sync computation
         changes, prediction, activations, anchor_pred, elapsed_ms, all_activations = result
@@ -495,6 +500,13 @@ class LearningLoop:
 
         # Growth check (must run on main thread — uses SQLite store)
         growth_events = self.model.growth_check(self.store)
+
+        # Episodic memory: store significant experiences
+        for item in sample_items:
+            if item.expected_vector is not None:
+                item_pred, _ = self.model.forward(item.expected_vector, return_activations=False)
+                error_mag = 1.0 - torch.dot(item_pred, F.normalize(item.expected_vector, dim=0)).item()
+                self.memory.maybe_store(item, error_mag, self.model.step, growth_events)
 
         # Health monitor
         active_count = len(activations)  # clusters that actually fired this step
@@ -561,14 +573,19 @@ class LearningLoop:
                     state_dict[f"{node.id}.weights"] = node.weights
                     state_dict[f"{node.id}.bias"] = node.bias
             state_dict["_activation_buffer"] = self.model._activation_buffer
-            for cluster in self.model.graph.clusters:
-                state_dict[f"{cluster.id}.lens"] = cluster.lens
             graph_json = self.model.graph.to_json()
             self.store.save_checkpoint(
                 step=self.model.step, stage=self._stage,
                 model_state_dict=state_dict, graph_json=graph_json,
             )
             self.store.prune_old_snapshots()
+
+        # Episodic memory eviction + logging
+        if self.model.step > 0 and self.model.step % 500 == 0:
+            evicted = self.memory.evict()
+            mem_count = self.memory.count()
+            if self._batch_count % 50 == 0 or evicted:
+                print(f"[memory] total={mem_count} evicted={evicted}", flush=True)
 
         # Emit viz (non-blocking)
         model_response = self.decoder.decode(prediction, max_words=15)
@@ -607,7 +624,7 @@ class LearningLoop:
             skipped=False,
         )
 
-    def _batch_compute(self, items) -> tuple:
+    def _batch_compute(self, items, replay_samples=None) -> tuple:
         """Synchronous CPU-heavy batch computation. Runs in thread pool."""
         import time as _time
         t0 = _time.perf_counter()
@@ -637,6 +654,10 @@ class LearningLoop:
                 vec = F.normalize(torch.randn(self.model.input_dim), dim=0)
             patches = getattr(item, "patches", None)  # C.3: (49, 512) or None
             samples.append((vec, is_positive, teacher_vec, patches))
+
+        # Append episodic replay samples
+        if replay_samples:
+            samples.extend(replay_samples)
 
         # Batched forward+update
         changes, all_activations = self.model.update_batch(samples)
