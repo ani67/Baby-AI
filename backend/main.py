@@ -604,6 +604,7 @@ async def upload_images_bulk(body: BulkImageUrlRequest):
 # ── Cluster labels ──
 
 
+# Minimal stopwords: only true function words. Everything else is weighted by TF-IDF.
 STOPWORDS = {
     "a", "an", "the", "is", "it", "in", "on", "of", "to", "and", "or",
     "for", "with", "that", "this", "was", "are", "be", "has", "had",
@@ -637,11 +638,18 @@ def _compute_cluster_labels(store, graph) -> dict[str, list[str]]:
             if cid in cluster_texts and len(cluster_texts[cid]) < 50:
                 cluster_texts[cid].append(answer)
 
-    labels: dict[str, list[str]] = {}
+    # TF-IDF labeling: words that are frequent in THIS cluster but rare across
+    # ALL clusters are the real labels. "group" appears everywhere → low IDF → ignored.
+    # "giraffe" appears in 2 clusters → high IDF → strong label signal.
+    import math
+
+    # 1. Build per-cluster word counts (TF) and document frequency (DF)
+    cluster_counts: dict[str, Counter] = {}
+    doc_freq: Counter = Counter()  # how many clusters contain each word
     for cid in active_ids:
         texts = cluster_texts[cid]
         if not texts:
-            labels[cid] = []
+            cluster_counts[cid] = Counter()
             continue
         counter: Counter = Counter()
         for text in texts:
@@ -649,7 +657,25 @@ def _compute_cluster_labels(store, graph) -> dict[str, list[str]]:
                 clean = word.strip(".,!?;:\"'()-[]{}").lower()
                 if len(clean) > 2 and clean.isalpha() and clean not in STOPWORDS:
                     counter[clean] += 1
-        labels[cid] = [word for word, _ in counter.most_common(5)]
+        cluster_counts[cid] = counter
+        for word in counter:
+            doc_freq[word] += 1
+
+    # 2. Score each word by TF-IDF: tf * log(N / df)
+    n_docs = max(len(active_ids), 1)
+    labels: dict[str, list[str]] = {}
+    for cid in active_ids:
+        counter = cluster_counts[cid]
+        if not counter:
+            labels[cid] = []
+            continue
+        scored = []
+        for word, tf in counter.items():
+            df = doc_freq[word]
+            idf = math.log(n_docs / df)  # rare words → high IDF
+            scored.append((word, tf * idf))
+        scored.sort(key=lambda x: -x[1])
+        labels[cid] = [word for word, _ in scored[:5]]
     return labels
 
 
