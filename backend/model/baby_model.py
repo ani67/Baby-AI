@@ -880,10 +880,13 @@ class BabyModel:
             samples = paired_samples
 
         _boundaries = set(episode_boundaries or [])
+        _buffer_cleared = False
         for sample_idx, sample in enumerate(samples):
-            # Palate cleanser: zero buffer at episode boundaries
-            if sample_idx in _boundaries:
+            # Palate cleanser: zero buffer at FIRST episode boundary only
+            # (zeroing at every boundary kills the buffer — norm drops to 0)
+            if not _buffer_cleared and sample_idx in _boundaries:
                 self._activation_buffer.zero_()
+                _buffer_cleared = True
 
             x = sample[0]
             is_positive = sample[1]
