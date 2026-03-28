@@ -507,10 +507,13 @@ class LearningLoop:
         import random as _rand
         sample_items = _rand.sample(items, min(4, len(items)))
         for item in sample_items:
-            if item.description and item.expected_vector is not None:
-                match = _CATEGORY_NOUNS.search(item.description)
-                if match:
-                    category = match.group(1).lower()
+            if item.expected_vector is not None:
+                # Prefer clean label from curriculum; fall back to regex on caption
+                category = item.label
+                if not category and item.description:
+                    match = _CATEGORY_NOUNS.search(item.description)
+                    category = match.group(1).lower() if match else None
+                if category:
                     item_pred, _ = self.model.forward(item.expected_vector, return_activations=False)
                     sim = torch.dot(item_pred, F.normalize(item.expected_vector, dim=0)).item()
                     self.store.update_category_performance(category, sim, sim > 0.2, self.model.step)

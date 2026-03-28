@@ -142,8 +142,8 @@ class _EmbeddingCache:
             return False
         self._episode_ids = [r[0] for r in rows]
         self._episode_cursor = 0
-        if self._episode_cursor == 0:
-            print(f"[curriculum] episode: {category} ({len(self._episode_ids)} items)", flush=True)
+        self._episode_category = category
+        print(f"[curriculum] episode: {category} ({len(self._episode_ids)} items)", flush=True)
         return True
 
     def sample_sequential(self) -> CurriculumItem | None:
@@ -188,7 +188,7 @@ class _EmbeddingCache:
             item_type="image",
             input_vector=image_emb,
             expected_vector=caption_emb,
-            label=None,
+            label=getattr(self, '_episode_category', None),
             description=caption_text,
             context=caption_text,
             template_slots={"description": caption_text},
