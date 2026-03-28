@@ -524,23 +524,44 @@ class LearningLoop:
             similarity_history=self._similarity_history,
         )
 
-        # Co-firing (within-step: top-10 only — v2 fires 100+, all pairs = one blob)
-        top_cofiring = sorted(activations, key=activations.get, reverse=True)[:10]
-        for i in range(len(top_cofiring)):
-            for j in range(i + 1, len(top_cofiring)):
-                self._cofiring_buffer.append((top_cofiring[i], top_cofiring[j]))
-        # Temporal co-firing: consecutive samples within batch (top-3 per sample)
+        # Co-firing: z-score filtered — only neurons that fired UNUSUALLY for this input.
+        # v2 fires 100+ neurons; top-K creates one blob. Z-score captures specialization.
+        if activations:
+            scores = list(activations.values())
+            mean_s = sum(scores) / len(scores) if scores else 0
+            std_s = (sum((s - mean_s) ** 2 for s in scores) / max(len(scores), 1)) ** 0.5
+            z_threshold = mean_s + 1.0 * std_s  # 1 sigma above mean
+            significant = [cid for cid, v in activations.items() if v > z_threshold]
+            # Record co-firing only among significant neurons (typically 5-15)
+            for i in range(len(significant)):
+                for j in range(i + 1, len(significant)):
+                    self._cofiring_buffer.append((significant[i], significant[j]))
+        # Temporal co-firing: z-score filtered per sample
         if all_activations:
             for t in range(1, len(all_activations)):
-                prev = sorted(all_activations[t - 1].items(), key=lambda x: -x[1])[:3]
-                curr = sorted(all_activations[t].items(), key=lambda x: -x[1])[:3]
-                for p_cid, _ in prev:
-                    for c_cid, _ in curr:
+                for acts in [all_activations[t - 1], all_activations[t]]:
+                    vals = list(acts.values())
+                    if not vals:
+                        continue
+                prev_vals = list(all_activations[t - 1].values())
+                curr_vals = list(all_activations[t].values())
+                if not prev_vals or not curr_vals:
+                    continue
+                p_mean = sum(prev_vals) / len(prev_vals)
+                p_std = (sum((v - p_mean) ** 2 for v in prev_vals) / len(prev_vals)) ** 0.5
+                c_mean = sum(curr_vals) / len(curr_vals)
+                c_std = (sum((v - c_mean) ** 2 for v in curr_vals) / len(curr_vals)) ** 0.5
+                prev_sig = [c for c, v in all_activations[t - 1].items() if v > p_mean + p_std][:5]
+                curr_sig = [c for c, v in all_activations[t].items() if v > c_mean + c_std][:5]
+                for p_cid in prev_sig:
+                    for c_cid in curr_sig:
                         if p_cid != c_cid:
                             self._cofiring_buffer.append((p_cid, c_cid))
-            # Across-batch temporal
-            last_top = sorted(all_activations[-1].items(), key=lambda x: -x[1])[:3]
-            self._prev_active_cids = [cid for cid, _ in last_top]
+            last_vals = list(all_activations[-1].values())
+            if last_vals:
+                l_mean = sum(last_vals) / len(last_vals)
+                l_std = (sum((v - l_mean) ** 2 for v in last_vals) / len(last_vals)) ** 0.5
+                self._prev_active_cids = [c for c, v in all_activations[-1].items() if v > l_mean + l_std][:5]
         self._cofiring_steps_since_flush += 1
         if (self._cofiring_steps_since_flush >= 50 or len(self._cofiring_buffer) >= 50000) and self._cofiring_buffer:
             print(f"[cofiring] flushed {len(self._cofiring_buffer)} pairs at step {self.model.step}", flush=True)
@@ -560,13 +581,19 @@ class LearningLoop:
             "is_positive": True, "curiosity_score": 0.0,
             "batch_size": len(items),
         }
-        # Log only top-20 most active clusters (v2 fires 100+, logging all kills spatial)
-        top_active = sorted(activations, key=activations.get, reverse=True)[:20]
+        # Log z-score significant clusters (not top-K — captures specialization)
+        if activations:
+            a_vals = list(activations.values())
+            a_mean = sum(a_vals) / len(a_vals) if a_vals else 0
+            a_std = (sum((v - a_mean) ** 2 for v in a_vals) / max(len(a_vals), 1)) ** 0.5
+            sig_active = [c for c, v in activations.items() if v > a_mean + a_std]
+        else:
+            sig_active = []
         self.store.log_dialogue(
             step=self.model.step, stage=self._stage,
             question=f"[batch {len(items)}]", answer=teacher_answer,
             curiosity_score=0.0,
-            clusters_active=top_active,
+            clusters_active=sig_active,
             delta_summary=delta_summary,
         )
 
