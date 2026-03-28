@@ -356,11 +356,15 @@ class BabyModel:
         return 1.0
 
     def _apply_buffer(self, x: torch.Tensor) -> torch.Tensor:
-        """Mix activation buffer into input. Returns effective input for resonance + forward."""
+        """Mix activation buffer into input. Returns effective input for resonance + forward.
+        Buffer is normalized before mixing so it provides DIRECTION (recent category)
+        without drowning the INPUT (current item). Input retains ~87% influence."""
         x = x.to(self._weight_store.device)
-        if self._activation_buffer.norm().item() < 1e-6:
+        buf_norm = self._activation_buffer.norm().item()
+        if buf_norm < 1e-6:
             return x
-        return F.normalize(x + self.buffer_weight * self._activation_buffer, dim=0)
+        buf_direction = self._activation_buffer / buf_norm  # unit vector
+        return F.normalize(x + self.buffer_weight * buf_direction, dim=0)
 
     def _update_activation_buffer(self) -> None:
         """Decay buffer and add top-K cluster identity vectors weighted by activation."""
