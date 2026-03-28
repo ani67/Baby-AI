@@ -530,24 +530,52 @@ class BabyModel:
 
         # Run inhibition + record
         self._growth_monitor.record_step(activations, outputs)
+
+        # Convergence round — surprise-based (same logic as forward)
+        visited_ids = {cid for cid, _ in traversal}
+        raw_conf = {cid: activations.get(cid, 0.0) for cid in visited_ids}
+        if raw_conf:
+            mean_c = sum(raw_conf.values()) / len(raw_conf)
+            std_c = (sum((v - mean_c) ** 2 for v in raw_conf.values()) / len(raw_conf)) ** 0.5
+            surprise = {
+                cid: (raw_conf[cid] - mean_c) / std_c if std_c > 1e-6 else 0.0
+                for cid in raw_conf
+            }
+        else:
+            surprise = {}
+        for cid in list(visited_ids):
+            if cid not in outputs or surprise.get(cid, 0) <= 0:
+                continue
+            neighbor_signals = []
+            for edge in self.graph.incoming_edges(cid):
+                nid = edge.from_id if edge.from_id != cid else edge.to_id
+                if nid in outputs and nid in surprise and surprise[nid] < surprise[cid]:
+                    weight = edge.strength * surprise[cid]
+                    neighbor_signals.append((outputs[nid], weight))
+            if neighbor_signals:
+                total_w = sum(w for _, w in neighbor_signals)
+                neighbor_blend = sum(s * w for s, w in neighbor_signals) / total_w
+                outputs[cid] = F.normalize(
+                    outputs[cid] + 0.3 * neighbor_blend, dim=0
+                )
+
         activations = self._apply_inhibition(activations)
-        self._last_visited = {cid for cid, _ in traversal}
+        self._last_visited = visited_ids
         self._last_activations = activations
         self._last_outputs = outputs
 
-        # Output from highest layer
+        # Confidence-weighted output (raw resonance, not surprise)
         if not traversal:
             return torch.zeros(self.input_dim), {}
-        visited_clusters = [self.graph.get_cluster(cid) for cid, _ in traversal]
-        visited_clusters = [c for c in visited_clusters if c]
-        if visited_clusters:
-            max_layer = max(c.layer_index for c in visited_clusters)
-            top = [c for c in visited_clusters if c.layer_index == max_layer]
-            top_outputs = [outputs[c.id] for c in top if c.id in outputs]
-            if top_outputs:
-                result = F.normalize(torch.stack(top_outputs).mean(dim=0), dim=0)
-            else:
-                result = torch.zeros(self.input_dim)
+        weighted_parts = []
+        total_conf = 0.0
+        for cid in visited_ids:
+            if cid in outputs and cid in raw_conf:
+                c = raw_conf[cid]
+                weighted_parts.append(outputs[cid] * c)
+                total_conf += c
+        if weighted_parts and total_conf > 0:
+            result = F.normalize(sum(weighted_parts) / total_conf, dim=0)
         else:
             result = torch.zeros(self.input_dim)
 
@@ -657,6 +685,40 @@ class BabyModel:
             if top4_vecs:
                 pre_inhibition_top4 = F.normalize(torch.stack(top4_vecs).mean(dim=0), dim=0)
 
+        # ── Convergence round: clusters share outputs with neighbors ──
+        # Use SURPRISE (confidence relative to this step's mean) not absolute confidence.
+        # Generalists have high absolute confidence on every input — they'd homogenize
+        # the network. Surprise measures "I match THIS input unusually well" which is
+        # input-specific, creating diverse communities instead of one mega-community.
+        raw_conf = {cid: resonant_ids.get(cid, 0.0) for cid in visited}
+        if raw_conf:
+            mean_conf = sum(raw_conf.values()) / len(raw_conf)
+            std_conf = (sum((v - mean_conf) ** 2 for v in raw_conf.values()) / len(raw_conf)) ** 0.5
+            surprise = {
+                cid: (raw_conf[cid] - mean_conf) / std_conf if std_conf > 1e-6 else 0.0
+                for cid in raw_conf
+            }
+        else:
+            surprise = {}
+        # Only clusters with positive surprise (above-average match) influence neighbors
+        for cid in list(visited):
+            if cid not in outputs or surprise.get(cid, 0) <= 0:
+                continue
+            neighbor_signals = []
+            for edge in self.graph.incoming_edges(cid):
+                nid = edge.from_id if edge.from_id != cid else edge.to_id
+                if nid in outputs and nid in surprise and surprise[nid] < surprise[cid]:
+                    weight = edge.strength * surprise[cid]
+                    neighbor_signals.append((outputs[nid], weight))
+            if neighbor_signals:
+                total_w = sum(w for _, w in neighbor_signals)
+                neighbor_blend = sum(s * w for s, w in neighbor_signals) / total_w
+                outputs[cid] = F.normalize(
+                    outputs[cid] + 0.3 * neighbor_blend, dim=0
+                )
+        # Confidence for output weighting = raw resonance (not surprise)
+        confidence = raw_conf
+
         # THEN apply lateral inhibition — only affects signal/learning, not growth tracking
         activations = self._apply_inhibition(activations)
 
@@ -664,28 +726,22 @@ class BabyModel:
         self._last_activations = activations
         self._last_outputs = outputs
 
-        # Final output = from highest-layer visited clusters
-        if not visited:
+        # ── Output: confidence-weighted across ALL visited clusters ──
+        if not visited or not outputs:
             result = torch.zeros(self.input_dim)
         else:
-            visited_clusters = [
-                self.graph.get_cluster(cid) for cid in visited
-                if self.graph.get_cluster(cid) is not None
-            ]
-            if not visited_clusters:
-                result = torch.zeros(self.input_dim)
+            weighted_parts = []
+            total_conf = 0.0
+            for cid in visited:
+                if cid in outputs and cid in confidence:
+                    c = confidence[cid]
+                    weighted_parts.append(outputs[cid] * c)
+                    total_conf += c
+            if weighted_parts and total_conf > 0:
+                result = sum(weighted_parts) / total_conf
+                result = F.normalize(result, dim=0)
             else:
-                max_layer = max(c.layer_index for c in visited_clusters)
-                top = [c for c in visited_clusters if c.layer_index == max_layer]
-                if top:
-                    top_outputs = [outputs[c.id] for c in top if c.id in outputs]
-                    if top_outputs:
-                        result = torch.stack(top_outputs).mean(dim=0)
-                        result = F.normalize(result, dim=0)
-                    else:
-                        result = torch.zeros(self.input_dim)
-                else:
-                    result = torch.zeros(self.input_dim)
+                result = torch.zeros(self.input_dim)
 
         # Zero-vector protection: never return a near-zero output
         if result.norm().item() < 0.001:
@@ -837,10 +893,12 @@ class BabyModel:
                 for i, cid in enumerate(self._identity_ids):
                     cluster_patch_input[cid] = patches[best_patch_indices[i].item()]
 
-            self._forward_fast(x, traversal)
+            model_result, _ = self._forward_fast(x, traversal)
             blend = self._per_cluster_blend() if self.per_cluster_signal else 0.0
 
             # Pre-compute distributed error ONCE per sample (not per cluster)
+            # Use the ACTUAL model output (confidence-weighted, post-convergence)
+            # not a plain mean of cluster outputs.
             error = None
             total_act = 0.0
             outputs_cpu: dict[str, torch.Tensor] = {}
@@ -850,7 +908,7 @@ class BabyModel:
                     if k in self._last_activations and abs(self._last_activations[k]) > 0.01:
                         outputs_cpu[k] = v.cpu() if v.device.type != 'cpu' else v
                 if outputs_cpu:
-                    model_output = torch.stack(list(outputs_cpu.values())).mean(dim=0)
+                    model_output = model_result.cpu() if model_result.device.type != 'cpu' else model_result
                     error = teacher_norm - F.normalize(model_output, dim=0)
                     total_act = sum(abs(v) for v in self._last_activations.values())
 

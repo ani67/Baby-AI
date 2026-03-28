@@ -469,14 +469,17 @@ class LearningLoop:
 
         # ── Main-thread work: growth, health, co-firing, logging, viz ──
 
-        # Category tracking — extract dominant noun from caption
-        for item in items:
-            if item.description:
+        # Category tracking — sample items and run per-item forward for real prediction accuracy.
+        # Only sample 4 items per batch to avoid 128 forward passes on the main thread.
+        import random as _rand
+        sample_items = _rand.sample(items, min(4, len(items)))
+        for item in sample_items:
+            if item.description and item.expected_vector is not None:
                 match = _CATEGORY_NOUNS.search(item.description)
                 if match:
                     category = match.group(1).lower()
-                    # Use the anchor similarity as a proxy for this category's performance
-                    sim = torch.dot(anchor_pred, F.normalize(item.expected_vector, dim=0)).item() if item.expected_vector is not None else 0.0
+                    item_pred, _ = self.model.forward(item.expected_vector, return_activations=False)
+                    sim = torch.dot(item_pred, F.normalize(item.expected_vector, dim=0)).item()
                     self.store.update_category_performance(category, sim, sim > 0.2, self.model.step)
 
         # Growth check (must run on main thread — uses SQLite store)
