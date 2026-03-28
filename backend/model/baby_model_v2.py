@@ -265,6 +265,15 @@ class BabyModelV2:
             activations = {}
         return prediction, activations
 
+    def update(self, x: torch.Tensor, is_positive: bool = True) -> dict:
+        """Single-sample update (V1 compat for _step_single path)."""
+        if is_positive:
+            self.brain.update(x, x)  # Positive: teacher = input
+        self.brain.adapt_thresholds()
+        self.step += 1
+        self._activation_buffer = self.brain.activation_buffer
+        return {}
+
     def update_batch(
         self,
         samples: list[tuple],
