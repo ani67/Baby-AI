@@ -316,11 +316,28 @@ class BrainState:
         self._hebbian_update(fired_idx, scores)
 
     def _hebbian_update(self, fired_idx: torch.Tensor, scores: torch.Tensor):
-        """Strengthen edges between neurons that fire together. Batched for speed."""
+        """Synaptic plasticity: co-firing strengthens, silence weakens.
+        Every edge decays slightly each step. Only co-fired edges get reinforced.
+        Net effect: unused synapses die naturally — no explicit prune needed."""
+        # 1. Global decay — all edges weaken a tiny bit (use it or lose it)
+        # 0.9999 per step = half-life of ~7000 steps. Fast enough to cull,
+        # slow enough that meaningful edges survive between co-firings.
+        self._decay_counter = getattr(self, '_decay_counter', 0) + 1
+        if self._decay_counter % 100 == 0:  # batch decay every 100 steps for speed
+            dead = []
+            for k in self._edge_strengths:
+                self._edge_strengths[k] *= 0.99  # 0.99^1 per 100 steps ≈ 0.9999/step
+                if self._edge_strengths[k] < 0.005:
+                    dead.append(k)
+            for k in dead:
+                del self._edge_strengths[k]
+            if dead:
+                self._invalidate_edge_cache()
+
+        # 2. Hebbian reinforcement — co-fired edges strengthen
         if len(fired_idx) < 2:
             return
-        # Only update existing edges, sample top-5 pairs for speed
-        fired_list = fired_idx[:5].tolist()  # cap at 5 to avoid O(N^2)
+        fired_list = fired_idx[:5].tolist()
         for i in range(len(fired_list)):
             for j in range(i + 1, len(fired_list)):
                 idx_i, idx_j = fired_list[i], fired_list[j]
@@ -503,14 +520,8 @@ class BrainState:
                                 "metadata": {"step": step},
                             })
 
-        # PRUNE: weak edges — remove bottom 5% each check (self-scaling)
-        if self._edge_strengths:
-            weak = [(k, s) for k, s in self._edge_strengths.items() if s < 0.01]
-            max_prune = max(10, len(self._edge_strengths) // 20)
-            for k, _ in weak[:max_prune]:
-                del self._edge_strengths[k]
-            if weak:
-                self._invalidate_edge_cache()
+        # PRUNE: no longer needed — edge decay in _hebbian_update handles this naturally.
+        # Unused synapses weaken and die on their own (use-it-or-lose-it).
 
         return events
 
