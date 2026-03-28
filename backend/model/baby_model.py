@@ -823,11 +823,11 @@ class BabyModel:
     def update_batch(
         self,
         samples: list[tuple],
-    ) -> dict:
+    ) -> tuple[dict, list[dict]]:
         """
         Accumulate FF updates across a batch of sample tuples.
         Supports: (vec, is_positive) or (vec, is_positive, teacher_vec) for enriched signal.
-        Increments step by len(samples). Returns per-cluster weight change magnitudes.
+        Increments step by len(samples). Returns (per-cluster weight changes, per-sample activations).
         """
         if not samples:
             return {}
@@ -948,6 +948,8 @@ class BabyModel:
                     self._identity_dirty.add(cid)
 
             all_activations.append(dict(self._last_activations))
+            # Per-sample buffer update: primes next sample with this sample's activations
+            self._update_activation_buffer()
 
         # Sync updated weights back to GPU store
         self._sync_to_store()
@@ -1009,13 +1011,10 @@ class BabyModel:
         if all_activations:
             self._last_activations = all_activations[-1]
 
-        # Update memory buffer once per batch (not per sample)
-        self._update_activation_buffer()
-
         # Advance step by batch size
         self.step += len(samples)
 
-        return changes
+        return changes, all_activations
 
     def growth_check(self, store) -> list[dict]:
         """

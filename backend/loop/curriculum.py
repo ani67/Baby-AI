@@ -63,6 +63,12 @@ class _EmbeddingCache:
         self._has_image_url: bool = False
         self._patches: dict[int, torch.Tensor] | None = None  # C.3: lazy-loaded
         self._patches_path: str | None = None
+        # Sequential episode state
+        self._episode_ids: list[int] = []       # pre-fetched IDs for current episode
+        self._episode_cursor: int = 0
+        self._episode_length: int = 16
+        self._category_list: list[str] = []     # all categories, shuffled
+        self._category_cursor: int = 0
 
     def open(self) -> int:
         """Open the database and index image_ids.  Returns count."""
@@ -94,23 +100,68 @@ class _EmbeddingCache:
             if os.path.exists(patches_path):
                 self._patches_path = patches_path
                 print(f"[curriculum] patch features available (lazy-load)", flush=True)
+            # Sequential episodes: discover categories
+            self._init_categories()
         except Exception as e:
             print(f"[curriculum] embedding_cache open error: {e}", flush=True)
             self._conn = None
             self._count = 0
         return self._count
 
-    def sample(self) -> CurriculumItem | None:
-        """Return one random item from the cache."""
-        if not self._conn or self._count == 0:
-            return None
-        # Round-robin through shuffled IDs; re-shuffle on wrap
-        if self._cursor_idx >= self._count:
-            random.shuffle(self._ids)
-            self._cursor_idx = 0
-        iid = self._ids[self._cursor_idx]
-        self._cursor_idx += 1
+    def _init_categories(self) -> None:
+        """Discover available categories for sequential episode sampling."""
+        if not self._conn:
+            return
+        try:
+            rows = self._conn.execute(
+                "SELECT DISTINCT category FROM embedding_cache "
+                "WHERE category IS NOT NULL AND category != ''"
+            ).fetchall()
+            self._category_list = [r[0] for r in rows]
+            random.shuffle(self._category_list)
+            if self._category_list:
+                print(f"[curriculum] {len(self._category_list)} categories for sequential episodes", flush=True)
+        except Exception:
+            self._category_list = []
 
+    def _start_episode(self) -> bool:
+        """Pick next category and pre-fetch episode IDs. Returns True if episode started."""
+        if not self._conn or not self._category_list:
+            return False
+        # Round-robin through categories, shuffle on wrap
+        if self._category_cursor >= len(self._category_list):
+            random.shuffle(self._category_list)
+            self._category_cursor = 0
+        category = self._category_list[self._category_cursor]
+        self._category_cursor += 1
+        rows = self._conn.execute(
+            "SELECT image_id FROM embedding_cache WHERE category=? ORDER BY RANDOM() LIMIT ?",
+            (category, self._episode_length),
+        ).fetchall()
+        if not rows:
+            return False
+        self._episode_ids = [r[0] for r in rows]
+        self._episode_cursor = 0
+        if self._episode_cursor == 0:
+            print(f"[curriculum] episode: {category} ({len(self._episode_ids)} items)", flush=True)
+        return True
+
+    def sample_sequential(self) -> CurriculumItem | None:
+        """Return next item from current episode, starting a new one if needed."""
+        # Start new episode if current is exhausted
+        if self._episode_cursor >= len(self._episode_ids):
+            if not self._start_episode():
+                return self.sample()  # fallback to random
+        if self._episode_cursor >= len(self._episode_ids):
+            return self.sample()
+        iid = self._episode_ids[self._episode_cursor]
+        self._episode_cursor += 1
+        return self._fetch_item(iid)
+
+    def _fetch_item(self, iid: int) -> CurriculumItem | None:
+        """Fetch a single CurriculumItem by image_id."""
+        if not self._conn:
+            return None
         if self._has_image_url:
             row = self._conn.execute(
                 "SELECT image_emb, caption_emb, caption_text, image_url FROM embedding_cache WHERE image_id=?",
@@ -123,18 +174,15 @@ class _EmbeddingCache:
             ).fetchone()
         if row is None:
             return None
-
         image_emb = _bytes_to_tensor(row["image_emb"])
         caption_emb = _bytes_to_tensor(row["caption_emb"])
         caption_text = row["caption_text"]
         image_url = row["image_url"] if self._has_image_url else None
-
         # Lazy-load patch features on first access
         if self._patches is None and self._patches_path is not None:
             self._patches = torch.load(self._patches_path, weights_only=False)
             print(f"[curriculum] loaded {len(self._patches)} patch features", flush=True)
         patches = self._patches.get(iid) if self._patches else None
-
         return CurriculumItem(
             id=f"coco_{iid}",
             stage=0,
@@ -152,11 +200,22 @@ class _EmbeddingCache:
             patches=patches,
         )
 
+    def sample(self) -> CurriculumItem | None:
+        """Return one random item from the cache (fallback for non-sequential)."""
+        if not self._conn or self._count == 0:
+            return None
+        if self._cursor_idx >= self._count:
+            random.shuffle(self._ids)
+            self._cursor_idx = 0
+        iid = self._ids[self._cursor_idx]
+        self._cursor_idx += 1
+        return self._fetch_item(iid)
+
     def sample_batch(self, n: int) -> list[CurriculumItem]:
-        """Return up to n items from the cache."""
+        """Return up to n items from the cache (sequential episodes)."""
         items: list[CurriculumItem] = []
         for _ in range(n):
-            item = self.sample()
+            item = self.sample_sequential()
             if item is None:
                 break
             items.append(item)
@@ -278,7 +337,7 @@ class Curriculum:
         t0 = time.time()
 
         if self._source == "precomputed" and self._cache is not None:
-            item = self._cache.sample()
+            item = self._cache.sample_sequential()
             if item is not None:
                 ms = (time.time() - t0) * 1000
                 self._cache.record_step_time(ms)
@@ -312,20 +371,7 @@ class Curriculum:
         the model is worst at get proportionally more exposure.
         """
         if self._source == "precomputed" and self._cache is not None:
-            # Try adversarial sampling if category performance data exists
-            if category_weights:
-                items = self._cache.sample_adversarial(n, category_weights)
-                if items:
-                    self._step_count += len(items)
-                    if self._step_count % 500 == 0:
-                        worst = sorted(category_weights.items(), key=lambda x: -x[1])[:3]
-                        print(
-                            f"[curriculum] adversarial: worst categories = "
-                            f"{[(cat, f'{w:.3f}') for cat, w in worst]}",
-                            flush=True,
-                        )
-                    return items
-            # Fallback to random
+            # Sequential episodes (default path)
             items = self._cache.sample_batch(n)
             if items:
                 self._step_count += len(items)

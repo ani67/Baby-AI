@@ -109,6 +109,7 @@ class LearningLoop:
         self._loop_task: asyncio.Task | None = None
         self._cofiring_buffer: list[tuple[str, str]] = []
         self._cofiring_steps_since_flush: int = 0
+        self._prev_active_cids: list[str] = []  # cross-step temporal co-firing
         self._batch_count: int = 0
         self._batch_total_ms: float = 0.0
 
@@ -341,6 +342,15 @@ class LearningLoop:
         for i in range(len(active_cids)):
             for j in range(i + 1, len(active_cids)):
                 self._cofiring_buffer.append((active_cids[i], active_cids[j]))
+        # Temporal co-firing: top-5 from previous step → top-5 from this step
+        top5 = sorted(activations.items(), key=lambda x: -x[1])[:5]
+        top5_cids = [cid for cid, _ in top5]
+        if self._prev_active_cids:
+            for prev_cid in self._prev_active_cids:
+                for curr_cid in top5_cids:
+                    if prev_cid != curr_cid:
+                        self._cofiring_buffer.append((prev_cid, curr_cid))
+        self._prev_active_cids = top5_cids
         self._cofiring_steps_since_flush += 1
         if (self._cofiring_steps_since_flush >= 50 or len(self._cofiring_buffer) >= 50000) and self._cofiring_buffer:
             print(f"[cofiring] flushed {len(self._cofiring_buffer)} pairs at step {self.model.step}", flush=True)
@@ -464,7 +474,7 @@ class LearningLoop:
         result = await loop.run_in_executor(None, self._batch_compute, items)
 
         # Unpack results from the sync computation
-        changes, prediction, activations, anchor_pred, elapsed_ms = result
+        changes, prediction, activations, anchor_pred, elapsed_ms, all_activations = result
 
 
         # ── Main-thread work: growth, health, co-firing, logging, viz ──
@@ -495,11 +505,23 @@ class LearningLoop:
             similarity_history=self._similarity_history,
         )
 
-        # Co-firing
+        # Co-firing (within-step: last forward pass)
         active_cids = [cid for cid, v in activations.items() if v > 0.01]
         for i in range(len(active_cids)):
             for j in range(i + 1, len(active_cids)):
                 self._cofiring_buffer.append((active_cids[i], active_cids[j]))
+        # Temporal co-firing: consecutive samples within batch (top-5 per sample)
+        if all_activations:
+            for t in range(1, len(all_activations)):
+                prev = sorted(all_activations[t - 1].items(), key=lambda x: -x[1])[:5]
+                curr = sorted(all_activations[t].items(), key=lambda x: -x[1])[:5]
+                for p_cid, _ in prev:
+                    for c_cid, _ in curr:
+                        if p_cid != c_cid:
+                            self._cofiring_buffer.append((p_cid, c_cid))
+            # Across-batch temporal: last of this batch for next batch's first
+            last_top5 = sorted(all_activations[-1].items(), key=lambda x: -x[1])[:5]
+            self._prev_active_cids = [cid for cid, _ in last_top5]
         self._cofiring_steps_since_flush += 1
         if (self._cofiring_steps_since_flush >= 50 or len(self._cofiring_buffer) >= 50000) and self._cofiring_buffer:
             print(f"[cofiring] flushed {len(self._cofiring_buffer)} pairs at step {self.model.step}", flush=True)
@@ -614,7 +636,7 @@ class LearningLoop:
             samples.append((vec, is_positive, teacher_vec, patches))
 
         # Batched forward+update
-        changes = self.model.update_batch(samples)
+        changes, all_activations = self.model.update_batch(samples)
 
         # Final forward for activations (viz)
         last_vec = items[-1].expected_vector if items[-1].expected_vector is not None else torch.randn(self.model.input_dim)
@@ -624,7 +646,7 @@ class LearningLoop:
         # because they call store.log_graph_event() which requires same-thread SQLite access.
 
         elapsed_ms = (_time.perf_counter() - t0) * 1000
-        return (changes, prediction, activations, anchor_pred, elapsed_ms)
+        return (changes, prediction, activations, anchor_pred, elapsed_ms, all_activations)
 
     # ── Speed / stage ──
 
