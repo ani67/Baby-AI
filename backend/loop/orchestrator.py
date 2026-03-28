@@ -524,11 +524,11 @@ class LearningLoop:
             similarity_history=self._similarity_history,
         )
 
-        # Co-firing (within-step: last forward pass)
-        active_cids = [cid for cid, v in activations.items() if v > 0.01]
-        for i in range(len(active_cids)):
-            for j in range(i + 1, len(active_cids)):
-                self._cofiring_buffer.append((active_cids[i], active_cids[j]))
+        # Co-firing (within-step: top-10 only — v2 fires 100+, all pairs = one blob)
+        top_cofiring = sorted(activations, key=activations.get, reverse=True)[:10]
+        for i in range(len(top_cofiring)):
+            for j in range(i + 1, len(top_cofiring)):
+                self._cofiring_buffer.append((top_cofiring[i], top_cofiring[j]))
         # Temporal co-firing: consecutive samples within batch (top-5 per sample)
         if all_activations:
             for t in range(1, len(all_activations)):
@@ -560,11 +560,13 @@ class LearningLoop:
             "is_positive": True, "curiosity_score": 0.0,
             "batch_size": len(items),
         }
+        # Log only top-20 most active clusters (v2 fires 100+, logging all kills spatial)
+        top_active = sorted(activations, key=activations.get, reverse=True)[:20]
         self.store.log_dialogue(
             step=self.model.step, stage=self._stage,
             question=f"[batch {len(items)}]", answer=teacher_answer,
             curiosity_score=0.0,
-            clusters_active=list(activations.keys()),
+            clusters_active=top_active,
             delta_summary=delta_summary,
         )
 
