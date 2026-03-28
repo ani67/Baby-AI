@@ -628,15 +628,16 @@ class BrainState:
             print(f"[brain-growth] BUD {bud_count} neurons (max_buds={max_buds})", flush=True)
 
         # DORMANCY: neurons that never fire → sleep
-        # Adaptive threshold: gentler at scale to allow growth.
-        # At 100: 0.005. At 1K: 0.005. At 10K: 0.001.
-        # Capped at target * 0.1 so it's always reachable.
-        # Min age 1000 — give new neurons time to find their niche.
-        dormancy_threshold = self.target_fire_rate * min(0.1, max(0.02, 100.0 / max(active_count, 1)))
+        # Gentle threshold that scales down as brain grows — never choke growth.
+        # At 100 active: 0.05 * 0.02 * 1.0   = 0.001  (50x below target)
+        # At 200 active: 0.05 * 0.02 * 0.5   = 0.0005 (100x below target)
+        # At 1K active:  0.05 * 0.02 * 0.1   = 0.0001 (500x below target)
+        # Min age 2000 — give new neurons plenty of time to find their niche.
+        dormancy_threshold = self.target_fire_rate * 0.02 * (100.0 / max(active_count, 100))
         for i in range(n):
             if self.dormant[i]:
                 continue
-            if self.ages[i] > 1000 and self.fire_rates[i] < dormancy_threshold:
+            if self.ages[i] > 2000 and self.fire_rates[i] < dormancy_threshold:
                 self.dormant[i] = True
                 events.append({
                     "event_type": "DORMANT",
@@ -646,7 +647,7 @@ class BrainState:
                 })
         dormant_count = sum(1 for e in events if e["event_type"] == "DORMANT")
         if dormant_count > 0:
-            print(f"[brain-growth] DORMANT {dormant_count} neurons (threshold={dormancy_threshold:.4f})", flush=True)
+            print(f"[brain-growth] DORMANT {dormant_count} neurons (threshold={dormancy_threshold:.6f})", flush=True)
 
         # CONNECT: frequently co-firing neurons that aren't connected
         # (simplified — just check top co-fired pairs from last forward)

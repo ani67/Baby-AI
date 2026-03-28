@@ -766,6 +766,20 @@ class LearningLoop:
     async def human_message(self, text: str) -> str:
         _, text_encoder, _ = self.encoders
 
+        # Replay recent conversation history through the brain to rebuild context.
+        # The activation buffer accumulates state across encode_sequence calls,
+        # so by the time we process the new message the brain "remembers" context.
+        history = self.store.get_human_chat(limit=10)  # 5 exchanges (human+model)
+        history.reverse()  # DB returns newest-first; replay oldest-first
+        for msg in history:
+            content = msg.get("message", "")
+            # Skip correction-flow messages — they aren't conversational context
+            if content.startswith("[correction]") or content.startswith("[after correction]"):
+                continue
+            self.decoder.encode_sequence(
+                content, brain=self.model.brain, text_encoder=text_encoder,
+            )
+
         # Sequence input: process each word through the brain, building context
         # via the activation buffer. Falls back to CLIP for unknown words.
         output_vector = self.decoder.encode_sequence(

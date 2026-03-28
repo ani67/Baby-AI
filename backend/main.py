@@ -626,7 +626,7 @@ def _compute_cluster_labels(store, graph) -> dict[str, list[str]]:
     from collections import Counter
 
     active_ids = [c.id for c in graph.clusters if not c.dormant]
-    rows = store.get_recent_dialogues_for_clusters(limit=2000)
+    rows = store.get_recent_dialogues_for_clusters(limit=5000)
 
     cluster_texts: dict[str, list[str]] = {cid: [] for cid in active_ids}
     for clusters_json, answer in rows:
@@ -828,7 +828,7 @@ async def dashboard():
             category_clusters[word].append(cluster.id)
 
     spatial_score = None
-    if len(category_clusters) >= 3:
+    if len(category_clusters) >= 2:
         import torch
         intra_dists = []
         inter_dists = []
