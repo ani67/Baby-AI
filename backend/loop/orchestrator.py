@@ -265,9 +265,6 @@ class LearningLoop:
             teacher_answer = teacher_response.answer
 
         # ── 7. PREDICT ──
-        # Project through learned projection (Phase D)
-        proj = self.model.projection
-        answer_vectors = [proj.project(v) for v in answer_vectors]
         input_vec = answer_vectors[0] if answer_vectors else torch.randn(self.model.input_dim)
         prediction, activations = self.model.forward(
             input_vec, return_activations=True,
@@ -387,7 +384,8 @@ class LearningLoop:
                     state_dict[f"{node.id}.weights"] = node.weights
                     state_dict[f"{node.id}.bias"] = node.bias
             state_dict["_activation_buffer"] = self.model._activation_buffer
-            state_dict.update(self.model.projection.state_dict())
+            for cluster in self.model.graph.clusters:
+                state_dict[f"{cluster.id}.lens"] = cluster.lens
             graph_json = self.model.graph.to_json()
             nc = len(graph_json["clusters"])
             ne = len(graph_json["edges"])
@@ -491,9 +489,8 @@ class LearningLoop:
                 match = _CATEGORY_NOUNS.search(item.description)
                 if match:
                     category = match.group(1).lower()
-                    proj_vec = self.model.projection.project(item.expected_vector)
-                    item_pred, _ = self.model.forward(proj_vec, return_activations=False)
-                    sim = torch.dot(item_pred, F.normalize(proj_vec, dim=0)).item()
+                    item_pred, _ = self.model.forward(item.expected_vector, return_activations=False)
+                    sim = torch.dot(item_pred, F.normalize(item.expected_vector, dim=0)).item()
                     self.store.update_category_performance(category, sim, sim > 0.2, self.model.step)
 
         # Growth check (must run on main thread — uses SQLite store)
@@ -564,7 +561,8 @@ class LearningLoop:
                     state_dict[f"{node.id}.weights"] = node.weights
                     state_dict[f"{node.id}.bias"] = node.bias
             state_dict["_activation_buffer"] = self.model._activation_buffer
-            state_dict.update(self.model.projection.state_dict())
+            for cluster in self.model.graph.clusters:
+                state_dict[f"{cluster.id}.lens"] = cluster.lens
             graph_json = self.model.graph.to_json()
             self.store.save_checkpoint(
                 step=self.model.step, stage=self._stage,
@@ -618,16 +616,13 @@ class LearningLoop:
         # Use ONE forward pass to get model's current output direction,
         # then determine positive/negative for each sample via cosine
         # similarity — avoids 32 forward passes per batch.
-        proj = self.model.projection
-        raw_anchor = items[0].expected_vector if items[0].expected_vector is not None else torch.randn(self.model.input_dim)
-        anchor_vec = proj.project(raw_anchor)
+        anchor_vec = items[0].expected_vector if items[0].expected_vector is not None else torch.randn(self.model.input_dim)
         anchor_pred, _ = self.model.forward(anchor_vec, return_activations=False)
 
         samples: list[tuple] = []
         for item in items:
-            raw_vec = item.expected_vector if item.expected_vector is not None else torch.randn(self.model.input_dim)
-            vec = proj.project(raw_vec)
-            teacher_vec = vec.clone()  # projected teacher target
+            vec = item.expected_vector if item.expected_vector is not None else torch.randn(self.model.input_dim)
+            teacher_vec = vec.clone()
             # Cheap signal: cosine similarity between model's anchor prediction and this sample
             sim = torch.dot(anchor_pred, F.normalize(vec, dim=0)).item()
             self._similarity_history.append(sim)
@@ -641,14 +636,13 @@ class LearningLoop:
             if not is_positive:
                 vec = F.normalize(torch.randn(self.model.input_dim), dim=0)
             patches = getattr(item, "patches", None)  # C.3: (49, 512) or None
-            samples.append((vec, is_positive, teacher_vec, patches, raw_vec))
+            samples.append((vec, is_positive, teacher_vec, patches))
 
         # Batched forward+update
         changes, all_activations = self.model.update_batch(samples)
 
         # Final forward for activations (viz)
-        last_raw = items[-1].expected_vector if items[-1].expected_vector is not None else torch.randn(self.model.input_dim)
-        last_vec = proj.project(last_raw)
+        last_vec = items[-1].expected_vector if items[-1].expected_vector is not None else torch.randn(self.model.input_dim)
         prediction, activations = self.model.forward(last_vec, return_activations=True)
 
         # NOTE: growth_check and health_monitor moved to _step_batch (main thread)
@@ -682,7 +676,7 @@ class LearningLoop:
 
     async def human_message(self, text: str) -> str:
         _, text_encoder, _ = self.encoders
-        input_vector = self.model.projection.project(text_encoder.encode(text))
+        input_vector = text_encoder.encode(text)
         output_vector, activations = self.model.forward(
             input_vector, return_activations=True,
         )
