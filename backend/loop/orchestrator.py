@@ -383,10 +383,13 @@ class LearningLoop:
         # Periodic checkpoint
         if self.model.step > 0 and self.model.step % 100 == 0:
             state_dict = {}
-            for cluster in self.model.graph.clusters:
-                for node in cluster.nodes:
-                    state_dict[f"{node.id}.weights"] = node.weights
-                    state_dict[f"{node.id}.bias"] = node.bias
+            if hasattr(self.model, 'brain'):
+                state_dict["brain_state"] = self.model.brain.state_dict()
+            else:
+                for cluster in self.model.graph.clusters:
+                    for node in cluster.nodes:
+                        state_dict[f"{node.id}.weights"] = node.weights
+                        state_dict[f"{node.id}.bias"] = node.bias
             state_dict["_activation_buffer"] = self.model._activation_buffer
             graph_json = self.model.graph.to_json()
             nc = len(graph_json["clusters"])
@@ -571,10 +574,14 @@ class LearningLoop:
             self.store.log_latent_snapshot(step=self.model.step, graph_json=graph_json)
         if self.model.step > 0 and self.model.step % 100 == 0:
             state_dict = {}
-            for cluster in self.model.graph.clusters:
-                for node in cluster.nodes:
-                    state_dict[f"{node.id}.weights"] = node.weights
-                    state_dict[f"{node.id}.bias"] = node.bias
+            # V2: save brain state directly if available
+            if hasattr(self.model, 'brain'):
+                state_dict["brain_state"] = self.model.brain.state_dict()
+            else:
+                for cluster in self.model.graph.clusters:
+                    for node in cluster.nodes:
+                        state_dict[f"{node.id}.weights"] = node.weights
+                        state_dict[f"{node.id}.bias"] = node.bias
             state_dict["_activation_buffer"] = self.model._activation_buffer
             graph_json = self.model.graph.to_json()
             self.store.save_checkpoint(
@@ -729,8 +736,8 @@ class LearningLoop:
 
     async def reset(self) -> None:
         await self.pause()
-        from model.baby_model import BabyModel
-        self.model = BabyModel()
+        from model.baby_model_v2 import BabyModelV2
+        self.model = BabyModelV2()
         self.curiosity = CuriosityScorer()
         self.health_monitor = HealthMonitor()
         self._recent_questions.clear()

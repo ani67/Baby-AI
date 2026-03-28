@@ -111,7 +111,7 @@ def _build_components_mock():
 def _build_components_real(config):
     """Build real components with CLIP, Ollama, etc."""
     from state.store import StateStore
-    from model.baby_model import BabyModel
+    from model.baby_model_v2 import BabyModelV2 as BabyModel
     from viz.emitter import VizEmitter
     from loop.orchestrator import LearningLoop
     from loop.curriculum import Curriculum
