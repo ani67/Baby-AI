@@ -58,6 +58,7 @@ class TextCurriculum:
         self._cursor: int = 0
 
         self._load_file("text_curriculum.json")
+        self._load_file("text_diverse.json")
         self._load_file("reasoning_tasks.json")
 
         if self._items:
