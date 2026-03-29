@@ -8,7 +8,7 @@ import time
 class StateStore:
     def __init__(self, path: str = "data/dev.db"):
         self._path = path
-        self._conn = sqlite3.connect(path)
+        self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
 
         # WAL mode for concurrent reads
