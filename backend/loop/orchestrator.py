@@ -104,6 +104,40 @@ class LearningLoop:
         self.native_vision_encoder = native_vision_encoder
         self._distill_count = 0
 
+        # Text curriculum (mixed into batch training)
+        self._text_curriculum = None
+        try:
+            from .text_curriculum import TextCurriculum
+            text_enc = native_text_encoder or self.text_encoder
+            self._text_curriculum = TextCurriculum(
+                data_dir=getattr(store, 'path', 'data').rsplit('/', 1)[0] or 'data',
+                text_encoder=text_enc,
+            )
+            if self._text_curriculum.size > 0:
+                print(f"[text_curriculum] loaded {self._text_curriculum.size} items", flush=True)
+            else:
+                self._text_curriculum = None
+        except Exception as e:
+            print(f"[text_curriculum] not available: {e}", flush=True)
+
+        # Reasoning trainer
+        self._reasoning_trainer = None
+        try:
+            from .reasoning_trainer import ReasoningTrainer
+            import os
+            data_dir = getattr(store, 'path', 'data').rsplit('/', 1)[0] or 'data'
+            tasks_path = os.path.join(data_dir, 'reasoning_tasks.json')
+            if os.path.exists(tasks_path):
+                text_enc = native_text_encoder or self.text_encoder
+                self._reasoning_trainer = ReasoningTrainer(
+                    tasks_path=tasks_path,
+                    text_encoder=text_enc,
+                    brain=model.brain,
+                )
+                print(f"[reasoning] loaded trainer", flush=True)
+        except Exception as e:
+            print(f"[reasoning] not available: {e}", flush=True)
+
         self.curiosity = CuriosityScorer()
         self.question_gen = QuestionGenerator()
         self.health_monitor = HealthMonitor()
@@ -490,6 +524,13 @@ class LearningLoop:
         if not items:
             return StepResult(skipped=True, reason="empty_batch")
 
+        # ── Mix text curriculum items (~20% of batch) ──
+        if self._text_curriculum is not None:
+            n_text = max(1, len(items) // 5)  # 20%
+            text_items = self._text_curriculum.next_batch(n_text, model_step=self.model.step)
+            if text_items:
+                items.extend(text_items)
+
         # ── Saturation check: if >20% of clusters are near-saturated,
         # reduce batch to 8 to prevent weight explosion ──
         active_clusters = [c for c in self.model.graph.clusters if not c.dormant]
@@ -528,6 +569,18 @@ class LearningLoop:
                 self._distill_count += 1
                 if self._distill_count % 500 == 0:
                     self._save_native_checkpoints()
+
+        # ── Reasoning training (every 10 batches) ──
+        if self._reasoning_trainer is not None and self._batch_count % 10 == 0:
+            try:
+                result_r = self._reasoning_trainer.train_step()
+                self.metrics.record_reasoning(
+                    result_r['type'],
+                    result_r['correct'],
+                    result_r.get('similarity', 0.0),
+                )
+            except Exception:
+                pass  # reasoning is best-effort, don't break training
 
         # ── Main-thread work: growth, health, co-firing, logging, viz ──
 
