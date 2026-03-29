@@ -508,6 +508,8 @@ async def resume():
 
 @app.post("/step", response_model=StepResponse)
 async def step_once():
+    if _worker_mode():
+        return StepResponse(skipped=True, reason="use_start_in_worker_mode")
     loop = app.state.loop
     if loop.get_status().state == "running":
         return StepResponse(skipped=True, reason="loop_running")
@@ -528,14 +530,20 @@ async def step_once():
 
 @app.post("/reset", response_model=StatusResponse)
 async def reset(body: ResetRequest):
-    # Save experiment notes before resetting
     from pathlib import Path
     from datetime import datetime
 
-    loop = app.state.loop
-    store = app.state.store
-    step = loop.model.step
-    stage = loop.get_status().stage
+    if _worker_mode():
+        from loop.shared_state import read_state
+        state = read_state() or {}
+        step = state.get("step", 0)
+        stage = state.get("stage", 0)
+        store = app.state.store
+    else:
+        loop = app.state.loop
+        store = app.state.store
+        step = loop.model.step
+        stage = loop.get_status().stage
 
     notes_dir = Path("data/experiment_notes")
     notes_dir.mkdir(parents=True, exist_ok=True)
@@ -565,13 +573,19 @@ async def reset(body: ResetRequest):
 
     print(f"[reset] deleted {deleted} checkpoint files, cleared dialogue history", flush=True)
 
-    await loop.reset()
-    return loop.get_status()
+    if _worker_mode():
+        _send_worker_command("stop")
+        return _get_shared_status()
+    else:
+        await loop.reset()
+        return loop.get_status()
 
 
 @app.post("/experiments")
 async def set_experiments(body: dict):
     """Toggle FF signal enrichment experiments. Pass {name: true/false}."""
+    if _worker_mode():
+        return _get_shared_status()
     model = app.state.loop.model
     toggled = {}
     # C.1 config
@@ -600,7 +614,8 @@ async def set_experiments(body: dict):
 
 @app.post("/topology/save")
 async def save_topology():
-    """Save current graph topology (structure only, no weights)."""
+    if _worker_mode():
+        return {"error": "not available in worker mode"}
     model = app.state.loop.model
     path = "data/topology.json"
     model.save_topology(path)
@@ -608,7 +623,8 @@ async def save_topology():
 
 @app.post("/topology/load")
 async def load_topology():
-    """Load topology and restart with fresh random weights."""
+    if _worker_mode():
+        return {"error": "not available in worker mode"}
     model = app.state.loop.model
     path = "data/topology.json"
     model.load_topology(path)
@@ -960,6 +976,49 @@ def _compute_cluster_labels(store, graph) -> dict[str, list[str]]:
     return labels
 
 
+def _compute_labels_from_store(store, cluster_ids: list[str]) -> dict[str, list[str]]:
+    """Compute labels using only SQLite + cluster IDs (no model needed)."""
+    import json, math
+    from collections import Counter
+
+    rows = store.get_recent_dialogues_for_clusters(limit=5000)
+    cluster_texts = {cid: [] for cid in cluster_ids}
+    for clusters_json, answer in rows:
+        try:
+            cl = json.loads(clusters_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for cid in cl:
+            if cid in cluster_texts and len(cluster_texts[cid]) < 50:
+                cluster_texts[cid].append(answer)
+
+    cluster_counts = {}
+    doc_freq = Counter()
+    for cid in cluster_ids:
+        texts = cluster_texts.get(cid, [])
+        counter = Counter()
+        for text in texts:
+            for word in text.lower().split():
+                clean = word.strip(".,!?;:\"'()-[]{}").lower()
+                if len(clean) > 2 and clean.isalpha() and clean not in STOPWORDS:
+                    counter[clean] += 1
+        cluster_counts[cid] = counter
+        for word in counter:
+            doc_freq[word] += 1
+
+    n_docs = max(len(cluster_ids), 1)
+    labels = {}
+    for cid in cluster_ids:
+        counter = cluster_counts.get(cid)
+        if not counter:
+            labels[cid] = []
+            continue
+        scored = [(w, tf * math.log(n_docs / doc_freq[w])) for w, tf in counter.items()]
+        scored.sort(key=lambda x: -x[1])
+        labels[cid] = [w for w, _ in scored[:5]]
+    return labels
+
+
 import re as _re
 _CLUSTER_ID_RE = _re.compile(r'^(c_\d+)([a-z]*)$')
 
@@ -995,6 +1054,20 @@ async def cluster_labels():
     that cluster was in the top 3 activated. Extract text from those entries.
     Return the 5 most frequent non-stopwords as the cluster's emergent label.
     """
+    if _worker_mode():
+        # In worker mode, compute labels from SQLite dialogues using shared_state cluster IDs
+        store = app.state.store
+        from loop.shared_state import read_state
+        state = read_state()
+        viz = state.get("viz", {}) if state else {}
+        cluster_ids = [c["id"] for c in viz.get("clusters", []) if not c.get("dormant", False)]
+        if not cluster_ids:
+            return {"labels": {}}
+        # Use a lightweight label computation from dialogue table
+        try:
+            return {"labels": _compute_labels_from_store(store, cluster_ids)}
+        except Exception:
+            return {"labels": {}}
     store = app.state.store
     graph = app.state.loop.model.graph
     return {"labels": _compute_cluster_labels(store, graph)}
