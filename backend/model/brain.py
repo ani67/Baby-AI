@@ -238,20 +238,29 @@ class BrainState:
             )
             effective_x = projected
 
-        # 1. SENSE — all neurons evaluate (1 matmul)
-        identities = F.normalize(self.weights[:n], dim=1)
-        scores = identities @ effective_x  # (N,)
+        # 1. SENSE — only active neurons evaluate (skip dormant = major speedup)
+        active_mask = ~self.dormant[:n]
+        active_idx = active_mask.nonzero().squeeze(1)
+        n_active = len(active_idx)
 
-        # 2. FIRE — self-activation
-        active = ~self.dormant[:n]
-        fired = (scores > self.thresholds[:n]) & active
+        # Compact: gather only active weights for the matmul
+        active_weights = F.normalize(self.weights[active_idx], dim=1)  # (n_active, 512)
+        active_scores = active_weights @ effective_x  # (n_active,)
+
+        # Scatter back to full-size arrays (dormant neurons get score 0)
+        scores = torch.zeros(n, device=self.device)
+        scores[active_idx] = active_scores
+
+        # 2. FIRE — self-activation (only among active neurons)
+        fired = torch.zeros(n, dtype=torch.bool, device=self.device)
+        active_fired = active_scores > self.thresholds[active_idx]
+        fired[active_idx] = active_fired
 
         # Guarantee minimum firing (at least 4 neurons)
         if fired.sum() < 4:
-            top_scores, top_idx = scores.topk(min(4, n))
-            for idx in top_idx:
-                if active[idx]:
-                    fired[idx] = True
+            _, top_local = active_scores.topk(min(4, n_active))
+            for li in top_local:
+                fired[active_idx[li]] = True
 
         # 3. THINK — confidence-weighted message passing (ported from v1 deliberation)
         #
@@ -299,7 +308,7 @@ class BrainState:
                 confidence[fired] = (new_scores[fired] - thresholds_n[fired]) / thresholds_n[fired].clamp(min=0.01)
 
                 # Check for new firings
-                newly_fired = (new_scores > thresholds_n) & active & ~fired
+                newly_fired = (new_scores > thresholds_n) & active_mask & ~fired
                 if newly_fired.sum() == 0:
                     break
                 fired = fired | newly_fired
