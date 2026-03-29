@@ -289,17 +289,17 @@ app.mount("/images/data", StaticFiles(directory="data"), name="images")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     if _worker_mode():
-        # Worker mode: send graph from shared state, then poll for deltas
         from loop.shared_state import read_state
         state = read_state()
-        graph_json = state.get("graph_json", {}) if state else {}
-        nodes = graph_json.get("nodes", [])
-        clusters = graph_json.get("clusters", [])
-        edges = graph_json.get("edges", [])
-
-        # Send full snapshot on connect (matches VizEmitter._build_snapshot_from_json)
+        viz = state.get("viz", {}) if state else {}
+        nodes = viz.get("nodes", [])
+        clusters = viz.get("clusters", [])
+        edges = viz.get("edges", [])
         step = state.get("step", 0) if state else 0
         stage = state.get("stage", 0) if state else 0
+        gs = state.get("graph_summary", {}) if state else {}
+
+        # Snapshot on connect
         snapshot = {
             "type": "snapshot",
             "step": step,
@@ -308,28 +308,31 @@ async def websocket_endpoint(ws: WebSocket):
             "clusters": clusters,
             "edges": edges,
             "model_stats": {
-                "total_nodes": len(nodes),
-                "total_clusters": len(clusters),
-                "total_edges": len(edges),
-                "dormant_clusters": sum(1 for c in clusters if c.get("dormant", False)),
-                "layer_count": len(set(
-                    c.get("layer_index", 0) for c in clusters
-                    if not c.get("dormant", False)
-                )),
+                "total_nodes": gs.get("node_count", len(nodes)),
+                "total_clusters": gs.get("cluster_count", len(clusters)),
+                "total_edges": gs.get("edge_count", len(edges)),
+                "dormant_clusters": gs.get("dormant_count", 0),
+                "layer_count": gs.get("layer_count", 0),
                 "step": step,
                 "stage": stage,
             },
         }
         await ws.send_json(snapshot)
-
-        # Send initial status
         await ws.send_json({"type": "status", **_get_shared_status()})
 
-        # Track previous state for delta computation
+        # Send initial dialogue entries
+        for entry in (state.get("dialogue", []) if state else []):
+            await ws.send_json({"type": "delta", "step": entry.get("step", 0), "stage": stage,
+                "activated": [], "deactivated": [], "activation_values": {},
+                "edges_formed": [], "edges_pruned": [], "clusters_added": [],
+                "clusters_dormanted": [], "positions": {}, "growth_events": [],
+                "graph_summary": gs,
+                "dialogue": entry})
+
         prev_step = step
         prev_cluster_ids = {c["id"] for c in clusters if not c.get("dormant", False)}
         prev_dormant_ids = {c["id"] for c in clusters if c.get("dormant", False)}
-        prev_edge_keys = {(e["from"], e["to"]) for e in edges}
+        prev_edge_keys = {(e.get("from",""), e.get("to","")) for e in edges}
         prev_positions = {n["id"]: n.get("pos") for n in nodes if n.get("pos")}
 
         try:
@@ -342,10 +345,10 @@ async def websocket_endpoint(ws: WebSocket):
                 if cur_step == prev_step:
                     continue
 
-                cur_graph = state.get("graph_json", {})
-                cur_clusters = cur_graph.get("clusters", [])
-                cur_edges = cur_graph.get("edges", [])
-                cur_nodes = cur_graph.get("nodes", [])
+                cur_viz = state.get("viz", {})
+                cur_clusters = cur_viz.get("clusters", [])
+                cur_edges = cur_viz.get("edges", [])
+                cur_nodes = cur_viz.get("nodes", [])
                 cur_stage = state.get("stage", 0)
                 graph_summary = state.get("graph_summary", {})
 
@@ -954,15 +957,41 @@ async def cluster_labels():
 
 @app.get("/clusters/tree")
 async def cluster_tree():
-    """Return cluster parent-child tree derived from BUD naming convention.
+    """Return cluster parent-child tree derived from BUD naming convention."""
+    if _worker_mode():
+        from loop.shared_state import read_state
+        state = read_state()
+        viz = state.get("viz", {}) if state else {}
+        clusters = viz.get("clusters", [])
+        node_map = {}
+        for c in clusters:
+            cid = c["id"]
+            node_map[cid] = {
+                "id": cid,
+                "depth": _cluster_depth(cid),
+                "parent": _cluster_parent_id(cid),
+                "dormant": c.get("dormant", False),
+                "cluster_type": c.get("cluster_type"),
+                "labels": [],
+                "phantom": False,
+            }
+        # Insert phantoms
+        phantoms = set()
+        for node in list(node_map.values()):
+            p = node["parent"]
+            while p and p not in node_map and p not in phantoms:
+                phantoms.add(p)
+                p = _cluster_parent_id(p)
+        for pid in phantoms:
+            node_map[pid] = {"id": pid, "depth": _cluster_depth(pid),
+                "parent": _cluster_parent_id(pid), "dormant": True,
+                "cluster_type": None, "labels": [], "phantom": True}
+        edges = [{"source": n["parent"], "target": cid}
+                 for cid, n in node_map.items() if n["parent"] and n["parent"] in node_map]
+        nodes = list(node_map.values())
+        return {"nodes": nodes, "edges": edges,
+                "max_depth": max((n["depth"] for n in nodes), default=0)}
 
-    c_00 → children c_00a, c_00b
-    c_00a → children c_00aa, c_00ab
-
-    Since bud() removes parent clusters from the graph, we insert phantom
-    parent nodes when siblings exist but their parent doesn't.  This
-    reconstructs the full BUD lineage tree for visualization.
-    """
     store = app.state.store
     loop = app.state.loop
     graph = loop.model.graph
@@ -973,7 +1002,6 @@ async def cluster_tree():
         print(f"[tree] labels computation failed: {e}", flush=True)
         labels = {}
 
-    # Build node map for real clusters
     node_map: dict[str, dict] = {}
     for cluster in graph.clusters:
         cid = cluster.id
@@ -1032,8 +1060,34 @@ async def cluster_tree():
 
 @app.get("/dashboard")
 async def dashboard():
+    if _worker_mode():
+        from loop.shared_state import read_state
+        state = read_state()
+        if state and "dashboard" in state:
+            d = state["dashboard"]
+            gs = state.get("graph_summary", {})
+            # Fill in fields the frontend expects
+            d.setdefault("step", state.get("step", 0))
+            d.setdefault("clusters", gs.get("cluster_count", 0))
+            d.setdefault("layers", gs.get("layer_count", 0))
+            d.setdefault("edges", gs.get("edge_count", 0))
+            d.setdefault("nodes", gs.get("node_count", 0))
+            d.setdefault("structure", {
+                "spatial_score": d.get("spatial_score"),
+                "sibling_coherence": 0,
+                "layer_diversity": {},
+                "cofiring_communities": d.get("communities", 0),
+                "community_sizes": d.get("community_sizes", []),
+            })
+            d.setdefault("memory_buffer", {"norm": 0, "decay": 0.9, "weight": 0.15, "top_k": 5})
+            return d
+        return {"step": 0, "clusters": 0, "layers": 0, "edges": 0, "nodes": 0,
+                "growth_rate": 0, "edge_ratio": 0,
+                "categories": {"best": [], "worst": [], "total_tracked": 0},
+                "structure": {"spatial_score": None, "sibling_coherence": 0,
+                    "layer_diversity": {}, "cofiring_communities": 0, "community_sizes": []},
+                "memory_buffer": {"norm": 0, "decay": 0.9, "weight": 0.15, "top_k": 5}}
     loop = app.state.loop
-    # Return cached dashboard if available (computed every 10 batches in training thread)
     cached = getattr(loop, '_cached_dashboard', None)
     if cached is not None:
         return cached

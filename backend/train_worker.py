@@ -274,26 +274,203 @@ def save_checkpoint(loop, items_processed=0):
         print(f"[checkpoint] error: {e}", flush=True)
 
 
-_cached_graph_json = None
-_graph_json_step = 0
+_viz_cache = {"clusters": [], "edges": [], "step": 0}
+_proj_matrix = None  # fixed random projection for positions
+_dialogue_buffer = []  # last 20 Q&A entries
+_dashboard_cache = {}
+
+
+def _compute_positions(loop):
+    """Compute 3D positions from weight vectors using fixed random projection.
+    Y = layer_index (vertical structure), X/Z = random projection of weights.
+    Similar neurons cluster naturally. O(n), no PCA/SVD needed."""
+    global _proj_matrix
+    brain = loop.model.brain
+    n = brain.n
+    if n == 0:
+        return {}
+
+    # Fixed random projection matrix (seeded, stable across steps)
+    if _proj_matrix is None or _proj_matrix.shape[1] != brain.dim:
+        gen = torch.Generator(device='cpu').manual_seed(42)
+        _proj_matrix = torch.randn(2, brain.dim, generator=gen) * 0.15
+        _proj_matrix = _proj_matrix.to(brain.device)
+
+    # Project active neuron weights to 2D (X, Z)
+    active_mask = ~brain.dormant[:n]
+    active_idx = active_mask.nonzero().squeeze(1)
+    if len(active_idx) == 0:
+        return {}
+
+    weights = brain.weights[active_idx]  # (n_active, dim)
+    xz = (_proj_matrix @ weights.T).T.cpu()  # (n_active, 2)
+    layers = brain.layer_indices[active_idx].cpu()
+
+    positions = {}
+    for i, gidx in enumerate(active_idx.cpu().tolist()):
+        cid = brain.cluster_ids[gidx]
+        positions[cid] = [
+            float(xz[i, 0]),           # X: from weight projection
+            float(layers[i]) * 2.0,    # Y: layer index (vertical)
+            float(xz[i, 1]),           # Z: from weight projection
+        ]
+    return positions
+
+
+def _compute_viz(loop):
+    """Build viz data: clusters with positions, top edges."""
+    brain = loop.model.brain
+    n = brain.n
+    positions = _compute_positions(loop)
+
+    # Build cluster list with positions
+    clusters = []
+    for i in range(n):
+        cid = brain.cluster_ids[i]
+        dormant = brain.dormant[i].item()
+        clusters.append({
+            "id": cid,
+            "cluster_type": "sensory",
+            "dormant": dormant,
+            "layer_index": float(brain.layer_indices[i].item()),
+            "pos": positions.get(cid),
+        })
+
+    # Top 500 edges by strength
+    edges_sorted = sorted(brain._edge_strengths.items(), key=lambda x: x[1], reverse=True)[:500]
+    edges = []
+    for (i, j), s in edges_sorted:
+        if i < n and j < n:
+            edges.append({
+                "from": brain.cluster_ids[i],
+                "to": brain.cluster_ids[j],
+                "strength": round(s, 4),
+            })
+
+    # Nodes (for frontend compat — 1:1 with clusters in V2)
+    nodes = []
+    for c in clusters:
+        if c["pos"] is not None:
+            nid = f"n_{brain._id_to_idx.get(c['id'], 0):04d}"
+            nodes.append({
+                "id": nid,
+                "cluster": c["id"],
+                "pos": c["pos"],
+                "activation_mean": 0.05,
+                "alive": not c["dormant"],
+            })
+
+    return {"clusters": clusters, "nodes": nodes, "edges": edges}
+
+
+def _compute_dashboard(loop):
+    """Compute dashboard metrics (spatial score, communities, categories)."""
+    try:
+        cats = loop.store.get_category_performance()
+        best = cats[-5:] if len(cats) >= 5 else cats
+        worst = cats[:5]
+
+        # Community count from cofiring
+        cofiring_pairs = loop.store.get_cofiring_pairs()
+        strong = [p for p in cofiring_pairs if p["count"] > 10]
+        if strong:
+            parent_map = {}
+            def find(x):
+                while parent_map.get(x, x) != x:
+                    parent_map[x] = parent_map.get(parent_map[x], parent_map[x])
+                    x = parent_map[x]
+                return x
+            def union(a, b):
+                ra, rb = find(a), find(b)
+                if ra != rb: parent_map[ra] = rb
+            for p in strong[:2000]:
+                union(p["a"], p["b"])
+            from collections import defaultdict
+            components = defaultdict(list)
+            all_ids = set()
+            for p in strong[:2000]:
+                all_ids.add(p["a"]); all_ids.add(p["b"])
+            for cid in all_ids:
+                components[find(cid)].append(cid)
+            sizes = sorted([len(v) for v in components.values()], reverse=True)
+            communities = len([s for s in sizes if s >= 3])
+        else:
+            communities = 0
+            sizes = []
+
+        gs = loop._cached_graph_summary
+        return {
+            "spatial_score": None,  # expensive, skip for now
+            "communities": communities,
+            "community_sizes": sizes[:10],
+            "categories": {
+                "best": [{"category": c["category"], "avg_sim": c["avg_sim"]} for c in best],
+                "worst": [{"category": c["category"], "avg_sim": c["avg_sim"]} for c in worst],
+                "total_tracked": len(cats),
+            },
+            "growth_rate": round(gs.get("cluster_count", 0) / max(loop.model.step / 1000, 1), 1),
+            "edge_ratio": round(gs.get("edge_count", 0) / max(gs.get("cluster_count", 1), 1), 1),
+        }
+    except Exception:
+        return {}
+
+
+def add_dialogue(items, prediction, loop):
+    """Add training Q&A to dialogue buffer."""
+    global _dialogue_buffer
+    if not items:
+        return
+    last = items[-1]
+    desc = last.description or ""
+    model_response = ""
+    try:
+        model_response = loop.decoder.decode(prediction, max_words=8, model_step=loop.model.step)
+    except Exception:
+        pass
+    _dialogue_buffer.append({
+        "step": loop.model.step,
+        "question": f"[batch {len(items)}]",
+        "answer": desc[:100],
+        "model_answer": model_response,
+        "curiosity_score": 0.0,
+        "is_positive": True,
+        "stage": loop._stage,
+        "timestamp": time.time(),
+        "image_url": getattr(last, "image_url", None),
+    })
+    if len(_dialogue_buffer) > 20:
+        _dialogue_buffer = _dialogue_buffer[-20:]
+
 
 def publish(loop, full=False):
-    """Publish current state to shared file for HTTP server.
-    full=True forces graph_json refresh (expensive). Otherwise uses cached."""
-    global _cached_graph_json, _graph_json_step
+    """Publish rich state for HTTP server + frontend."""
+    global _viz_cache, _dashboard_cache
     try:
         loop._update_cached_status()
-        # Only recompute graph_json every 500 items or on full refresh
-        if full or _cached_graph_json is None or loop.model.step - _graph_json_step > 500:
-            _cached_graph_json = loop.model.graph.to_json()
-            _graph_json_step = loop.model.step
+
+        # Viz data: recompute every 500 steps or on full refresh
+        if full or loop.model.step - _viz_cache.get("step", 0) > 500:
+            _viz_cache = _compute_viz(loop)
+            _viz_cache["step"] = loop.model.step
+
+        # Dashboard: recompute every 3000 steps
+        if full or loop.model.step - _dashboard_cache.get("_step", 0) > 3000:
+            _dashboard_cache = _compute_dashboard(loop)
+            _dashboard_cache["_step"] = loop.model.step
+
         write_state({
             "step": loop.model.step,
             "stage": loop._stage,
             "state": "running",
             "graph_summary": loop._cached_graph_summary,
             "metrics": loop.metrics.snapshot(),
-            "graph_json": _cached_graph_json,
+            "viz": {
+                "clusters": _viz_cache.get("clusters", []),
+                "nodes": _viz_cache.get("nodes", []),
+                "edges": _viz_cache.get("edges", []),
+            },
+            "dashboard": _dashboard_cache,
+            "dialogue": _dialogue_buffer[-20:],
         })
     except Exception as e:
         print(f"[publish] error: {e}", flush=True)
@@ -385,11 +562,12 @@ def run(loop):
             except Exception as e:
                 print(f"[reasoning] error: {e}", flush=True)
 
-            # 8. Decoder training
+            # 8. Decoder training + dialogue capture
             try:
                 teacher_answer = items[-1].description or ""
                 teacher_clip = items[-1].expected_vector if items[-1].expected_vector is not None else prediction
                 loop.decoder.train_step(teacher_clip, teacher_answer)
+                add_dialogue(items, prediction, loop)
             except Exception as e:
                 print(f"[decoder] error: {e}", flush=True)
 
