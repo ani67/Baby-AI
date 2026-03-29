@@ -183,7 +183,7 @@ def compute_batch(loop, items, replay):
 
 def distill_step(loop, items, items_processed):
     """Stage 3: Native text encoder distillation (every 500 items)."""
-    if loop.native_text_encoder is None or items_processed % 500 != 0:
+    if loop.native_text_encoder is None or items_processed % 500 > 50:
         return
     import random
     candidates = [i for i in items if i.description and i.expected_vector is not None]
@@ -198,7 +198,7 @@ def distill_step(loop, items, items_processed):
 
 def track_categories(loop, items, items_processed):
     """Stage 4: Category performance tracking (every 1500 items)."""
-    if items_processed % 1500 != 0:
+    if items_processed % 1500 > 50:
         return
     import random
     sample = random.sample(items, min(4, len(items)))
@@ -242,7 +242,7 @@ def record_cofiring(loop, activations, items_processed):
 
 def run_reasoning(loop, items_processed):
     """Stage 7: Reasoning tasks (every 1500 items, with state isolation)."""
-    if loop._reasoning_trainer is None or items_processed % 1500 != 0:
+    if loop._reasoning_trainer is None or items_processed % 1500 > 50:
         return
     saved = loop.model.brain.activation_buffer.clone()
     try:
@@ -255,7 +255,7 @@ def run_reasoning(loop, items_processed):
 
 def save_checkpoint(loop, items_processed=0):
     """Stage 8: Save model checkpoint (every 15000 items)."""
-    if loop.model.step <= 0 or (items_processed > 0 and items_processed % 15000 != 0):
+    if loop.model.step <= 0 or (items_processed > 0 and items_processed % 15000 > 50):
         return
     try:
         state_dict = {}
@@ -399,12 +399,11 @@ def run(loop):
             except Exception as e:
                 print(f"[checkpoint] error: {e}", flush=True)
 
-            # 10. Publish state (every 50 items for responsive UI)
-            if items_processed % 50 == 0:
-                publish(loop)
+            # 10. Publish state (every batch for responsive UI)
+            publish(loop)
 
             # Log (every 1500 items)
-            if items_processed % 1500 == 0:
+            if items_processed % 1500 < 50:
                 gs = loop._cached_graph_summary
                 print(
                     f"[worker] step={loop.model.step} active={gs.get('node_count', '?')} "
