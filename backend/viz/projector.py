@@ -199,7 +199,9 @@ class Projector:
         centered = weight_matrix - weight_matrix.mean(axis=0)
         try:
             U, S, Vt = np.linalg.svd(centered, full_matrices=False)
-            offsets = U[:, :3] * spread
+            min_dim = min(U.shape[1], 3)
+            offsets = np.zeros((n, 3))
+            offsets[:, :min_dim] = U[:, :min_dim] * spread
             if np.max(np.abs(offsets)) < 0.01:
                 offsets = np.random.RandomState(42).randn(n, 3) * spread * 0.5
         except Exception:
