@@ -512,153 +512,15 @@ class LearningLoop:
         """Batched learning step. Heavy matmul in thread pool, everything else async."""
         import time as _time
 
-        graph_summary = self.model.graph.summary()
-
-        # Compute adversarial category weights (inverse of per-category similarity)
-        cat_weights = None
-        try:
-            cats = self.store.get_category_performance()
-            if len(cats) >= 10:
-                max_sim = max(c["avg_sim"] for c in cats) or 1.0
-                cat_weights = {c["category"]: max(0.1, 1.0 - c["avg_sim"] / max_sim) for c in cats}
-        except Exception:
-            pass
-
-        items = self.curriculum.next_batch(batch_size, stage=self._stage, model_state=graph_summary, category_weights=cat_weights)
-        if not items:
-            return StepResult(skipped=True, reason="empty_batch")
-
-        # ── Mix text curriculum items (~20% of batch) ──
-        if self._text_curriculum is not None:
-            n_text = max(1, len(items) // 5)  # 20%
-            text_items = self._text_curriculum.next_batch(n_text, model_step=self.model.step)
-            if text_items:
-                items.extend(text_items)
-
-        # ── Saturation check: if >20% of clusters are near-saturated,
-        # reduce batch to 8 to prevent weight explosion ──
-        active_clusters = [c for c in self.model.graph.clusters if not c.dormant]
-        saturated = sum(1 for c in active_clusters if c.mean_activation > 0.85)
-        saturation_ratio = saturated / max(len(active_clusters), 1)
-        effective_size = len(items)
-        if saturation_ratio > 0.2:
-            effective_size = min(8, len(items))
-            items = items[:effective_size]
-            if self._batch_count % 10 == 0:
-                print(
-                    f"[batch] saturation cap: {saturated}/{len(active_clusters)} clusters > 0.85, "
-                    f"reduced batch to {effective_size}",
-                    flush=True,
-                )
-
-        # ── Episodic replay: mix into batch ──
-        replay_samples = self.memory.sample_replay(n=8, category_weights=cat_weights)
-
-        # ── Batch compute (forward + update) in thread pool ──
+        # ── ALL heavy work in thread pool — event loop stays free ──
         loop = asyncio.get_event_loop()
-        changes, prediction, activations, anchor_pred, elapsed_ms, all_activations = \
-            await loop.run_in_executor(None, self._batch_compute, items, replay_samples)
-        await asyncio.sleep(0)  # yield to event loop
-
-        # ── Native text encoder distillation (every 4th batch) ──
-        self._distill_count += 1  # always increment (was inside the if — only ran once!)
-        if self.native_text_encoder is not None and self._distill_count % 4 == 0:
-            import random as _rand_distill
-            distill_items = [i for i in items if i.description and i.expected_vector is not None]
-            if distill_items:
-                di = _rand_distill.choice(distill_items)
-                loss = self.native_text_encoder.distill_step(di.description, di.expected_vector)
-                self.metrics.record_text_distill(1.0 - loss)
-                if self._distill_count % 500 == 0:
-                    self._save_native_checkpoints()
-
-        await asyncio.sleep(0)  # yield to event loop
-
-        # ── Main-thread work: growth, health, co-firing, logging, viz ──
-
-        # Category tracking — sample items and run per-item forward for real prediction accuracy.
-        # Only sample 4 items per batch to avoid 128 forward passes on the main thread.
-        import random as _rand
-        sample_items = _rand.sample(items, min(4, len(items)))
-        for item in sample_items:
-            if item.expected_vector is not None:
-                # Prefer clean label from curriculum; fall back to regex on caption
-                category = item.label
-                if not category and item.description:
-                    match = _CATEGORY_NOUNS.search(item.description)
-                    category = match.group(1).lower() if match else None
-                if category:
-                    item_pred, _ = self.model.forward(item.expected_vector, return_activations=False)
-                    sim = torch.dot(item_pred, F.normalize(item.expected_vector, dim=0)).item()
-                    self.store.update_category_performance(category, sim, sim > 0.2, self.model.step)
-
-        # Growth check (must run on main thread — uses SQLite store)
-        growth_events = self.model.growth_check(self.store)
-        await asyncio.sleep(0)  # yield to event loop
-
-        # Episodic memory: store significant experiences
-        for item in sample_items:
-            if item.expected_vector is not None:
-                item_pred, _ = self.model.forward(item.expected_vector, return_activations=False)
-                error_mag = 1.0 - torch.dot(item_pred, F.normalize(item.expected_vector, dim=0)).item()
-                self.memory.maybe_store(item, error_mag, self.model.step, growth_events)
-
-        # Health monitor
-        active_count = len(activations)  # clusters that actually fired this step
-        total_clusters = len(self.model.graph.clusters)
-        self.health_monitor.record_step(active_count, total_clusters)
-        self.health_monitor.check(
-            step=self.model.step, stage=self._stage, model=self.model,
-            positive_history=self._positive_history,
-            similarity_history=self._similarity_history,
+        result = await loop.run_in_executor(
+            None, self._full_batch_step, batch_size
         )
-
-        # Co-firing: z-score filtered — only neurons that fired UNUSUALLY for this input.
-        # v2 fires 100+ neurons; top-K creates one blob. Z-score captures specialization.
-        if activations:
-            scores = list(activations.values())
-            mean_s = sum(scores) / len(scores) if scores else 0
-            std_s = (sum((s - mean_s) ** 2 for s in scores) / max(len(scores), 1)) ** 0.5
-            z_threshold = mean_s + 1.0 * std_s  # 1 sigma above mean
-            significant = [cid for cid, v in activations.items() if v > z_threshold]
-            # Record co-firing only among significant neurons (typically 5-15)
-            for i in range(len(significant)):
-                for j in range(i + 1, len(significant)):
-                    self._cofiring_buffer.append((significant[i], significant[j]))
-        # Temporal co-firing: z-score filtered per sample
-        if all_activations:
-            for t in range(1, len(all_activations)):
-                for acts in [all_activations[t - 1], all_activations[t]]:
-                    vals = list(acts.values())
-                    if not vals:
-                        continue
-                prev_vals = list(all_activations[t - 1].values())
-                curr_vals = list(all_activations[t].values())
-                if not prev_vals or not curr_vals:
-                    continue
-                p_mean = sum(prev_vals) / len(prev_vals)
-                p_std = (sum((v - p_mean) ** 2 for v in prev_vals) / len(prev_vals)) ** 0.5
-                c_mean = sum(curr_vals) / len(curr_vals)
-                c_std = (sum((v - c_mean) ** 2 for v in curr_vals) / len(curr_vals)) ** 0.5
-                prev_sig = [c for c, v in all_activations[t - 1].items() if v > p_mean + p_std][:5]
-                curr_sig = [c for c, v in all_activations[t].items() if v > c_mean + c_std][:5]
-                for p_cid in prev_sig:
-                    for c_cid in curr_sig:
-                        if p_cid != c_cid:
-                            self._cofiring_buffer.append((p_cid, c_cid))
-            last_vals = list(all_activations[-1].values())
-            if last_vals:
-                l_mean = sum(last_vals) / len(last_vals)
-                l_std = (sum((v - l_mean) ** 2 for v in last_vals) / len(last_vals)) ** 0.5
-                self._prev_active_cids = [c for c, v in all_activations[-1].items() if v > l_mean + l_std][:5]
-        self._cofiring_steps_since_flush += 1
-        # Cap buffer to prevent massive SQLite writes that block the GIL
-        if len(self._cofiring_buffer) > 5000:
-            self._cofiring_buffer = self._cofiring_buffer[-5000:]
-        if (self._cofiring_steps_since_flush >= 50 or len(self._cofiring_buffer) >= 5000) and self._cofiring_buffer:
-            self.store.batch_update_cofiring(self._cofiring_buffer, self.model.step)
-            self._cofiring_buffer = []
-            self._cofiring_steps_since_flush = 0
+        if result is None:
+            return StepResult(skipped=True, reason="empty_batch")
+        items, changes, prediction, activations, growth_events, elapsed_ms = result
+        await asyncio.sleep(0)  # yield for HTTP/WebSocket
 
         # Log
         teacher_answer = items[-1].description or ""
@@ -672,54 +534,8 @@ class LearningLoop:
             "is_positive": True, "curiosity_score": 0.0,
             "batch_size": len(items),
         }
-        # Log z-score significant clusters (not top-K — captures specialization)
-        if activations:
-            a_vals = list(activations.values())
-            a_mean = sum(a_vals) / len(a_vals) if a_vals else 0
-            a_std = (sum((v - a_mean) ** 2 for v in a_vals) / max(len(a_vals), 1)) ** 0.5
-            sig_active = [c for c, v in activations.items() if v > a_mean + a_std]
-        else:
-            sig_active = []
-        self.store.log_dialogue(
-            step=self.model.step, stage=self._stage,
-            question=f"[batch {len(items)}]", answer=teacher_answer,
-            curiosity_score=0.0,
-            clusters_active=sig_active,
-            delta_summary=delta_summary,
-        )
 
-        # Periodic snapshot/checkpoint
-        if self.model.step % self.model.snapshot_interval == 0:
-            graph_json = self.model.graph.to_json()
-            self.store.log_latent_snapshot(step=self.model.step, graph_json=graph_json)
-        if self.model.step > 0 and self.model.step % 100 == 0:
-            state_dict = {}
-            # V2: save brain state directly if available
-            if hasattr(self.model, 'brain'):
-                state_dict["brain_state"] = self.model.brain.state_dict()
-            else:
-                for cluster in self.model.graph.clusters:
-                    for node in cluster.nodes:
-                        state_dict[f"{node.id}.weights"] = node.weights
-                        state_dict[f"{node.id}.bias"] = node.bias
-            state_dict["_activation_buffer"] = self.model._activation_buffer
-            if hasattr(self.model, '_working_memory'):
-                state_dict["working_memory"] = self.model._working_memory.state_dict()
-            graph_json = self.model.graph.to_json()
-            self.store.save_checkpoint(
-                step=self.model.step, stage=self._stage,
-                model_state_dict=state_dict, graph_json=graph_json,
-            )
-            self.store.prune_old_snapshots()
-
-        # Episodic memory eviction + logging
-        if self.model.step > 0 and self.model.step % 500 == 0:
-            evicted = self.memory.evict()
-            mem_count = self.memory.count()
-            if self._batch_count % 50 == 0 or evicted:
-                print(f"[memory] total={mem_count} evicted={evicted}", flush=True)
-
-        # Train decoder on teacher's CLIP vector (not model prediction!)
+        # Train decoder
         teacher_clip = items[-1].expected_vector if items[-1].expected_vector is not None else prediction
         self.decoder.train_step(teacher_clip, teacher_answer)
         # Emit viz
@@ -783,6 +599,134 @@ class LearningLoop:
             duration_ms=int(elapsed_ms),
             skipped=False,
         )
+
+    def _full_batch_step(self, batch_size):
+        """ALL heavy computation for one batch step. Runs in thread pool."""
+        graph_summary = self._cached_graph_summary
+        cat_weights = None
+        try:
+            cats = self.store.get_category_performance()
+            if len(cats) >= 10:
+                max_sim = max(c["avg_sim"] for c in cats) or 1.0
+                cat_weights = {c["category"]: max(0.1, 1.0 - c["avg_sim"] / max_sim) for c in cats}
+        except Exception:
+            pass
+        items = self.curriculum.next_batch(batch_size, stage=self._stage, model_state=graph_summary, category_weights=cat_weights)
+        if not items:
+            return None
+
+        # Mix text items (20%)
+        if self._text_curriculum is not None:
+            n_text = max(1, len(items) // 5)
+            text_items = self._text_curriculum.next_batch(n_text, model_step=self.model.step)
+            if text_items:
+                items.extend(text_items)
+
+        # Saturation cap
+        active_clusters = [c for c in self.model.graph.clusters if not c.dormant]
+        saturated = sum(1 for c in active_clusters if c.mean_activation > 0.85)
+        if saturated / max(len(active_clusters), 1) > 0.2:
+            items = items[:min(8, len(items))]
+
+        # Replay
+        replay_samples = self.memory.sample_replay(n=8, category_weights=cat_weights)
+
+        # Core compute
+        changes, prediction, activations, anchor_pred, elapsed_ms, all_activations = \
+            self._batch_compute(items, replay_samples)
+
+        # Distillation
+        self._distill_count += 1
+        if self.native_text_encoder is not None and self._distill_count % 4 == 0:
+            import random as _rand_d
+            distill_items = [i for i in items if i.description and i.expected_vector is not None]
+            if distill_items:
+                di = _rand_d.choice(distill_items)
+                loss = self.native_text_encoder.distill_step(di.description, di.expected_vector)
+                self.metrics.record_text_distill(1.0 - loss)
+                if self._distill_count % 500 == 0:
+                    self._save_native_checkpoints()
+
+        # Post-batch work (growth, health, cofiring, logging)
+        growth_events = self._post_batch_work(items, activations)
+
+        # Update cached status from thread (for HTTP endpoints)
+        self._update_cached_status()
+
+        return items, changes, prediction, activations, growth_events, elapsed_ms
+
+    def _post_batch_work(self, items, activations) -> list:
+        """Heavy post-batch work: category tracking, growth, memory, health, cofiring.
+        Runs in thread pool to keep event loop free for HTTP/WebSocket."""
+        import random as _rand
+
+        # Category tracking (4 forward passes)
+        sample_items = _rand.sample(items, min(4, len(items)))
+        for item in sample_items:
+            if item.expected_vector is not None:
+                category = item.label
+                if not category and item.description:
+                    match = _CATEGORY_NOUNS.search(item.description)
+                    category = match.group(1).lower() if match else None
+                if category:
+                    item_pred, _ = self.model.forward(item.expected_vector, return_activations=False)
+                    sim = torch.dot(item_pred, F.normalize(item.expected_vector, dim=0)).item()
+                    self.store.update_category_performance(category, sim, sim > 0.2, self.model.step)
+
+        # Growth check
+        growth_events = self.model.growth_check(self.store)
+
+        # Episodic memory
+        for item in sample_items:
+            if item.expected_vector is not None:
+                item_pred, _ = self.model.forward(item.expected_vector, return_activations=False)
+                error_mag = 1.0 - torch.dot(item_pred, F.normalize(item.expected_vector, dim=0)).item()
+                self.memory.maybe_store(item, error_mag, self.model.step, growth_events)
+
+        # Health monitor
+        active_count = len(activations)
+        total_clusters = len(self.model.graph.clusters)
+        self.health_monitor.record_step(active_count, total_clusters)
+        self.health_monitor.check(
+            step=self.model.step, stage=self._stage, model=self.model,
+            positive_history=self._positive_history,
+            similarity_history=self._similarity_history,
+        )
+
+        # Co-firing (z-score filtered)
+        if activations:
+            scores = list(activations.values())
+            mean_s = sum(scores) / len(scores) if scores else 0
+            std_s = (sum((s - mean_s) ** 2 for s in scores) / max(len(scores), 1)) ** 0.5
+            significant = [cid for cid, v in activations.items() if v > mean_s + std_s]
+            for i in range(len(significant)):
+                for j in range(i + 1, len(significant)):
+                    self._cofiring_buffer.append((significant[i], significant[j]))
+        if len(self._cofiring_buffer) > 5000:
+            self._cofiring_buffer = self._cofiring_buffer[-5000:]
+        self._cofiring_steps_since_flush += 1
+        if (self._cofiring_steps_since_flush >= 50 or len(self._cofiring_buffer) >= 5000) and self._cofiring_buffer:
+            self.store.batch_update_cofiring(self._cofiring_buffer, self.model.step)
+            self._cofiring_buffer = []
+            self._cofiring_steps_since_flush = 0
+
+        # Dialogue log
+        if activations:
+            a_vals = list(activations.values())
+            a_mean = sum(a_vals) / len(a_vals)
+            a_std = (sum((v - a_mean) ** 2 for v in a_vals) / max(len(a_vals), 1)) ** 0.5
+            sig_active = [c for c, v in activations.items() if v > a_mean + a_std]
+        else:
+            sig_active = []
+        teacher_answer = items[-1].description or ""
+        self.store.log_dialogue(
+            step=self.model.step, stage=self._stage,
+            question=f"[batch {len(items)}]", answer=teacher_answer,
+            curiosity_score=0.0, clusters_active=sig_active,
+            delta_summary={"batch_size": len(items)},
+        )
+
+        return growth_events
 
     def _batch_compute(self, items, replay_samples=None) -> tuple:
         """Synchronous CPU-heavy batch computation. Runs in thread pool."""

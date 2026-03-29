@@ -1,10 +1,17 @@
 """
-Backend API — FastAPI server that wires all components together.
+Backend API — FastAPI server.
+
+In worker mode (default), the training runs in a separate process
+(train_worker.py). This server reads shared state for /status and /metrics,
+and sends commands via train_command.json for start/pause/resume.
+
+In legacy mode (TRAINING_MODE=inline), training runs in-process.
 """
 
 import asyncio
 import io
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException
@@ -191,6 +198,19 @@ def _build_components_real(config):
     if model.step > 0:
         loop._stage = model.stage
 
+    # Seed emitter with current graph so frontend gets data on connect
+    emitter._last_graph_json = model.graph.to_json()
+    emitter._step = model.step
+
+    # Pre-load patch features at startup (takes ~30s but blocks only during init, not event loop)
+    if hasattr(curriculum, '_cache') and curriculum._cache is not None:
+        cache = curriculum._cache
+        if cache._patches is None and cache._patches_path is not None:
+            import torch as _torch
+            print("Loading patch features (~30s)...", flush=True)
+            cache._patches = _torch.load(cache._patches_path, weights_only=False)
+            print(f"Patch features loaded: {len(cache._patches)} images.", flush=True)
+
     return loop, emitter, store, curriculum
 
 
@@ -199,8 +219,29 @@ async def lifespan(app: FastAPI):
     import os
     testing = os.environ.get("TESTING", "0") == "1"
 
-    if testing:
+    if _worker_mode():
+        # Worker mode: server is lightweight, training runs in separate process
+        from state.store import StateStore
+        from config import Config
+        config = Config()
+        store = StateStore(config.db_path)
+        app.state.store = store
+        app.state.loop = None
+        app.state.emitter = None
+        app.state.curriculum = None
+        print("Server ready (worker mode — training runs in separate process).")
+        yield
+        print("Shutdown complete.")
+    elif testing:
         loop, emitter, store, curriculum = _build_components_mock()
+        app.state.loop = loop
+        app.state.emitter = emitter
+        app.state.store = store
+        app.state.curriculum = curriculum
+        print("Ready.")
+        yield
+        await loop.pause()
+        print("Shutdown complete.")
     else:
         from config import Config
         config = Config()
@@ -214,16 +255,16 @@ async def lifespan(app: FastAPI):
             print(f"WARNING: Teacher not reachable at startup: {e}")
             print("Start Ollama and press Start to begin.")
 
-    app.state.loop = loop
-    app.state.emitter = emitter
-    app.state.store = store
-    app.state.curriculum = curriculum
+        app.state.loop = loop
+        app.state.emitter = emitter
+        app.state.store = store
+        app.state.curriculum = curriculum
 
-    print("Ready.")
-    yield
+        print("Ready.")
+        yield
 
-    await loop.pause()
-    print("Shutdown complete.")
+        await loop.pause()
+        print("Shutdown complete.")
 
 
 app = FastAPI(title="Developmental AI", lifespan=lifespan)
@@ -246,6 +287,38 @@ app.mount("/images/data", StaticFiles(directory="data"), name="images")
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
+    await ws.accept()
+    if _worker_mode():
+        # Worker mode: send graph from shared state, then poll for updates
+        from loop.shared_state import read_state
+        state = read_state()
+        if state and "graph_json" in state:
+            graph_json = state["graph_json"]
+            snapshot = {
+                "type": "snapshot",
+                "step": state.get("step", 0),
+                "stage": state.get("stage", 0),
+                "nodes": graph_json.get("nodes", []),
+                "clusters": graph_json.get("clusters", []),
+                "edges": graph_json.get("edges", []),
+                "model_stats": state.get("graph_summary", {}),
+            }
+            await ws.send_json(snapshot)
+        # Also send status
+        await ws.send_json({"type": "status", **_get_shared_status()})
+        # Keep connection alive, poll for updates
+        last_step = state.get("step", 0) if state else 0
+        try:
+            while True:
+                await asyncio.sleep(2)  # poll every 2s
+                state = read_state()
+                if state and state.get("step", 0) != last_step:
+                    last_step = state["step"]
+                    await ws.send_json({"type": "status", **_get_shared_status()})
+        except (WebSocketDisconnect, Exception):
+            pass
+        return
+    # Legacy in-process mode
     emitter = app.state.emitter
     await emitter.connect(ws)
     try:
@@ -260,19 +333,58 @@ async def websocket_endpoint(ws: WebSocket):
 # ── Loop control ──
 
 
+def _worker_mode() -> bool:
+    return os.environ.get("TRAINING_MODE", "worker") == "worker"
+
+
+def _send_worker_command(cmd: str):
+    from train_worker import write_command
+    write_command(cmd)
+
+
+def _get_shared_status() -> dict:
+    from loop.shared_state import read_state
+    state = read_state()
+    if state is None:
+        return {
+            "state": "idle", "step": 0, "stage": 0, "delay_ms": 0,
+            "error_message": None, "graph_summary": {
+                "cluster_count": 0, "node_count": 0, "edge_count": 0,
+                "dormant_count": 0, "layer_count": 0, "active_tiles": 0, "quadtree_depth": 0,
+            }, "teacher_healthy": False,
+        }
+    return {
+        "state": state.get("state", "idle"),
+        "step": state.get("step", 0),
+        "stage": state.get("stage", 0),
+        "delay_ms": 0,
+        "error_message": None,
+        "graph_summary": state.get("graph_summary", {}),
+        "teacher_healthy": True,
+    }
+
+
 @app.post("/start", response_model=StatusResponse)
 async def start():
+    if _worker_mode():
+        _send_worker_command("start")
+        await asyncio.sleep(0.2)
+        return _get_shared_status()
     loop = app.state.loop
     status = loop.get_status()
     if status.state == "running":
         return status
     asyncio.create_task(loop.start())
-    await asyncio.sleep(0.05)  # let the task start
+    await asyncio.sleep(0.05)
     return loop.get_status()
 
 
 @app.post("/pause", response_model=StatusResponse)
 async def pause():
+    if _worker_mode():
+        _send_worker_command("pause")
+        await asyncio.sleep(0.2)
+        return _get_shared_status()
     loop = app.state.loop
     await loop.pause()
     return loop.get_status()
@@ -280,6 +392,10 @@ async def pause():
 
 @app.post("/resume", response_model=StatusResponse)
 async def resume():
+    if _worker_mode():
+        _send_worker_command("resume")
+        await asyncio.sleep(0.2)
+        return _get_shared_status()
     loop = app.state.loop
     status = loop.get_status()
     if status.state == "running":
@@ -399,6 +515,8 @@ async def load_topology():
 
 @app.get("/status", response_model=StatusResponse)
 async def status():
+    if _worker_mode():
+        return _get_shared_status()
     loop = app.state.loop
     return loop.get_status()
 
@@ -1138,6 +1256,12 @@ async def snapshot():
 
 @app.get("/metrics")
 async def get_metrics():
+    if _worker_mode():
+        from loop.shared_state import read_state
+        state = read_state()
+        if state and "metrics" in state:
+            return state["metrics"]
+        return {"distillation": {"text_cosine_sim": None, "text_cosine_sim_trend": None, "text_samples": 0, "vision_cosine_sim": None, "vision_cosine_sim_trend": None, "vision_samples": 0}, "generation": {"response_relevance": None, "vocab_size": 0, "unique_words_last_100": 0}, "reasoning": {"comparison_accuracy": None, "sequence_accuracy": None, "analogy_accuracy": None, "memory_retrieval_accuracy": None, "odd_one_out_accuracy": None, "overall_accuracy": None, "total_tasks": 0}}
     loop = app.state.loop
     return loop.metrics.snapshot()
 

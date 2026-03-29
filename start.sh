@@ -31,6 +31,7 @@ HEALTH_TIMEOUT=60    # seconds to wait for backend to be ready
 OLLAMA_PID=""
 BACKEND_PID=""
 FRONTEND_PID=""
+WORKER_PID=""
 
 # ─── Cleanup on exit ─────────────────────────────────────────────────────────
 cleanup() {
@@ -38,6 +39,7 @@ cleanup() {
     info "Shutting down..."
 
     [ -n "$FRONTEND_PID" ] && kill "$FRONTEND_PID" 2>/dev/null && info "Frontend stopped"
+    [ -n "$WORKER_PID"   ] && kill "$WORKER_PID"   2>/dev/null && info "Training worker stopped"
     [ -n "$BACKEND_PID"  ] && kill "$BACKEND_PID"  2>/dev/null && info "Backend stopped"
 
     # Only stop Ollama if WE started it (not if it was already running)
@@ -198,6 +200,16 @@ fi
 
 ok "Backend ready at http://localhost:$BACKEND_PORT (pid $BACKEND_PID)"
 
+# ─── 4b. Training worker (separate process — owns MPS GPU) ──────────────────
+info "Starting training worker..."
+(
+    cd "$BACKEND_DIR"
+    export PYTHONUNBUFFERED=1
+    $PYTHON train_worker.py >> "../$LOG_DIR/worker.log" 2>&1
+) &
+WORKER_PID=$!
+ok "Training worker started (pid $WORKER_PID)"
+
 # ─── 5. Frontend ──────────────────────────────────────────────────────────────
 info "Starting frontend..."
 
@@ -248,4 +260,4 @@ echo ""
 
 # ─── Wait ─────────────────────────────────────────────────────────────────────
 # Hold until Ctrl+C or one of the processes dies
-wait $BACKEND_PID $FRONTEND_PID
+wait $BACKEND_PID $FRONTEND_PID $WORKER_PID
