@@ -344,16 +344,26 @@ class BrainState:
         self._last_scores = scores
         self._last_prediction = prediction
 
-        # Update buffer
-        self._update_buffer(fired, scores)
+        # Update buffer — vectorized (no Python loop)
+        self.activation_buffer *= self.buffer_decay
+        if len(fired_idx) > 0:
+            k = min(5, len(fired_idx))
+            _, top_local = scores[fired_idx].topk(k)
+            top_idx = fired_idx[top_local]
+            top_scores = scores[top_idx]
+            top_weights = F.normalize(self.weights[top_idx], dim=1)  # (k, 512)
+            self.activation_buffer += (top_scores.unsqueeze(1) * top_weights).sum(dim=0)
 
         # Age neurons
         self.ages[:n] += 1
 
-        # Build activations dict (API compat)
-        activations = {}
-        for idx in fired_idx:
-            activations[self.cluster_ids[idx.item()]] = scores[idx].item()
+        # Build activations — batch transfer to CPU (one .cpu() call, not 118)
+        if len(fired_idx) > 0:
+            fired_cids = [self.cluster_ids[i] for i in fired_idx.cpu().tolist()]
+            fired_vals = scores[fired_idx].cpu().tolist()
+            activations = dict(zip(fired_cids, fired_vals))
+        else:
+            activations = {}
 
         return prediction.cpu(), activations
 
@@ -737,19 +747,17 @@ class BrainState:
     # ── Buffer ──
 
     def _update_buffer(self, fired: torch.Tensor, scores: torch.Tensor):
-        """Decay buffer, add top-K fired neuron identities."""
+        """Decay buffer, add top-K fired neuron identities. Vectorized."""
         self.activation_buffer *= self.buffer_decay
         fired_idx = fired.nonzero().squeeze(1)
         if len(fired_idx) == 0:
             return
-        # Top-5 by score
         k = min(5, len(fired_idx))
-        fired_scores = scores[fired_idx]
-        top_k_local = fired_scores.topk(k).indices
-        top_k_idx = fired_idx[top_k_local]
-        for idx in top_k_idx:
-            act = scores[idx].item()
-            self.activation_buffer += act * F.normalize(self.weights[idx], dim=0)
+        _, top_local = scores[fired_idx].topk(k)
+        top_idx = fired_idx[top_local]
+        top_scores = scores[top_idx]
+        top_weights = F.normalize(self.weights[top_idx], dim=1)
+        self.activation_buffer += (top_scores.unsqueeze(1) * top_weights).sum(dim=0)
 
     # ── Growth ──
 
