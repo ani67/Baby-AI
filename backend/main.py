@@ -1126,6 +1126,12 @@ async def snapshot():
 # ── Health ──
 
 
+@app.get("/metrics")
+async def get_metrics():
+    loop = app.state.loop
+    return loop.metrics.snapshot()
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}

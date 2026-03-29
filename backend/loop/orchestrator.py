@@ -23,6 +23,7 @@ _CATEGORY_NOUNS = re.compile(
 
 from .curiosity import CuriosityScorer
 from .health_monitor import HealthMonitor
+from .metrics_tracker import MetricsTracker
 from .question_gen import QuestionGenerator
 from .sentence_splitter import split_sentences
 
@@ -106,6 +107,7 @@ class LearningLoop:
         self.curiosity = CuriosityScorer()
         self.question_gen = QuestionGenerator()
         self.health_monitor = HealthMonitor()
+        self.metrics = MetricsTracker()
 
         self._state = LoopState.IDLE
         self._stage = 0
@@ -514,6 +516,18 @@ class LearningLoop:
         # Unpack results from the sync computation
         changes, prediction, activations, anchor_pred, elapsed_ms, all_activations = result
 
+        # ── Native text encoder distillation (piggyback on batch captions) ──
+        if self.native_text_encoder is not None and self._distill_count % 4 == 0:
+            # Distill on one random item's caption per batch (cheap)
+            import random as _rand_distill
+            distill_items = [i for i in items if i.description and i.expected_vector is not None]
+            if distill_items:
+                di = _rand_distill.choice(distill_items)
+                loss = self.native_text_encoder.distill_step(di.description, di.expected_vector)
+                self.metrics.record_text_distill(1.0 - loss)
+                self._distill_count += 1
+                if self._distill_count % 500 == 0:
+                    self._save_native_checkpoints()
 
         # ── Main-thread work: growth, health, co-firing, logging, viz ──
 
@@ -811,6 +825,10 @@ class LearningLoop:
 
         active_clusters = list(activations.keys())
 
+        # Track generation quality
+        relevance = torch.dot(input_vector, output_vector).item()
+        self.metrics.record_generation(text, response, relevance)
+
         # Store state for correction-based learning
         self._last_chat_input = output_vector  # the brain's encoded state after processing input
         self._last_chat_output = output_vector
@@ -912,7 +930,8 @@ class LearningLoop:
             # Distill native text encoder from CLIP (every call)
             if self.native_text_encoder is not None:
                 self._distill_count += 1
-                self.native_text_encoder.distill_step(answer, clip_vec)
+                loss = self.native_text_encoder.distill_step(answer, clip_vec)
+                self.metrics.record_text_distill(1.0 - loss)
                 # Save checkpoint every 500 distillation steps
                 if self._distill_count % 500 == 0:
                     self._save_native_checkpoints()
@@ -923,7 +942,8 @@ class LearningLoop:
         # Distill on first sentence (lightweight)
         if vectors and self.native_text_encoder is not None:
             self._distill_count += 1
-            self.native_text_encoder.distill_step(sentences[0], vectors[0])
+            loss = self.native_text_encoder.distill_step(sentences[0], vectors[0])
+            self.metrics.record_text_distill(1.0 - loss)
 
         for word in words:
             clean = word.strip(".,!?;:").lower()

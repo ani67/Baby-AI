@@ -161,6 +161,10 @@ class _ClusterView:
     def mean_activation(self) -> float:
         return self._brain.fire_rates[self._idx].item()
 
+    @property
+    def cluster_type(self) -> str:
+        return "sensory"
+
 
 class _NodeView:
     """Lightweight view for a single node (= the cluster's weight vector)."""
