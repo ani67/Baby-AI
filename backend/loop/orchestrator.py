@@ -163,6 +163,7 @@ class LearningLoop:
         self._batch_count: int = 0
         self._batch_total_ms: float = 0.0
         self._cached_graph_summary = model.graph.summary()  # initial snapshot
+        self._event_loop: asyncio.AbstractEventLoop | None = None  # set on first start()
 
         # Episodic memory
         from .memory import EpisodicMemory
@@ -174,6 +175,7 @@ class LearningLoop:
         if self._state not in (LoopState.IDLE, LoopState.PAUSED):
             return
         self._state = LoopState.RUNNING
+        self._event_loop = asyncio.get_event_loop()  # capture for thread-safe scheduling
 
         # Warm up the teacher model
         try:
@@ -730,17 +732,23 @@ class LearningLoop:
         self.decoder.train_step(teacher_clip, teacher_answer)
         # Emit viz (schedule on event loop from thread)
         model_response = self.decoder.decode(prediction, max_words=15, model_step=self.model.step)
-        if self.viz_emitter is not None:
+        if self.viz_emitter is not None and self._event_loop is not None:
+            # Snapshot values for the lambda (avoid late-binding captures)
+            _step = self.model.step
+            _stage = self._stage
+            _graph = self.model.graph
+            _acts = dict(activations) if activations else {}
+            _q = f"[batch {len(items)}]"
+            _a = teacher_answer
+            _m = model_response
+            _ge = list(growth_events)
+            _img = getattr(items[-1], "image_url", None)
             try:
-                ev_loop = asyncio.get_event_loop()
-                ev_loop.call_soon_threadsafe(
+                self._event_loop.call_soon_threadsafe(
                     lambda: asyncio.ensure_future(self.viz_emitter.emit_step(
-                        step=self.model.step, stage=self._stage,
-                        graph=self.model.graph, activations=activations,
-                        last_question=f"[batch {len(items)}]", last_answer=teacher_answer,
-                        model_answer=model_response, is_positive=True,
-                        growth_events=growth_events,
-                        image_url=getattr(items[-1], "image_url", None),
+                        step=_step, stage=_stage, graph=_graph, activations=_acts,
+                        last_question=_q, last_answer=_a, model_answer=_m,
+                        is_positive=True, growth_events=_ge, image_url=_img,
                     ))
                 )
             except RuntimeError:
