@@ -509,14 +509,7 @@ class LearningLoop:
         )
 
     async def _step_batch(self, batch_size: int = 32) -> StepResult:
-        """Batched learning step for precomputed curriculum.
-        Runs ALL computation in a thread pool so the event loop stays free
-        for HTTP endpoints (/metrics, /status, /chat)."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._step_batch_sync, batch_size)
-
-    def _step_batch_sync(self, batch_size: int = 32) -> StepResult:
-        """Synchronous batch step. Runs entirely in thread pool."""
+        """Batched learning step. Heavy matmul in thread pool, everything else async."""
         import time as _time
 
         graph_summary = self.model.graph.summary()
@@ -561,12 +554,11 @@ class LearningLoop:
         # ── Episodic replay: mix into batch ──
         replay_samples = self.memory.sample_replay(n=8, category_weights=cat_weights)
 
-        # ── Batch compute (forward + update) ──
-        # Release GIL briefly so uvicorn can process HTTP requests
-        import time as _time_yield
-        _time_yield.sleep(0)  # yields GIL to other threads
+        # ── Batch compute (forward + update) in thread pool ──
+        loop = asyncio.get_event_loop()
         changes, prediction, activations, anchor_pred, elapsed_ms, all_activations = \
-            self._batch_compute(items, replay_samples)
+            await loop.run_in_executor(None, self._batch_compute, items, replay_samples)
+        await asyncio.sleep(0)  # yield to event loop
 
         # ── Native text encoder distillation (every 4th batch) ──
         self._distill_count += 1  # always increment (was inside the if — only ran once!)
@@ -580,7 +572,7 @@ class LearningLoop:
                 if self._distill_count % 500 == 0:
                     self._save_native_checkpoints()
 
-        _time_yield.sleep(0)  # yield GIL for HTTP
+        await asyncio.sleep(0)  # yield to event loop
 
         # ── Main-thread work: growth, health, co-firing, logging, viz ──
 
@@ -602,7 +594,7 @@ class LearningLoop:
 
         # Growth check (must run on main thread — uses SQLite store)
         growth_events = self.model.growth_check(self.store)
-        _time_yield.sleep(0)  # yield GIL for HTTP
+        await asyncio.sleep(0)  # yield to event loop
 
         # Episodic memory: store significant experiences
         for item in sample_items:
@@ -730,29 +722,17 @@ class LearningLoop:
         # Train decoder on teacher's CLIP vector (not model prediction!)
         teacher_clip = items[-1].expected_vector if items[-1].expected_vector is not None else prediction
         self.decoder.train_step(teacher_clip, teacher_answer)
-        # Emit viz (schedule on event loop from thread)
+        # Emit viz
         model_response = self.decoder.decode(prediction, max_words=15, model_step=self.model.step)
-        if self.viz_emitter is not None and self._event_loop is not None:
-            # Snapshot values for the lambda (avoid late-binding captures)
-            _step = self.model.step
-            _stage = self._stage
-            _graph = self.model.graph
-            _acts = dict(activations) if activations else {}
-            _q = f"[batch {len(items)}]"
-            _a = teacher_answer
-            _m = model_response
-            _ge = list(growth_events)
-            _img = getattr(items[-1], "image_url", None)
-            try:
-                self._event_loop.call_soon_threadsafe(
-                    lambda: asyncio.ensure_future(self.viz_emitter.emit_step(
-                        step=_step, stage=_stage, graph=_graph, activations=_acts,
-                        last_question=_q, last_answer=_a, model_answer=_m,
-                        is_positive=True, growth_events=_ge, image_url=_img,
-                    ))
-                )
-            except RuntimeError:
-                pass  # event loop gone during shutdown
+        if self.viz_emitter is not None:
+            asyncio.ensure_future(self.viz_emitter.emit_step(
+                step=self.model.step, stage=self._stage,
+                graph=self.model.graph, activations=activations,
+                last_question=f"[batch {len(items)}]", last_answer=teacher_answer,
+                model_answer=model_response, is_positive=True,
+                growth_events=growth_events,
+                image_url=getattr(items[-1], "image_url", None),
+            ))
 
         # Batch logging
         self._batch_count += 1
