@@ -21,8 +21,8 @@ from torchvision import transforms
 # ---------------------------------------------------------------------------
 
 _preprocess = transforms.Compose([
-    transforms.Resize((64, 64), interpolation=transforms.InterpolationMode.LANCZOS),
-    transforms.ToTensor(),                         # (3, 64, 64), float32, [0, 1]
+    transforms.Resize((128, 128), interpolation=transforms.InterpolationMode.LANCZOS),
+    transforms.ToTensor(),                         # (3, 128, 128), float32, [0, 1]
     transforms.Normalize(
         mean=[0.485, 0.456, 0.406],
         std=[0.229, 0.224, 0.225],
@@ -31,12 +31,12 @@ _preprocess = transforms.Compose([
 
 
 def _prepare(image: PIL.Image.Image) -> torch.Tensor:
-    """PIL image → (1, 3, 64, 64) preprocessed tensor."""
+    """PIL image → (1, 3, 128, 128) preprocessed tensor."""
     return _preprocess(image.convert("RGB")).unsqueeze(0)
 
 
 def _prepare_batch(images: list[PIL.Image.Image]) -> torch.Tensor:
-    """List of PIL images → (N, 3, 64, 64) preprocessed tensor."""
+    """List of PIL images → (N, 3, 128, 128) preprocessed tensor."""
     return torch.stack([_preprocess(img.convert("RGB")) for img in images])
 
 
@@ -46,15 +46,16 @@ def _prepare_batch(images: list[PIL.Image.Image]) -> torch.Tensor:
 
 class _ConvNet(nn.Module):
     """
-    4-layer ConvNet producing a 512-dim global vector and 64 spatial patches.
+    5-layer ConvNet producing a 512-dim global vector and 256 spatial patches.
 
-    Architecture:
-        64×64×3  → 32×32×32  (conv1)
-                 → 16×16×64  (conv2)
-                 → 8×8×128   (conv3)  ← spatial patches tapped here
-                 → 4×4×256   (conv4)
-                 → 1×1×256   (pool)
-                 → 512       (fc)
+    Architecture (128×128 input):
+        128×128×3 → 64×64×32   (conv1)
+                  → 32×32×64   (conv2)
+                  → 16×16×128  (conv3)  ← spatial patches tapped here (256 patches)
+                  → 8×8×256    (conv4)
+                  → 4×4×512    (conv5)
+                  → 1×1×512    (pool)
+                  → 512        (fc)
     """
 
     def __init__(self) -> None:
@@ -80,9 +81,14 @@ class _ConvNet(nn.Module):
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
         )
+        self.conv5 = nn.Sequential(
+            nn.Conv2d(256, 512, 3, stride=2, padding=1),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+        )
 
         self.pool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Linear(256, 512)
+        self.fc = nn.Linear(512, 512)
         self.patch_head = nn.Linear(128, 512)
 
     def forward(
@@ -90,28 +96,29 @@ class _ConvNet(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """
         Args:
-            x: (N, 3, 64, 64)
+            x: (N, 3, 128, 128)
             with_patches: if True, also return spatial patch features.
 
         Returns:
             global_emb: (N, 512) L2-normalized
-            patches:    (N, 64, 512) L2-normalized  — or None
+            patches:    (N, 256, 512) L2-normalized  — or None
         """
-        x = self.conv1(x)
-        x = self.conv2(x)
-        feat3 = self.conv3(x)           # (N, 128, 8, 8)
-        x = self.conv4(feat3)            # (N, 256, 4, 4)
+        x = self.conv1(x)               # (N, 32, 64, 64)
+        x = self.conv2(x)               # (N, 64, 32, 32)
+        feat3 = self.conv3(x)            # (N, 128, 16, 16)
+        x = self.conv4(feat3)            # (N, 256, 8, 8)
+        x = self.conv5(x)               # (N, 512, 4, 4)
 
         # Global embedding
-        pooled = self.pool(x).flatten(1)  # (N, 256)
+        pooled = self.pool(x).flatten(1)  # (N, 512)
         global_emb = F.normalize(self.fc(pooled), dim=-1)
 
-        # Spatial patches from layer-3 feature map
+        # Spatial patches from layer-3 feature map (16×16 = 256 patches)
         patches = None
         if with_patches:
-            n, c, h, w = feat3.shape      # (N, 128, 8, 8)
-            flat = feat3.permute(0, 2, 3, 1).reshape(n, h * w, c)  # (N, 64, 128)
-            patches = F.normalize(self.patch_head(flat), dim=-1)    # (N, 64, 512)
+            n, c, h, w = feat3.shape      # (N, 128, 16, 16)
+            flat = feat3.permute(0, 2, 3, 1).reshape(n, h * w, c)  # (N, 256, 128)
+            patches = F.normalize(self.patch_head(flat), dim=-1)    # (N, 256, 512)
 
         return global_emb, patches
 
