@@ -318,6 +318,7 @@ def save_checkpoint(loop, items_processed=0):
 
 
 _viz_cache = {"clusters": [], "edges": [], "nodes": [], "step": 0}
+_activity = {}  # latest fired neurons + input info
 _pca_components = None  # PCA projection axes (2, dim)
 _pca_step = 0
 _community_map = {}  # cluster_id → community_id
@@ -617,7 +618,8 @@ def publish(loop, full=False):
                 "edges": _viz_cache.get("edges", []),
             },
             "dashboard": _dashboard_cache,
-            "dialogue": _dialogue_buffer[-20:],
+            "activity": _activity,
+            "dialogue": _dialogue_buffer[-50:],
         })
     except Exception as e:
         print(f"[publish] error: {e}", flush=True)
@@ -681,6 +683,17 @@ def run(loop):
             changes, prediction, activations, elapsed_ms = compute_batch(loop, items, replay)
             batch_count += 1
             items_processed += len(items)
+
+            # Capture activity for frontend pulse view
+            global _activity
+            last_item = items[-1]
+            top_fired = sorted(activations.items(), key=lambda x: x[1], reverse=True)[:20]
+            _activity = {
+                "fired": [cid for cid, _ in top_fired],
+                "scores": [round(s, 3) for _, s in top_fired],
+                "input": (last_item.description or "")[:100],
+                "input_type": "text" if getattr(last_item, "item_type", "") == "text" else "image",
+            }
 
             # 3. Distill (every 500 items)
             try:
