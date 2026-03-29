@@ -59,6 +59,8 @@ class TextCurriculum:
 
         self._load_file("text_curriculum.json")
         self._load_file("text_diverse.json")
+        self._load_file("text_conversations.json")
+        self._load_file("text_commonsense.json")
         self._load_file("reasoning_tasks.json")
 
         if self._items:
@@ -173,12 +175,18 @@ class TextCurriculum:
     def _make_curriculum_item(self, raw: dict) -> CurriculumItem | None:
         """Convert a raw dict into a CurriculumItem with encoded vectors."""
         try:
-            is_qa = bool(raw["question"] and raw["answer"])
+            has_question = bool(raw["question"] and raw["answer"])
+            has_text_answer = bool(raw["text"] and raw["answer"])
+            is_qa = has_question or has_text_answer
 
-            if is_qa:
+            if has_question:
                 input_vec = self._encode(raw["question"])
                 expected_vec = self._encode(raw["answer"])
                 description = f"Q: {raw['question']} A: {raw['answer']}"
+            elif has_text_answer:
+                input_vec = self._encode(raw["text"])
+                expected_vec = self._encode(raw["answer"])
+                description = f"Q: {raw['text']} A: {raw['answer']}"
             else:
                 vec = self._encode(raw["text"])
                 input_vec = vec
