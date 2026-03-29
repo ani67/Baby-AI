@@ -751,7 +751,7 @@ class LearningLoop:
 
             # Diff-based skip: if model already predicts this item well, don't re-learn it.
             # Never skip the first item (anchor) or if we'd empty the batch.
-            if idx > 0 and sim > 0.85 and len(items) - skipped > 4:
+            if idx > 0 and sim > 0.85 and len(items) - skipped > len(items) * 0.75:
                 skipped += 1
                 continue
 

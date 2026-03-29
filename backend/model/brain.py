@@ -492,8 +492,11 @@ class BrainState:
         self.projection += 0.0001 * torch.outer(error, x)
         self.projection_alpha = min(1.0, self._update_count / 10000)
 
-        # Hebbian edge update: strengthen connections between co-fired neurons
-        self._hebbian_update(fired_idx, scores)
+        # Hebbian edge update + predictive coding: co-firing patterns emerge
+        # over hundreds of steps, so running every 10th update is sufficient.
+        # This skips ~1.1ms of Python dict/list iteration on 9 out of 10 steps.
+        if self._update_count % 10 == 0:
+            self._hebbian_update(fired_idx, scores)
 
     def _hebbian_update(self, fired_idx: torch.Tensor, scores: torch.Tensor):
         """Synaptic plasticity: co-firing strengthens, silence weakens.

@@ -137,18 +137,22 @@ def build_components():
 
 # ── Pipeline stages ──
 
-def prepare_batch(loop, batch_size=128):
+def prepare_batch(loop, batch_size=8, batch_count=0):
     """Stage 1: Load data. Returns (items, replay) or None."""
     graph_summary = loop._cached_graph_summary
 
-    cat_weights = None
-    try:
-        cats = loop.store.get_category_performance()
-        if len(cats) >= 10:
-            max_sim = max(c["avg_sim"] for c in cats) or 1.0
-            cat_weights = {c["category"]: max(0.1, 1.0 - c["avg_sim"] / max_sim) for c in cats}
-    except Exception:
-        pass
+    # Cache category weights, refresh every 50 micro-batches
+    if not hasattr(loop, '_cat_weights_cache') or batch_count % 50 == 0:
+        try:
+            cats = loop.store.get_category_performance()
+            if len(cats) >= 10:
+                max_sim = max(c["avg_sim"] for c in cats) or 1.0
+                loop._cat_weights_cache = {c["category"]: max(0.1, 1.0 - c["avg_sim"] / max_sim) for c in cats}
+            else:
+                loop._cat_weights_cache = None
+        except Exception:
+            loop._cat_weights_cache = None
+    cat_weights = loop._cat_weights_cache
 
     items = loop.curriculum.next_batch(batch_size, stage=loop._stage, model_state=graph_summary, category_weights=cat_weights)
     if not items:
@@ -177,9 +181,9 @@ def compute_batch(loop, items, replay):
     return changes, prediction, activations, elapsed
 
 
-def distill_step(loop, items, batch_count):
-    """Stage 3: Native text encoder distillation (every 4th batch)."""
-    if loop.native_text_encoder is None or batch_count % 4 != 0:
+def distill_step(loop, items, items_processed):
+    """Stage 3: Native text encoder distillation (every 500 items)."""
+    if loop.native_text_encoder is None or items_processed % 500 != 0:
         return
     import random
     candidates = [i for i in items if i.description and i.expected_vector is not None]
@@ -188,13 +192,13 @@ def distill_step(loop, items, batch_count):
     item = random.choice(candidates)
     loss = loop.native_text_encoder.distill_step(item.description, item.expected_vector)
     loop.metrics.record_text_distill(1.0 - loss)
-    if batch_count % 500 == 0:
+    if items_processed % 7500 == 0:
         loop._save_native_checkpoints()
 
 
-def track_categories(loop, items, batch_count):
-    """Stage 4: Category performance tracking (every 10th batch)."""
-    if batch_count % 10 != 0:
+def track_categories(loop, items, items_processed):
+    """Stage 4: Category performance tracking (every 1500 items)."""
+    if items_processed % 1500 != 0:
         return
     import random
     sample = random.sample(items, min(4, len(items)))
@@ -217,8 +221,8 @@ def grow_and_prune(loop):
     return loop.model.growth_check(loop.store)
 
 
-def record_cofiring(loop, activations, batch_count):
-    """Stage 6: Co-firing pairs (z-score filtered, flush every 50 batches)."""
+def record_cofiring(loop, activations, items_processed):
+    """Stage 6: Co-firing pairs (z-score filtered, flush every 7000 items)."""
     if not activations:
         return
     scores = list(activations.values())
@@ -231,16 +235,14 @@ def record_cofiring(loop, activations, batch_count):
 
     if len(loop._cofiring_buffer) > 5000:
         loop._cofiring_buffer = loop._cofiring_buffer[-5000:]
-    loop._cofiring_steps_since_flush += 1
-    if loop._cofiring_steps_since_flush >= 50 and loop._cofiring_buffer:
+    if items_processed % 7000 == 0 and loop._cofiring_buffer:
         loop.store.batch_update_cofiring(loop._cofiring_buffer, loop.model.step)
         loop._cofiring_buffer = []
-        loop._cofiring_steps_since_flush = 0
 
 
-def run_reasoning(loop, batch_count):
-    """Stage 7: Reasoning tasks (every 10th batch, with state isolation)."""
-    if loop._reasoning_trainer is None or batch_count % 10 != 0:
+def run_reasoning(loop, items_processed):
+    """Stage 7: Reasoning tasks (every 1500 items, with state isolation)."""
+    if loop._reasoning_trainer is None or items_processed % 1500 != 0:
         return
     saved = loop.model.brain.activation_buffer.clone()
     try:
@@ -251,9 +253,9 @@ def run_reasoning(loop, batch_count):
     loop.model.brain.activation_buffer = saved
 
 
-def save_checkpoint(loop):
-    """Stage 8: Save model checkpoint (every 100 steps)."""
-    if loop.model.step <= 0 or loop.model.step % 100 != 0:
+def save_checkpoint(loop, items_processed=0):
+    """Stage 8: Save model checkpoint (every 15000 items)."""
+    if loop.model.step <= 0 or (items_processed > 0 and items_processed % 15000 != 0):
         return
     try:
         state_dict = {}
@@ -307,6 +309,7 @@ def run(loop):
     publish(loop)  # initial state
 
     batch_count = 0
+    items_processed = 0
     state = "running"
 
     while True:
@@ -332,7 +335,7 @@ def run(loop):
         # ── PIPELINE ──
         try:
             # 1. Prepare
-            batch_data = prepare_batch(loop)
+            batch_data = prepare_batch(loop, batch_count=batch_count)
             if batch_data is None:
                 time.sleep(0.1)
                 continue
@@ -341,16 +344,17 @@ def run(loop):
             # 2. Compute (the real work)
             changes, prediction, activations, elapsed_ms = compute_batch(loop, items, replay)
             batch_count += 1
+            items_processed += len(items)
 
-            # 3. Distill (every 4th)
+            # 3. Distill (every 500 items)
             try:
-                distill_step(loop, items, batch_count)
+                distill_step(loop, items, items_processed)
             except Exception as e:
                 print(f"[distill] error: {e}", flush=True)
 
-            # 4. Categories (every 10th)
+            # 4. Categories (every 1500 items)
             try:
-                track_categories(loop, items, batch_count)
+                track_categories(loop, items, items_processed)
             except Exception as e:
                 print(f"[categories] error: {e}", flush=True)
 
@@ -360,15 +364,15 @@ def run(loop):
             except Exception as e:
                 print(f"[growth] error: {e}", flush=True)
 
-            # 6. Cofiring
+            # 6. Cofiring (flush every 7000 items)
             try:
-                record_cofiring(loop, activations, batch_count)
+                record_cofiring(loop, activations, items_processed)
             except Exception as e:
                 print(f"[cofiring] error: {e}", flush=True)
 
-            # 7. Reasoning (every 10th)
+            # 7. Reasoning (every 1500 items)
             try:
-                run_reasoning(loop, batch_count)
+                run_reasoning(loop, items_processed)
             except Exception as e:
                 print(f"[reasoning] error: {e}", flush=True)
 
@@ -380,21 +384,22 @@ def run(loop):
             except Exception as e:
                 print(f"[decoder] error: {e}", flush=True)
 
-            # 9. Checkpoint (every 100 steps)
+            # 9. Checkpoint (every 15000 items)
             try:
-                save_checkpoint(loop)
+                save_checkpoint(loop, items_processed)
             except Exception as e:
                 print(f"[checkpoint] error: {e}", flush=True)
 
-            # 10. Publish state
-            publish(loop)
+            # 10. Publish state (every 50 items for responsive UI)
+            if items_processed % 50 == 0:
+                publish(loop)
 
-            # Log
-            if batch_count % 10 == 0:
+            # Log (every 1500 items)
+            if items_processed % 1500 == 0:
                 gs = loop._cached_graph_summary
                 print(
                     f"[worker] step={loop.model.step} active={gs.get('node_count', '?')} "
-                    f"batch={batch_count} elapsed={elapsed_ms:.0f}ms",
+                    f"items={items_processed} batch={batch_count} elapsed={elapsed_ms:.0f}ms",
                     flush=True,
                 )
 
