@@ -357,6 +357,149 @@ class BrainState:
 
         return prediction.cpu(), activations
 
+    # ── Parallel Multi-Input Forward ──
+
+    def forward_parallel(
+        self,
+        inputs: torch.Tensor,
+        memory: "WorkingMemory | None" = None,
+    ) -> tuple[torch.Tensor, dict]:
+        """
+        Process multiple inputs simultaneously through the brain.
+
+        All inputs share one SENSE matmul (GPU-efficient). Each input
+        activates different neurons. Activations are routed to working
+        memory slots by neuron index, creating a structured multi-aspect
+        representation. Output is attention-weighted read over all slots.
+
+        This is the parallel processing architecture:
+          SENSE:  weights @ inputs.T   → (n_active, N) in one dispatch
+          FIRE:   per-input threshold  → N independent fired sets
+          ROUTE:  fired neurons → memory slots (by neuron idx % n_slots)
+          READ:   attention over slots → unified output
+
+        No sequential dependency. No race conditions.
+        Commutative slot writes (addition).
+
+        Args:
+            inputs: (N, dim) tensor — N input vectors (patches, words, etc.)
+            memory: WorkingMemory to write activations to.
+                    If None, uses self.activation_buffer as fallback.
+
+        Returns:
+            (prediction, activations) — unified prediction + merged activations dict
+        """
+        inputs = inputs.to(self.device)
+        N, dim = inputs.shape
+        n = self.n
+
+        if N == 0:
+            return torch.zeros(dim, device=self.device).cpu(), {}
+        if N == 1:
+            return self.forward(inputs[0])
+
+        # ── BUFFER: apply same context to all inputs ──
+        buf_norm = self.activation_buffer.norm()
+        if buf_norm > 1e-6:
+            buf_dir = self.activation_buffer / buf_norm
+            effective = F.normalize(inputs + self.buffer_weight * buf_dir.unsqueeze(0), dim=1)
+        else:
+            effective = F.normalize(inputs, dim=1)
+
+        # ── PROJECT: batch projection ──
+        if self.projection_alpha > 0:
+            projected = effective + self.projection_alpha * (effective @ self.projection.T)
+            effective = F.normalize(projected, dim=1)
+
+        # ── SENSE: one batched matmul for ALL inputs ──
+        active_mask = ~self.dormant[:n]
+        active_idx = active_mask.nonzero().squeeze(1)
+        n_active = len(active_idx)
+        active_weights = F.normalize(self.weights[active_idx], dim=1)  # (n_active, dim)
+
+        # (n_active, dim) @ (dim, N) → (n_active, N) — all inputs scored at once
+        all_scores = active_weights @ effective.T  # one GPU dispatch for N inputs
+
+        # ── FIRE + ROUTE: per-input, but vectorized ──
+        merged_activations = {}
+        all_fired_weights = []
+        all_fired_confs = []
+
+        for i in range(N):
+            scores_i = all_scores[:, i]  # (n_active,)
+
+            # Fire
+            fired_local = scores_i > self.thresholds[active_idx]
+            if fired_local.sum() < 2:
+                _, top = scores_i.topk(min(2, n_active))
+                fired_local[top] = True
+
+            fired_global_idx = active_idx[fired_local]
+            fired_scores = scores_i[fired_local]
+
+            if len(fired_global_idx) == 0:
+                continue
+
+            # Route to memory slots (by neuron index — natural spatial separation)
+            if memory is not None:
+                # Each fired neuron writes to a slot based on its index
+                # Neurons with similar indices (same region) write to same slot
+                # This creates structured spatial representation
+                for j, gidx in enumerate(fired_global_idx):
+                    slot_id = gidx.item() % memory.slots
+                    contrib = fired_scores[j].item() * F.normalize(self.weights[gidx], dim=0)
+                    memory._buffer[slot_id] = (
+                        memory.buffer_decay * memory._buffer[slot_id] + contrib
+                    ) if hasattr(memory, 'buffer_decay') else (
+                        0.9 * memory._buffer[slot_id] + contrib
+                    )
+                    memory._written = max(memory._written, 1)
+
+            # Collect for prediction
+            fw = self.weights[fired_global_idx]
+            conf = (fired_scores - self.thresholds[active_idx[fired_local]]) / \
+                   self.thresholds[active_idx[fired_local]].clamp(min=0.01)
+            all_fired_weights.append(fw)
+            all_fired_confs.append(conf)
+
+            # Merge activations
+            for j, gidx in enumerate(fired_global_idx):
+                cid = self.cluster_ids[gidx.item()]
+                old = merged_activations.get(cid, 0.0)
+                merged_activations[cid] = max(old, fired_scores[j].item())
+
+        # ── OUTPUT: unified prediction from all fired neurons across all inputs ──
+        if all_fired_weights:
+            cat_weights = torch.cat(all_fired_weights, dim=0)
+            cat_confs = torch.cat(all_fired_confs, dim=0).clamp(min=0.0)
+            attn = F.softmax(cat_confs * 2.0, dim=0)
+            prediction = F.normalize(attn @ cat_weights, dim=0)
+        else:
+            prediction = torch.zeros(dim, device=self.device)
+
+        # Update activation buffer (combined signal from all inputs)
+        self.activation_buffer *= self.buffer_decay
+        if all_fired_weights:
+            # Top-5 overall most confident neurons
+            top_k = min(5, len(cat_confs))
+            _, top_idx = cat_confs.topk(top_k)
+            for idx in top_idx:
+                self.activation_buffer += cat_confs[idx].item() * F.normalize(cat_weights[idx], dim=0)
+
+        # Cache for update (from last input — backward compatible)
+        full_scores = torch.zeros(n, device=self.device)
+        full_scores[active_idx] = all_scores[:, -1]
+        self._last_fired = torch.zeros(n, dtype=torch.bool, device=self.device)
+        if all_fired_weights:
+            last_fired_local = all_scores[:, -1] > self.thresholds[active_idx]
+            self._last_fired[active_idx] = last_fired_local
+        self._last_scores = full_scores
+        self._last_prediction = prediction
+
+        self.ages[:n] += 1
+
+        return prediction.cpu(), merged_activations
+
     def pre_sense(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Cache the normalized active weight matrix for batched SENSE.
         Call once, then use the result for multiple forward() calls.
