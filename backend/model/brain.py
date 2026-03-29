@@ -8,8 +8,12 @@ the centralized resonance manager. Message passing replaces serial BFS.
 Analogy: a stadium wave, not an announcer calling seat numbers.
 """
 
+from __future__ import annotations
+
 import torch
 import torch.nn.functional as F
+
+from .working_memory import WorkingMemory
 
 
 _MPS_AVAILABLE = torch.backends.mps.is_available()
@@ -149,6 +153,8 @@ class BrainState:
         self.activation_buffer = self.activation_buffer.to(new_device)
         self.projection = self.projection.to(new_device)
         self.prediction_weights = self.prediction_weights.to(new_device)
+        if hasattr(self, '_working_memory') and self._working_memory is not None:
+            self._working_memory.to(new_device)
         self._invalidate_edge_cache()
         self.device = new_device
 
@@ -335,6 +341,52 @@ class BrainState:
             activations[self.cluster_ids[idx.item()]] = scores[idx].item()
 
         return prediction.cpu(), activations
+
+    # ── Multi-Step Reasoning ──
+
+    def reason(
+        self,
+        x: torch.Tensor,
+        steps: int = 5,
+        memory: WorkingMemory | None = None,
+    ) -> tuple[torch.Tensor, dict]:
+        """
+        Multi-step inference: iterate forward passes, feeding prediction back
+        as input. The activation buffer accumulates across iterations, building
+        up temporal context with each step.
+
+        If memory is provided:
+          - Before each forward: read from memory and blend with input
+          - After each forward: write prediction to memory
+
+        This does NOT interfere with normal forward() — it calls forward()
+        internally. Each forward() updates the activation buffer, so later
+        iterations benefit from richer context.
+
+        Returns: (final_prediction, final_activations)
+        """
+        x = F.normalize(x.to(self.device), dim=0)
+
+        prediction = x
+        activations: dict = {}
+
+        for _ in range(steps):
+            # Memory read: blend stored context into input
+            if memory is not None and memory.occupancy > 0:
+                mem_context = memory.read(x)
+                x = F.normalize(0.8 * x + 0.2 * mem_context, dim=0)
+
+            # Forward pass (updates activation buffer internally)
+            prediction, activations = self.forward(x)
+
+            # Memory write: store prediction for future steps
+            if memory is not None:
+                memory.write(prediction)
+
+            # Blend prediction back as next input (keep some of original query)
+            x = F.normalize(0.7 * prediction + 0.3 * x, dim=0)
+
+        return prediction, activations
 
     # ── Learning: Parallel Correction-Based ──
 

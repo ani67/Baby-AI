@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 
 from .brain import BrainState
+from .working_memory import WorkingMemory
 
 
 class GraphAdapter:
@@ -223,6 +224,11 @@ class BabyModelV2:
         # V2 engine
         self.brain = BrainState(dim=input_dim, initial_size=initial_clusters)
 
+        # Working memory for multi-step reasoning
+        self._working_memory = WorkingMemory(
+            slots=8, dim=input_dim, device=self.brain.device.type,
+        )
+
         # Graph adapter for API compatibility
         self.graph = GraphAdapter(self.brain)
 
@@ -264,6 +270,10 @@ class BabyModelV2:
         if not return_activations:
             activations = {}
         return prediction, activations
+
+    def reason(self, x: torch.Tensor, steps: int = 5) -> tuple[torch.Tensor, dict]:
+        """Multi-step reasoning with working memory."""
+        return self.brain.reason(x, steps=steps, memory=self._working_memory)
 
     def update(self, x: torch.Tensor, is_positive: bool = True) -> dict:
         """Single-sample update (V1 compat for _step_single path)."""
@@ -330,6 +340,9 @@ class BabyModelV2:
         if "brain_state" in state_dict:
             self.brain.load_state_dict(state_dict["brain_state"])
             self._activation_buffer = self.brain.activation_buffer
+            # Restore working memory if present
+            if "working_memory" in state_dict:
+                self._working_memory.load_state_dict(state_dict["working_memory"])
             return
 
         # Otherwise try v1 format (node weights + graph_json)
