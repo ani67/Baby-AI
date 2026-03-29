@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 import PIL.Image
-import requests
+import urllib.request
 import torch
 
 # Allow running as `python -m scripts.distill_vision` from backend/
@@ -69,9 +69,10 @@ def load_dataset(db_path: Path) -> list[tuple[str, torch.Tensor]]:
 def download_image(url: str, timeout: float = 10.0) -> PIL.Image.Image | None:
     """Download an image from a URL. Returns None on failure."""
     try:
-        resp = requests.get(url, timeout=timeout)
-        resp.raise_for_status()
-        return PIL.Image.open(io.BytesIO(resp.content)).convert("RGB")
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read()
+        return PIL.Image.open(io.BytesIO(data)).convert("RGB")
     except Exception:
         return None
 
