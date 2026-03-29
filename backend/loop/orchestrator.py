@@ -505,7 +505,13 @@ class LearningLoop:
 
     async def _step_batch(self, batch_size: int = 32) -> StepResult:
         """Batched learning step for precomputed curriculum.
-        Runs CPU-heavy computation in a thread pool so FastAPI stays responsive."""
+        Runs ALL computation in a thread pool so the event loop stays free
+        for HTTP endpoints (/metrics, /status, /chat)."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._step_batch_sync, batch_size)
+
+    def _step_batch_sync(self, batch_size: int = 32) -> StepResult:
+        """Synchronous batch step. Runs entirely in thread pool."""
         import time as _time
 
         graph_summary = self.model.graph.summary()
@@ -550,12 +556,9 @@ class LearningLoop:
         # ── Episodic replay: mix into batch ──
         replay_samples = self.memory.sample_replay(n=8, category_weights=cat_weights)
 
-        # ── Run heavy computation in thread pool ──
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, self._batch_compute, items, replay_samples)
-
-        # Unpack results from the sync computation
-        changes, prediction, activations, anchor_pred, elapsed_ms, all_activations = result
+        # ── Batch compute (forward + update) ──
+        changes, prediction, activations, anchor_pred, elapsed_ms, all_activations = \
+            self._batch_compute(items, replay_samples)
 
         # ── Native text encoder distillation (piggyback on batch captions) ──
         if self.native_text_encoder is not None and self._distill_count % 4 == 0:
@@ -727,17 +730,23 @@ class LearningLoop:
         # Train decoder on teacher's CLIP vector (not model prediction!)
         teacher_clip = items[-1].expected_vector if items[-1].expected_vector is not None else prediction
         self.decoder.train_step(teacher_clip, teacher_answer)
-        # Emit viz (non-blocking)
+        # Emit viz (schedule on event loop from thread)
         model_response = self.decoder.decode(prediction, max_words=15, model_step=self.model.step)
         if self.viz_emitter is not None:
-            asyncio.ensure_future(self.viz_emitter.emit_step(
-                step=self.model.step, stage=self._stage,
-                graph=self.model.graph, activations=activations,
-                last_question=f"[batch {len(items)}]", last_answer=teacher_answer,
-                model_answer=model_response, is_positive=True,
-                growth_events=growth_events,
-                image_url=getattr(items[-1], "image_url", None),
-            ))
+            try:
+                ev_loop = asyncio.get_event_loop()
+                ev_loop.call_soon_threadsafe(
+                    lambda: asyncio.ensure_future(self.viz_emitter.emit_step(
+                        step=self.model.step, stage=self._stage,
+                        graph=self.model.graph, activations=activations,
+                        last_question=f"[batch {len(items)}]", last_answer=teacher_answer,
+                        model_answer=model_response, is_positive=True,
+                        growth_events=growth_events,
+                        image_url=getattr(items[-1], "image_url", None),
+                    ))
+                )
+            except RuntimeError:
+                pass  # event loop gone during shutdown
 
         # Batch logging
         self._batch_count += 1
