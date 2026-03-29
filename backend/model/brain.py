@@ -213,6 +213,7 @@ class BrainState:
 
     # ── Forward Pass: The Stadium Wave ──
 
+    @torch.no_grad()
     def forward(self, x: torch.Tensor, _pre_sensed=None) -> tuple[torch.Tensor, dict]:
         """
         Parallel forward: all neurons evaluate simultaneously.
@@ -283,7 +284,7 @@ class BrainState:
         confidence[fired] = (scores[fired] - thresholds_n[fired]) / thresholds_n[fired].clamp(min=0.01)
 
         self._step_count = getattr(self, '_step_count', 0) + 1
-        do_message_pass = (self._step_count % 5 == 0) and self._edge_strengths and fired.sum() > 0
+        do_message_pass = (self._step_count % 20 == 0) and self._edge_strengths and fired.sum() > 0
         if do_message_pass:
             edge_mat = self._build_edge_matrix()  # sparse COO
             for _ in range(self.max_rounds):
@@ -568,6 +569,7 @@ class BrainState:
 
     # ── Learning: Parallel Correction-Based ──
 
+    @torch.no_grad()
     def update(self, x: torch.Tensor, teacher_vec: torch.Tensor):
         """
         Per-neuron differentiated learning.
@@ -627,7 +629,7 @@ class BrainState:
         # Backward:        upstream_err = edges.T @ error  (rows → columns)
         #
         # Only runs when message passing ran (every 5 steps).
-        if getattr(self, '_step_count', 0) % 5 == 0 and self._edge_strengths:
+        if getattr(self, '_step_count', 0) % 20 == 0 and self._edge_strengths:
             n = self.n
             # Per-neuron error magnitude: how far was each fired neuron from teacher?
             neuron_errors = torch.zeros(n, device=self.device)
