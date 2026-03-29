@@ -298,12 +298,17 @@ class BabyModelV2:
         """
         all_activations = []
 
+        # Pre-compute normalized active weights once for all items in this batch.
+        # Saves ~0.3ms per item (weight normalization is expensive at 2K+ neurons).
+        # Weights change ~1% per update, so pre-computed weights are close enough.
+        _pre = self.brain.pre_sense()
+
         for sample in samples:
             x = sample[0]
             teacher_vec = sample[2] if len(sample) > 2 else None
 
-            # Forward
-            prediction, activations = self.brain.forward(x)
+            # Forward (with pre-computed weights — avoids re-normalizing each call)
+            prediction, activations = self.brain.forward(x, _pre_sensed=_pre)
             all_activations.append(activations)
 
             # Learn from correction

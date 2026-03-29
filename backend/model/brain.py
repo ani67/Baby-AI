@@ -213,11 +213,14 @@ class BrainState:
 
     # ── Forward Pass: The Stadium Wave ──
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, dict]:
+    def forward(self, x: torch.Tensor, _pre_sensed=None) -> tuple[torch.Tensor, dict]:
         """
         Parallel forward: all neurons evaluate simultaneously.
         Self-activation thresholds. Message passing for multi-round thinking.
         Returns (prediction (512,), activations {cluster_id: score}).
+
+        _pre_sensed: optional (active_weights, active_idx) from pre_sense()
+            to avoid recomputing weight normalization on every call.
         """
         x = x.to(self.device)
         n = self.n
@@ -240,11 +243,14 @@ class BrainState:
 
         # 1. SENSE — only active neurons evaluate (skip dormant = major speedup)
         active_mask = ~self.dormant[:n]
-        active_idx = active_mask.nonzero().squeeze(1)
-        n_active = len(active_idx)
+        if _pre_sensed is not None:
+            active_weights, active_idx = _pre_sensed
+            n_active = len(active_idx)
+        else:
+            active_idx = active_mask.nonzero().squeeze(1)
+            n_active = len(active_idx)
+            active_weights = F.normalize(self.weights[active_idx], dim=1)
 
-        # Compact: gather only active weights for the matmul
-        active_weights = F.normalize(self.weights[active_idx], dim=1)  # (n_active, 512)
         active_scores = active_weights @ effective_x  # (n_active,)
 
         # Scatter back to full-size arrays (dormant neurons get score 0)
@@ -350,6 +356,16 @@ class BrainState:
             activations[self.cluster_ids[idx.item()]] = scores[idx].item()
 
         return prediction.cpu(), activations
+
+    def pre_sense(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Cache the normalized active weight matrix for batched SENSE.
+        Call once, then use the result for multiple forward() calls.
+        Returns (active_weights_normalized, active_idx)."""
+        n = self.n
+        active_mask = ~self.dormant[:n]
+        active_idx = active_mask.nonzero().squeeze(1)
+        active_weights = F.normalize(self.weights[active_idx], dim=1)
+        return active_weights, active_idx
 
     # ── Multi-Step Reasoning ──
 

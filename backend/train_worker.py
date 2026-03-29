@@ -274,17 +274,26 @@ def save_checkpoint(loop, items_processed=0):
         print(f"[checkpoint] error: {e}", flush=True)
 
 
-def publish(loop):
-    """Publish current state to shared file for HTTP server."""
+_cached_graph_json = None
+_graph_json_step = 0
+
+def publish(loop, full=False):
+    """Publish current state to shared file for HTTP server.
+    full=True forces graph_json refresh (expensive). Otherwise uses cached."""
+    global _cached_graph_json, _graph_json_step
     try:
         loop._update_cached_status()
+        # Only recompute graph_json every 500 items or on full refresh
+        if full or _cached_graph_json is None or loop.model.step - _graph_json_step > 500:
+            _cached_graph_json = loop.model.graph.to_json()
+            _graph_json_step = loop.model.step
         write_state({
             "step": loop.model.step,
             "stage": loop._stage,
             "state": "running",
             "graph_summary": loop._cached_graph_summary,
             "metrics": loop.metrics.snapshot(),
-            "graph_json": loop.model.graph.to_json(),
+            "graph_json": _cached_graph_json,
         })
     except Exception as e:
         print(f"[publish] error: {e}", flush=True)
