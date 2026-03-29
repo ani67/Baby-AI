@@ -416,30 +416,48 @@ def _compute_dashboard(loop):
 
 
 def add_dialogue(items, prediction, loop):
-    """Add training Q&A to dialogue buffer."""
+    """Add training Q&A to dialogue buffer — pick the most interesting item."""
     global _dialogue_buffer
     if not items:
         return
-    last = items[-1]
-    desc = last.description or ""
+    import random as _rng
+
+    # Pick a random item (not always the last — show variety)
+    item = _rng.choice(items)
+    desc = item.description or ""
+    is_text = item.item_type == "text" if hasattr(item, "item_type") else False
+    category = item.label or ""
+
+    # Get model's response for this specific item
     model_response = ""
+    similarity = 0.0
     try:
-        model_response = loop.decoder.decode(prediction, max_words=8, model_step=loop.model.step)
+        if item.expected_vector is not None:
+            item_pred, _ = loop.model.forward(item.expected_vector, return_activations=False)
+            model_response = loop.decoder.decode(item_pred, max_words=8, model_step=loop.model.step)
+            similarity = float(torch.dot(item_pred, F.normalize(item.expected_vector, dim=0)).item())
     except Exception:
         pass
+
+    # Format the question to show what TYPE of learning this is
+    if is_text:
+        question = f"[text/{category}] {desc[:80]}"
+    else:
+        question = f"[image/{category}] {desc[:80]}"
+
     _dialogue_buffer.append({
         "step": loop.model.step,
-        "question": f"[batch {len(items)}]",
-        "answer": desc[:100],
+        "question": question,
+        "answer": f"brain says: {model_response}" if model_response else "(no response)",
         "model_answer": model_response,
-        "curiosity_score": 0.0,
-        "is_positive": True,
+        "curiosity_score": round(max(0, 1.0 - similarity), 2),  # higher = more confused
+        "is_positive": similarity > 0.2,
         "stage": loop._stage,
         "timestamp": time.time(),
-        "image_url": getattr(last, "image_url", None),
+        "image_url": getattr(item, "image_url", None),
     })
-    if len(_dialogue_buffer) > 20:
-        _dialogue_buffer = _dialogue_buffer[-20:]
+    if len(_dialogue_buffer) > 50:
+        _dialogue_buffer = _dialogue_buffer[-50:]
 
 
 def publish(loop, full=False):
