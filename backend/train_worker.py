@@ -317,91 +317,177 @@ def save_checkpoint(loop, items_processed=0):
         print(f"[checkpoint] error: {e}", flush=True)
 
 
-_viz_cache = {"clusters": [], "edges": [], "step": 0}
-_proj_matrix = None  # fixed random projection for positions
-_dialogue_buffer = []  # last 20 Q&A entries
+_viz_cache = {"clusters": [], "edges": [], "nodes": [], "step": 0}
+_pca_components = None  # PCA projection axes (2, dim)
+_pca_step = 0
+_community_map = {}  # cluster_id → community_id
+_community_step = 0
+_dialogue_buffer = []  # last 50 Q&A entries
 _dashboard_cache = {}
 
 
-def _compute_positions(loop):
-    """Compute 3D positions from weight vectors using fixed random projection.
-    Y = layer_index (vertical structure), X/Z = random projection of weights.
-    Similar neurons cluster naturally. O(n), no PCA/SVD needed."""
-    global _proj_matrix
+@torch.no_grad()
+def _compute_pca_positions(loop):
+    """Compute 3D positions via PCA on active neuron weights.
+    PCA finds the 2 axes of MOST variance — similar neurons cluster naturally.
+    Y = layer_index (vertical structure), X/Z = first 2 principal components.
+    Recompute PCA axes every 5000 steps (stable between recomputes)."""
+    global _pca_components, _pca_step
     brain = loop.model.brain
     n = brain.n
     if n == 0:
         return {}
 
-    # Fixed random projection matrix (seeded, stable across steps)
-    if _proj_matrix is None or _proj_matrix.shape[1] != brain.dim:
-        gen = torch.Generator(device='cpu').manual_seed(42)
-        _proj_matrix = torch.randn(2, brain.dim, generator=gen) * 0.15
-        _proj_matrix = _proj_matrix.to(brain.device)
-
-    # Project active neuron weights to 2D (X, Z)
     active_mask = ~brain.dormant[:n]
     active_idx = active_mask.nonzero().squeeze(1)
-    if len(active_idx) == 0:
+    n_active = len(active_idx)
+    if n_active < 3:
         return {}
 
-    weights = brain.weights[active_idx]  # (n_active, dim)
-    xz = (_proj_matrix @ weights.T).T.cpu()  # (n_active, 2)
+    weights = brain.weights[active_idx]  # (n_active, dim) on device
+
+    # Recompute PCA axes periodically (eigendecompose is cheap for 512×512)
+    if _pca_components is None or loop.model.step - _pca_step > 5000:
+        centered = weights - weights.mean(dim=0, keepdim=True)
+        # Covariance: (dim, n_active) @ (n_active, dim) = (dim, dim)
+        cov = (centered.T @ centered) / max(n_active - 1, 1)
+        # Top 2 eigenvectors (on CPU — eigendecompose not on MPS)
+        cov_cpu = cov.cpu().float()
+        eigenvalues, eigenvectors = torch.linalg.eigh(cov_cpu)
+        # Last 2 eigenvectors = largest eigenvalues
+        _pca_components = eigenvectors[:, -2:].T.to(brain.device)  # (2, dim)
+        _pca_step = loop.model.step
+
+    # Project: (n_active, dim) @ (dim, 2) → (n_active, 2)
+    projected = (weights @ _pca_components.T).cpu()  # (n_active, 2)
+
+    # Scale to reasonable visual range (±5 units)
+    scale = projected.abs().quantile(0.95).clamp(min=0.1).item()
+    projected = projected / scale * 5.0
+
     layers = brain.layer_indices[active_idx].cpu()
 
     positions = {}
     for i, gidx in enumerate(active_idx.cpu().tolist()):
         cid = brain.cluster_ids[gidx]
         positions[cid] = [
-            float(xz[i, 0]),           # X: from weight projection
-            float(layers[i]) * 2.0,    # Y: layer index (vertical)
-            float(xz[i, 1]),           # Z: from weight projection
+            float(projected[i, 0]),      # X: PC1
+            float(layers[i]) * 1.5,      # Y: layer (compressed)
+            float(projected[i, 1]),       # Z: PC2
         ]
     return positions
 
 
+def _compute_communities(loop):
+    """Assign neurons to communities from cofiring data. Cache result."""
+    global _community_map, _community_step
+    if loop.model.step - _community_step < 3000 and _community_map:
+        return _community_map
+
+    try:
+        pairs = loop.store.get_cofiring_pairs()
+        strong = [p for p in pairs if p["count"] > 10]
+        if not strong:
+            return _community_map
+
+        parent = {}
+        def find(x):
+            while parent.get(x, x) != x:
+                parent[x] = parent.get(parent[x], parent[x])
+                x = parent[x]
+            return x
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb: parent[ra] = rb
+
+        for p in strong[:2000]:
+            union(p["a"], p["b"])
+
+        # Assign community IDs (0-based)
+        from collections import defaultdict
+        components = defaultdict(list)
+        all_ids = set()
+        for p in strong[:2000]:
+            all_ids.add(p["a"]); all_ids.add(p["b"])
+        for cid in all_ids:
+            components[find(cid)].append(cid)
+
+        # Sort by size, assign stable IDs
+        sorted_comms = sorted(components.values(), key=len, reverse=True)
+        new_map = {}
+        for comm_id, members in enumerate(sorted_comms):
+            for cid in members:
+                new_map[cid] = comm_id
+
+        _community_map = new_map
+        _community_step = loop.model.step
+    except Exception:
+        pass
+    return _community_map
+
+
 def _compute_viz(loop):
-    """Build viz data: clusters with positions, top edges."""
+    """Build viz data: ONLY active neurons, PCA positions, community colors, clean edges."""
     brain = loop.model.brain
     n = brain.n
-    positions = _compute_positions(loop)
+    positions = _compute_pca_positions(loop)
+    communities = _compute_communities(loop)
 
-    # Build cluster list with positions
+    # ONLY active neurons (not dormant — those are dead weight visually)
     clusters = []
+    nodes = []
+    active_mask = ~brain.dormant[:n]
+    fire_rates = brain.fire_rates[:n].cpu()
+
     for i in range(n):
+        if brain.dormant[i].item():
+            continue  # skip dormant — don't send to frontend
         cid = brain.cluster_ids[i]
-        dormant = brain.dormant[i].item()
+        pos = positions.get(cid)
+        if pos is None:
+            continue
+        comm = communities.get(cid, -1)
+        # Encode community as cluster_type for frontend coloring
+        # Frontend maps cluster_type → color. We'll use "comm_N" format.
+        ctype = f"comm_{comm}" if comm >= 0 else "unknown"
+
         clusters.append({
             "id": cid,
-            "cluster_type": "sensory",
-            "dormant": dormant,
+            "cluster_type": ctype,
+            "dormant": False,
             "layer_index": float(brain.layer_indices[i].item()),
-            "pos": positions.get(cid),
+            "pos": pos,
+        })
+        nid = f"n_{i:04d}"
+        nodes.append({
+            "id": nid,
+            "cluster": cid,
+            "pos": pos,
+            "activation_mean": float(fire_rates[i].item()),
+            "alive": True,
         })
 
-    # Top 500 edges by strength
-    edges_sorted = sorted(brain._edge_strengths.items(), key=lambda x: x[1], reverse=True)[:500]
+    # Inter-community edges only (top 100 by strength)
+    # Skip edges within the same community (reduces spaghetti)
     edges = []
-    for (i, j), s in edges_sorted:
-        if i < n and j < n:
-            edges.append({
-                "from": brain.cluster_ids[i],
-                "to": brain.cluster_ids[j],
-                "strength": round(s, 4),
-            })
-
-    # Nodes (for frontend compat — 1:1 with clusters in V2)
-    nodes = []
-    for c in clusters:
-        if c["pos"] is not None:
-            nid = f"n_{brain._id_to_idx.get(c['id'], 0):04d}"
-            nodes.append({
-                "id": nid,
-                "cluster": c["id"],
-                "pos": c["pos"],
-                "activation_mean": 0.05,
-                "alive": not c["dormant"],
-            })
+    for (i, j), s in sorted(brain._edge_strengths.items(), key=lambda x: x[1], reverse=True):
+        if i >= n or j >= n:
+            continue
+        if brain.dormant[i].item() or brain.dormant[j].item():
+            continue
+        cid_i = brain.cluster_ids[i]
+        cid_j = brain.cluster_ids[j]
+        comm_i = communities.get(cid_i, -1)
+        comm_j = communities.get(cid_j, -2)
+        if comm_i == comm_j and comm_i >= 0:
+            continue  # skip intra-community edges
+        edges.append({
+            "from": cid_i,
+            "to": cid_j,
+            "strength": round(s, 4),
+        })
+        if len(edges) >= 100:
+            break
 
     return {"clusters": clusters, "nodes": nodes, "edges": edges}
 
