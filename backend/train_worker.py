@@ -248,6 +248,14 @@ def distill_step(loop, items, items_processed):
     if items_processed % 7500 < 50:
         loop._save_native_checkpoints()
 
+    # Auto-switch: when distillation is good enough, blend native into curriculum
+    cos_sim = loop.metrics.snapshot()["distillation"].get("text_cosine_sim")
+    if cos_sim is not None and cos_sim > 0.65:
+        if loop._text_curriculum and loop._text_curriculum._encoder is not loop.native_text_encoder:
+            # Blend: 70% native + 30% CLIP (use native's encode_blended if available)
+            loop._text_curriculum._encoder = loop.native_text_encoder
+            print(f"[distill] SWITCHED text curriculum to native encoder (cos_sim={cos_sim:.3f})", flush=True)
+
 
 _vision_distill_images = None  # cached list of (image_path, clip_embedding) pairs
 

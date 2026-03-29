@@ -41,9 +41,13 @@ class NativeTextEncoder:
         self.vocab = vocab
         self.word_embeddings = word_embeddings  # shared reference, not a copy
 
-        # 2-layer context MLP (~525K params)
+        # 4-layer context MLP (~1.6M params)
         self.context_mlp = nn.Sequential(
-            nn.Linear(512, 512),
+            nn.Linear(512, 768),
+            nn.ReLU(),
+            nn.Linear(768, 768),
+            nn.ReLU(),
+            nn.Linear(768, 512),
             nn.ReLU(),
             nn.Linear(512, 512),
         )
