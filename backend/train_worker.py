@@ -452,11 +452,13 @@ def _compute_viz(loop):
         # Frontend maps cluster_type → color. We'll use "comm_N" format.
         ctype = f"comm_{comm}" if comm >= 0 else "unknown"
 
+        age = int(brain.ages[i].item())
         clusters.append({
             "id": cid,
             "cluster_type": ctype,
             "dormant": False,
             "layer_index": float(brain.layer_indices[i].item()),
+            "age": age,
             "pos": pos,
         })
         nid = f"n_{i:04d}"
@@ -466,6 +468,7 @@ def _compute_viz(loop):
             "pos": pos,
             "activation_mean": float(fire_rates[i].item()),
             "alive": True,
+            "age": age,
         })
 
     # Inter-community edges only (top 100 by strength)
