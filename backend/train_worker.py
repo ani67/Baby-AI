@@ -242,6 +242,54 @@ def distill_step(loop, items, items_processed):
         loop._save_native_checkpoints()
 
 
+_vision_distill_images = None  # cached list of (image_path, clip_embedding) pairs
+
+
+def distill_vision_step(loop, items_processed):
+    """Stage 3b: Native vision encoder distillation — every batch.
+    Uses local stage0 images + their CLIP embeddings as targets."""
+    global _vision_distill_images
+    if loop.native_vision_encoder is None:
+        return
+
+    # Lazy-load local images + compute CLIP embeddings once
+    if _vision_distill_images is None:
+        import glob
+        image_paths = glob.glob("data/stage0/**/*.jpg", recursive=True)
+        image_paths += glob.glob("data/stage0/**/*.png", recursive=True)
+        if not image_paths:
+            return
+        # Compute CLIP embeddings for all local images (one-time, cached)
+        import PIL.Image
+        _vision_distill_images = []
+        for path in image_paths[:200]:  # cap at 200 for memory
+            try:
+                img = PIL.Image.open(path).convert("RGB")
+                clip_vec = loop.image_encoder.encode(img)
+                _vision_distill_images.append((path, img, clip_vec))
+            except Exception:
+                continue
+        if _vision_distill_images:
+            print(f"[vision_distill] cached {len(_vision_distill_images)} local images", flush=True)
+
+    if not _vision_distill_images:
+        return
+
+    # Distill on 2 random images per batch
+    import random
+    samples = random.sample(_vision_distill_images, min(2, len(_vision_distill_images)))
+    for path, img, clip_vec in samples:
+        loss = loop.native_vision_encoder.distill_step([img], clip_vec.unsqueeze(0))
+        loop.metrics.record_vision_distill(1.0 - loss)
+
+    # Save checkpoint alongside text encoder
+    if items_processed % 7500 < 50:
+        try:
+            loop.native_vision_encoder.save("data/checkpoints/native_vision.pt")
+        except Exception:
+            pass
+
+
 def track_categories(loop, items, items_processed):
     """Stage 4: Category performance tracking (every 1500 items)."""
     if items_processed % 1500 > 50:
@@ -318,6 +366,11 @@ def save_checkpoint(loop, items_processed=0):
         loop.store.prune_old_snapshots()
         # Also save native encoder weights alongside brain checkpoint
         loop._save_native_checkpoints()
+        if loop.native_vision_encoder is not None:
+            try:
+                loop.native_vision_encoder.save("data/checkpoints/native_vision.pt")
+            except Exception:
+                pass
     except Exception as e:
         print(f"[checkpoint] error: {e}", flush=True)
 
@@ -703,11 +756,15 @@ def run(loop):
                 "input_type": "text" if getattr(last_item, "item_type", "") == "text" else "image",
             }
 
-            # 3. Distill (every 500 items)
+            # 3. Distill text + vision (every batch)
             try:
                 distill_step(loop, items, items_processed)
             except Exception as e:
-                print(f"[distill] error: {e}", flush=True)
+                print(f"[distill_text] error: {e}", flush=True)
+            try:
+                distill_vision_step(loop, items_processed)
+            except Exception as e:
+                print(f"[distill_vision] error: {e}", flush=True)
 
             # 4. Categories (every 1500 items)
             try:
