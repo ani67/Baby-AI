@@ -289,32 +289,129 @@ app.mount("/images/data", StaticFiles(directory="data"), name="images")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     if _worker_mode():
-        # Worker mode: send graph from shared state, then poll for updates
+        # Worker mode: send graph from shared state, then poll for deltas
         from loop.shared_state import read_state
         state = read_state()
-        if state and "graph_json" in state:
-            graph_json = state["graph_json"]
-            snapshot = {
-                "type": "snapshot",
-                "step": state.get("step", 0),
-                "stage": state.get("stage", 0),
-                "nodes": graph_json.get("nodes", []),
-                "clusters": graph_json.get("clusters", []),
-                "edges": graph_json.get("edges", []),
-                "model_stats": state.get("graph_summary", {}),
-            }
-            await ws.send_json(snapshot)
-        # Also send status
+        graph_json = state.get("graph_json", {}) if state else {}
+        nodes = graph_json.get("nodes", [])
+        clusters = graph_json.get("clusters", [])
+        edges = graph_json.get("edges", [])
+
+        # Send full snapshot on connect (matches VizEmitter._build_snapshot_from_json)
+        step = state.get("step", 0) if state else 0
+        stage = state.get("stage", 0) if state else 0
+        snapshot = {
+            "type": "snapshot",
+            "step": step,
+            "stage": stage,
+            "nodes": nodes,
+            "clusters": clusters,
+            "edges": edges,
+            "model_stats": {
+                "total_nodes": len(nodes),
+                "total_clusters": len(clusters),
+                "total_edges": len(edges),
+                "dormant_clusters": sum(1 for c in clusters if c.get("dormant", False)),
+                "layer_count": len(set(
+                    c.get("layer_index", 0) for c in clusters
+                    if not c.get("dormant", False)
+                )),
+                "step": step,
+                "stage": stage,
+            },
+        }
+        await ws.send_json(snapshot)
+
+        # Send initial status
         await ws.send_json({"type": "status", **_get_shared_status()})
-        # Keep connection alive, poll for updates
-        last_step = state.get("step", 0) if state else 0
+
+        # Track previous state for delta computation
+        prev_step = step
+        prev_cluster_ids = {c["id"] for c in clusters if not c.get("dormant", False)}
+        prev_dormant_ids = {c["id"] for c in clusters if c.get("dormant", False)}
+        prev_edge_keys = {(e["from"], e["to"]) for e in edges}
+        prev_positions = {n["id"]: n.get("pos") for n in nodes if n.get("pos")}
+
         try:
             while True:
-                await asyncio.sleep(2)  # poll every 2s
+                await asyncio.sleep(2)
                 state = read_state()
-                if state and state.get("step", 0) != last_step:
-                    last_step = state["step"]
-                    await ws.send_json({"type": "status", **_get_shared_status()})
+                if not state:
+                    continue
+                cur_step = state.get("step", 0)
+                if cur_step == prev_step:
+                    continue
+
+                cur_graph = state.get("graph_json", {})
+                cur_clusters = cur_graph.get("clusters", [])
+                cur_edges = cur_graph.get("edges", [])
+                cur_nodes = cur_graph.get("nodes", [])
+                cur_stage = state.get("stage", 0)
+                graph_summary = state.get("graph_summary", {})
+
+                # Compute delta
+                cur_active_ids = {c["id"] for c in cur_clusters if not c.get("dormant", False)}
+                cur_dormant_ids = {c["id"] for c in cur_clusters if c.get("dormant", False)}
+                cur_edge_keys = {(e["from"], e["to"]) for e in cur_edges}
+                edge_map = {(e["from"], e["to"]): e for e in cur_edges}
+
+                clusters_added_ids = cur_active_ids - prev_cluster_ids - prev_dormant_ids
+                clusters_added = [c for c in cur_clusters if c["id"] in clusters_added_ids]
+                clusters_dormanted = list(cur_dormant_ids & prev_cluster_ids)
+
+                edges_formed = [
+                    [e["from"], e["to"], e.get("strength", 0.1)]
+                    for k, e in edge_map.items() if k not in prev_edge_keys
+                ]
+                edges_pruned = [
+                    list(k) for k in prev_edge_keys if k not in cur_edge_keys
+                ]
+
+                # Positions — send all (worker has no projection, just relay what graph has)
+                positions = {}
+                for n in cur_nodes:
+                    nid = n["id"]
+                    pos = n.get("pos")
+                    if pos and prev_positions.get(nid) != pos:
+                        positions[nid] = pos
+
+                nodes_added = []
+                if clusters_added_ids:
+                    nodes_added = [
+                        n for n in cur_nodes
+                        if n.get("cluster") in clusters_added_ids
+                        or n.get("cluster_id") in clusters_added_ids
+                    ]
+
+                delta = {
+                    "type": "delta",
+                    "step": cur_step,
+                    "stage": cur_stage,
+                    "activated": [],
+                    "deactivated": [],
+                    "activation_values": {},
+                    "edges_formed": edges_formed,
+                    "edges_pruned": edges_pruned,
+                    "clusters_added": clusters_added,
+                    "clusters_dormanted": clusters_dormanted,
+                    "positions": positions,
+                    "graph_summary": graph_summary,
+                }
+                if nodes_added:
+                    delta["nodes_added"] = nodes_added
+
+                await ws.send_json(delta)
+
+                # Also send status so StatusBar stays updated
+                await ws.send_json({"type": "status", **_get_shared_status()})
+
+                # Update tracking state
+                prev_step = cur_step
+                prev_cluster_ids = cur_active_ids | cur_dormant_ids
+                prev_dormant_ids = cur_dormant_ids
+                prev_edge_keys = cur_edge_keys
+                prev_positions = {n["id"]: n.get("pos") for n in cur_nodes if n.get("pos")}
+
         except (WebSocketDisconnect, Exception):
             pass
         return
