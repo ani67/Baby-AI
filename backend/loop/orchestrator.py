@@ -409,8 +409,9 @@ class LearningLoop:
                             self._cofiring_buffer.append((prev_cid, curr_cid))
             self._prev_active_cids = significant[:5]
         self._cofiring_steps_since_flush += 1
-        if (self._cofiring_steps_since_flush >= 50 or len(self._cofiring_buffer) >= 50000) and self._cofiring_buffer:
-            print(f"[cofiring] flushed {len(self._cofiring_buffer)} pairs at step {self.model.step}", flush=True)
+        if len(self._cofiring_buffer) > 5000:
+            self._cofiring_buffer = self._cofiring_buffer[-5000:]
+        if (self._cofiring_steps_since_flush >= 50 or len(self._cofiring_buffer) >= 5000) and self._cofiring_buffer:
             self.store.batch_update_cofiring(self._cofiring_buffer, self.model.step)
             self._cofiring_buffer = []
             self._cofiring_steps_since_flush = 0
@@ -650,8 +651,10 @@ class LearningLoop:
                 l_std = (sum((v - l_mean) ** 2 for v in last_vals) / len(last_vals)) ** 0.5
                 self._prev_active_cids = [c for c, v in all_activations[-1].items() if v > l_mean + l_std][:5]
         self._cofiring_steps_since_flush += 1
-        if (self._cofiring_steps_since_flush >= 50 or len(self._cofiring_buffer) >= 50000) and self._cofiring_buffer:
-            print(f"[cofiring] flushed {len(self._cofiring_buffer)} pairs at step {self.model.step}", flush=True)
+        # Cap buffer to prevent massive SQLite writes that block the GIL
+        if len(self._cofiring_buffer) > 5000:
+            self._cofiring_buffer = self._cofiring_buffer[-5000:]
+        if (self._cofiring_steps_since_flush >= 50 or len(self._cofiring_buffer) >= 5000) and self._cofiring_buffer:
             self.store.batch_update_cofiring(self._cofiring_buffer, self.model.step)
             self._cofiring_buffer = []
             self._cofiring_steps_since_flush = 0
