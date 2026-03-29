@@ -118,6 +118,8 @@ def _build_components_real(config):
     from encoder.clip_mlx import CLIPWrapper
     from encoder.encoder import ImageEncoder, TextEncoder, VideoEncoder
     from encoder.decoder import GroundedDecoder
+    from encoder.native_text import NativeTextEncoder
+    from encoder.native_vision import NativeVisionEncoder
     from teacher.bridge import TeacherBridge
 
     store = StateStore(config.db_path)
@@ -129,6 +131,20 @@ def _build_components_real(config):
     video_enc = VideoEncoder(image_enc)
     decoder = GroundedDecoder(text_encoder=text_enc, db_path=config.db_path)
     print("Encoders ready.")
+
+    # Native encoders (distilled from CLIP, eventually replace it)
+    native_text_enc = NativeTextEncoder(decoder.vocab, decoder.word_embeddings)
+    native_vision_enc = NativeVisionEncoder()
+    # Restore native encoder checkpoints if available
+    import os
+    _native_text_path = os.path.join(os.path.dirname(config.db_path), "checkpoints", "native_text.pt")
+    _native_vision_path = os.path.join(os.path.dirname(config.db_path), "checkpoints", "native_vision.pt")
+    if os.path.exists(_native_text_path):
+        native_text_enc.load_state_dict(torch.load(_native_text_path, weights_only=True))
+        print("Restored native text encoder.")
+    if os.path.exists(_native_vision_path):
+        native_vision_enc.load(_native_vision_path)
+        print("Restored native vision encoder.")
 
     teacher = TeacherBridge(
         host=config.ollama_url,
@@ -167,6 +183,8 @@ def _build_components_real(config):
         encoder=(image_enc, text_enc, video_enc),
         decoder=decoder, store=store,
         viz_emitter=emitter, curriculum=curriculum,
+        native_text_encoder=native_text_enc,
+        native_vision_encoder=native_vision_enc,
     )
 
     # Sync orchestrator stage from restored model

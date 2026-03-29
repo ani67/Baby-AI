@@ -76,19 +76,32 @@ class LearningLoop:
         self,
         model,
         teacher,
-        encoder: tuple,
+        encoder,
         decoder,
         store,
         viz_emitter,
         curriculum,
+        native_text_encoder=None,
+        native_vision_encoder=None,
     ):
         self.model = model
         self.teacher = teacher
-        self.encoders = encoder
+        # Accept either a tuple (image, text, video) or named attributes
+        if isinstance(encoder, tuple):
+            self.image_encoder, self.text_encoder, self.video_encoder = encoder
+        else:
+            self.image_encoder = getattr(encoder, 'image_encoder', None)
+            self.text_encoder = getattr(encoder, 'text_encoder', None)
+            self.video_encoder = getattr(encoder, 'video_encoder', None)
         self.decoder = decoder
         self.store = store
         self.viz_emitter = viz_emitter
         self.curriculum = curriculum
+
+        # Native encoders (distilled from CLIP, eventually replace it)
+        self.native_text_encoder = native_text_encoder
+        self.native_vision_encoder = native_vision_encoder
+        self._distill_count = 0
 
         self.curiosity = CuriosityScorer()
         self.question_gen = QuestionGenerator()
@@ -402,6 +415,8 @@ class LearningLoop:
                         state_dict[f"{node.id}.weights"] = node.weights
                         state_dict[f"{node.id}.bias"] = node.bias
             state_dict["_activation_buffer"] = self.model._activation_buffer
+            if hasattr(self.model, '_working_memory'):
+                state_dict["working_memory"] = self.model._working_memory.state_dict()
             graph_json = self.model.graph.to_json()
             nc = len(graph_json["clusters"])
             ne = len(graph_json["edges"])
@@ -626,6 +641,8 @@ class LearningLoop:
                         state_dict[f"{node.id}.weights"] = node.weights
                         state_dict[f"{node.id}.bias"] = node.bias
             state_dict["_activation_buffer"] = self.model._activation_buffer
+            if hasattr(self.model, '_working_memory'):
+                state_dict["working_memory"] = self.model._working_memory.state_dict()
             graph_json = self.model.graph.to_json()
             self.store.save_checkpoint(
                 step=self.model.step, stage=self._stage,
@@ -764,7 +781,7 @@ class LearningLoop:
     # ── Human interaction ──
 
     async def human_message(self, text: str) -> str:
-        _, text_encoder, _ = self.encoders
+        text_encoder = self.text_encoder
 
         # Briefly pause training so the brain is free for chat.
         # Without this, chat blocks until the current batch completes (~5-30s).
@@ -819,7 +836,7 @@ class LearningLoop:
 
     async def human_correct(self, correction: str) -> str:
         """Baby spoke wrong → human corrects → baby learns from the correction."""
-        _, text_encoder, _ = self.encoders
+        text_encoder = self.text_encoder
         last_input = getattr(self, '_last_chat_input', None)
         if last_input is None:
             return "(nothing to correct — send a message first)"
@@ -874,15 +891,39 @@ class LearningLoop:
 
     # ── Internal ──
 
+    def _save_native_checkpoints(self):
+        """Save native encoder checkpoints to data/checkpoints/."""
+        import os
+        ckpt_dir = os.path.join(os.path.dirname(self.store.path), "checkpoints")
+        os.makedirs(ckpt_dir, exist_ok=True)
+        if self.native_text_encoder is not None:
+            path = os.path.join(ckpt_dir, "native_text.pt")
+            torch.save(self.native_text_encoder.state_dict(), path)
+        if self.native_vision_encoder is not None:
+            path = os.path.join(ckpt_dir, "native_vision.pt")
+            self.native_vision_encoder.save(path)
+
     def _encode_answer(self, answer: str, item) -> list[torch.Tensor]:
-        _, text_encoder, _ = self.encoders
+        text_encoder = self.text_encoder
         words = answer.split()
 
         if len(words) < 30:
-            return [text_encoder.encode(answer)]
+            clip_vec = text_encoder.encode(answer)
+            # Distill native text encoder from CLIP (every call)
+            if self.native_text_encoder is not None:
+                self._distill_count += 1
+                self.native_text_encoder.distill_step(answer, clip_vec)
+                # Save checkpoint every 500 distillation steps
+                if self._distill_count % 500 == 0:
+                    self._save_native_checkpoints()
+            return [clip_vec]
 
         sentences = split_sentences(answer)
         vectors = [text_encoder.encode(s) for s in sentences if s.strip()]
+        # Distill on first sentence (lightweight)
+        if vectors and self.native_text_encoder is not None:
+            self._distill_count += 1
+            self.native_text_encoder.distill_step(sentences[0], vectors[0])
 
         for word in words:
             clean = word.strip(".,!?;:").lower()
