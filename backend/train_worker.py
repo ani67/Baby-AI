@@ -47,6 +47,49 @@ def read_command() -> str | None:
         return None
 
 
+CHAT_REQUEST_FILE = os.path.join(os.path.dirname(__file__), "data", "chat_request.json")
+CHAT_RESPONSE_FILE = os.path.join(os.path.dirname(__file__), "data", "chat_response.json")
+
+
+def handle_chat(loop):
+    """Check for chat request from server, process it, write response."""
+    try:
+        with open(CHAT_REQUEST_FILE) as f:
+            req = json.load(f)
+        os.unlink(CHAT_REQUEST_FILE)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return
+
+    message = req.get("message", "")
+    req_type = req.get("type", "chat")
+
+    try:
+        if req_type == "correct":
+            # Correction: encode and update weights
+            input_vec = loop.text_encoder.encode(message)
+            loop.model.brain.forward(input_vec)
+            loop.model.brain.update(input_vec, input_vec)
+            pred, _ = loop.model.brain.forward(input_vec)
+            response = loop.decoder.decode(pred, max_words=8, model_step=loop.model.step)
+        else:
+            # Chat: encode input, forward, decode response
+            input_vec = loop.text_encoder.encode(message)
+            output_vec, _ = loop.model.brain.forward(input_vec)
+            response = loop.decoder.generate(
+                output_vec, brain=loop.model.brain,
+                max_tokens=6, model_step=loop.model.step,
+            )
+
+        os.makedirs(os.path.dirname(CHAT_RESPONSE_FILE), exist_ok=True)
+        with open(CHAT_RESPONSE_FILE, "w") as f:
+            json.dump({"message": response}, f)
+        print(f"[chat] '{message}' → '{response}'", flush=True)
+    except Exception as e:
+        with open(CHAT_RESPONSE_FILE, "w") as f:
+            json.dump({"message": f"(error: {e})"}, f)
+        print(f"[chat] error: {e}", flush=True)
+
+
 def write_command(command: str):
     os.makedirs(os.path.dirname(COMMAND_FILE), exist_ok=True)
     with open(COMMAND_FILE, "w") as f:
@@ -535,6 +578,9 @@ def run(loop):
                     return
         elif cmd == "stop":
             return
+
+        # ── Chat check (between batches, instant response) ──
+        handle_chat(loop)
 
         # ── PIPELINE ──
         try:

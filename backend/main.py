@@ -10,6 +10,7 @@ In legacy mode (TRAINING_MODE=inline), training runs in-process.
 
 import asyncio
 import io
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -643,8 +644,34 @@ async def set_speed(body: SpeedRequest):
 # ── Human chat ──
 
 
+CHAT_REQUEST_FILE = os.path.join(os.path.dirname(__file__), "data", "chat_request.json")
+CHAT_RESPONSE_FILE = os.path.join(os.path.dirname(__file__), "data", "chat_response.json")
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(body: ChatRequest):
+    if _worker_mode():
+        # Write request, poll for response
+        os.makedirs(os.path.dirname(CHAT_REQUEST_FILE), exist_ok=True)
+        with open(CHAT_REQUEST_FILE, "w") as f:
+            json.dump({"message": body.message, "type": "chat"}, f)
+        # Poll for response (worker picks up request between batches)
+        for _ in range(30):  # 15s max wait
+            await asyncio.sleep(0.5)
+            try:
+                with open(CHAT_RESPONSE_FILE) as f:
+                    resp = json.load(f)
+                os.unlink(CHAT_RESPONSE_FILE)
+                from loop.shared_state import read_state
+                state = read_state() or {}
+                return ChatResponse(
+                    message=resp.get("message", "(no response)"),
+                    step=state.get("step", 0),
+                    stage=state.get("stage", 0),
+                )
+            except (FileNotFoundError, json.JSONDecodeError):
+                continue
+        return ChatResponse(message="(brain is busy, try again)", step=0, stage=0)
     loop = app.state.loop
     response = await loop.human_message(body.message)
     return ChatResponse(
@@ -656,8 +683,26 @@ async def chat(body: ChatRequest):
 
 @app.post("/chat/correct", response_model=ChatResponse)
 async def chat_correct(body: ChatCorrectRequest):
-    """Baby spoke wrong → human corrects → baby learns.
-    Send the correct answer; baby updates its weights and responds with its new output."""
+    if _worker_mode():
+        os.makedirs(os.path.dirname(CHAT_REQUEST_FILE), exist_ok=True)
+        with open(CHAT_REQUEST_FILE, "w") as f:
+            json.dump({"message": body.correction, "type": "correct"}, f)
+        for _ in range(30):
+            await asyncio.sleep(0.5)
+            try:
+                with open(CHAT_RESPONSE_FILE) as f:
+                    resp = json.load(f)
+                os.unlink(CHAT_RESPONSE_FILE)
+                from loop.shared_state import read_state
+                state = read_state() or {}
+                return ChatResponse(
+                    message=resp.get("message", "(no response)"),
+                    step=state.get("step", 0),
+                    stage=state.get("stage", 0),
+                )
+            except (FileNotFoundError, json.JSONDecodeError):
+                continue
+        return ChatResponse(message="(brain is busy, try again)", step=0, stage=0)
     loop = app.state.loop
     response = await loop.human_correct(body.correction)
     return ChatResponse(
