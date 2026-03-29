@@ -58,12 +58,16 @@ class NativeTextEncoder:
     def _tokenize(self, text: str) -> list[int]:
         """Split text into words, return vocab indices. Unknown words → UNK(3)."""
         unk_id = Vocabulary.SPECIAL_TOKENS["<UNK>"]
+        emb_size = self.word_embeddings.shape[0]
         ids = []
         for word in text.lower().split():
             clean = word.strip(".,!?;:\"'()-[]{}")
             if not clean:
                 continue
             idx = self.vocab.word_to_id.get(clean, unk_id)
+            # Guard against vocab growing beyond embedding table
+            if idx >= emb_size:
+                idx = unk_id
             ids.append(idx)
         return ids
 
