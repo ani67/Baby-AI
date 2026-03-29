@@ -214,6 +214,13 @@ def prepare_batch(loop, batch_size=32, batch_count=0):
         if text_items:
             items.extend(text_items)
 
+    # Mix native vision items (~10% of batch) — raw images through ConvNet
+    if loop.native_vision_encoder is not None and _native_vision_items:
+        import random as _rv
+        n_vis = max(1, len(items) // 10)
+        for img_item in _rv.sample(_native_vision_items, min(n_vis, len(_native_vision_items))):
+            items.append(img_item)
+
     # Saturation cap
     active = [c for c in loop.model.graph.clusters if not c.dormant]
     saturated = sum(1 for c in active if c.mean_activation > 0.85)
@@ -261,7 +268,57 @@ def _switch_to_native_text(loop, cos_sim=0.0):
         print(f"[distill] SWITCHED text curriculum to native encoder (cos_sim={cos_sim:.3f})", flush=True)
 
 
-_vision_distill_images = None  # cached list of (image_path, clip_embedding) pairs
+_vision_distill_images = None  # cached list of (image_path, img, clip_embedding) pairs
+_native_vision_items = []     # CurriculumItems encoded through native ConvNet
+
+
+def _build_native_vision_items(loop):
+    """Pre-encode local stage0 images through native ConvNet. Creates CurriculumItems
+    where the embedding comes from OUR encoder, not CLIP. Mixed into training batches."""
+    global _native_vision_items
+    if loop.native_vision_encoder is None:
+        return
+    import glob
+    import PIL.Image
+    from loop.curriculum import CurriculumItem
+
+    image_paths = glob.glob("data/stage0/**/*.jpg", recursive=True)
+    image_paths += glob.glob("data/stage0/**/*.png", recursive=True)
+    if not image_paths:
+        return
+
+    items = []
+    for path in image_paths:
+        try:
+            img = PIL.Image.open(path).convert("RGB")
+            # Encode through native ConvNet (not CLIP!)
+            native_vec = loop.native_vision_encoder.encode(img)
+            # Also get CLIP embedding as teacher signal
+            clip_vec = loop.image_encoder.encode(img)
+            # Extract label from directory name
+            import os
+            label = os.path.basename(os.path.dirname(path))
+
+            items.append(CurriculumItem(
+                id=f"native_img_{len(items)}",
+                stage=0,
+                item_type="image",
+                input_vector=native_vec,      # brain sees native encoding
+                expected_vector=clip_vec,      # teacher is CLIP (for now)
+                label=label,
+                description=f"a photo of {label}",
+                context=None,
+                template_slots={"description": f"a photo of {label}"},
+                stage_relevance=1.0,
+                precomputed=True,
+                image_path=path,
+            ))
+        except Exception:
+            continue
+
+    _native_vision_items = items
+    if items:
+        print(f"[native_vision] built {len(items)} native-encoded image items from stage0", flush=True)
 
 
 def distill_vision_step(loop, items_processed):
@@ -722,10 +779,13 @@ def run(loop):
 
     print("Training started.", flush=True)
 
-    # If native text checkpoint exists, switch immediately (don't wait for cos_sim)
+    # If native text checkpoint exists, switch immediately
     if os.path.exists(os.path.join("data", "checkpoints", "native_text.pt")):
         _switch_to_native_text(loop, cos_sim=0.0)
         print("[startup] native text encoder checkpoint found — using native from start", flush=True)
+
+    # Build native vision training items from local stage0 images
+    _build_native_vision_items(loop)
 
     publish(loop)  # initial state
 
