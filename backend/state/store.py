@@ -8,12 +8,13 @@ import time
 class StateStore:
     def __init__(self, path: str = "data/dev.db"):
         self._path = path
-        self._conn = sqlite3.connect(path, check_same_thread=False)
+        self._conn = sqlite3.connect(path, check_same_thread=False, timeout=10)
         self._conn.row_factory = sqlite3.Row
 
-        # WAL mode for concurrent reads
+        # WAL mode for concurrent reads + busy timeout for thread contention
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
 
         # Apply schema
         schema_path = os.path.join(os.path.dirname(__file__), "schema.sql")

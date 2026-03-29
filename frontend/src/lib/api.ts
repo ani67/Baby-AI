@@ -93,6 +93,32 @@ export const api = {
       max_depth: number
     }>,
 
+  metrics: () =>
+    fetch(`${BASE_URL}/metrics`).then(r => r.json()) as Promise<{
+      distillation: {
+        text_cosine_sim: number | null
+        text_cosine_sim_trend: number | null
+        text_samples: number
+        vision_cosine_sim: number | null
+        vision_cosine_sim_trend: number | null
+        vision_samples: number
+      }
+      generation: {
+        response_relevance: number | null
+        vocab_size: number
+        unique_words_last_100: number
+      }
+      reasoning: {
+        comparison_accuracy: number | null
+        sequence_accuracy: number | null
+        analogy_accuracy: number | null
+        memory_retrieval_accuracy: number | null
+        odd_one_out_accuracy: number | null
+        overall_accuracy: number | null
+        total_tasks: number
+      }
+    }>,
+
   dashboard: () =>
     fetch(`${BASE_URL}/dashboard`).then(r => r.json()) as Promise<{
       step: number

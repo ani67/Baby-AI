@@ -4,6 +4,7 @@ import { DialogueFeed } from './components/DialogueFeed'
 import { HumanChat } from './components/HumanChat'
 import { Controls } from './components/Controls'
 import { MetricsPanel } from './components/MetricsPanel'
+import { IntelligencePanel } from './components/IntelligencePanel'
 import { useWebSocket } from './hooks/useWebSocket'
 import { WS_URL } from './lib/constants'
 
@@ -26,6 +27,7 @@ export function App() {
         <div style={{ width: '60%', height: '100%', position: 'relative' }}>
           <LatentSpace />
           <MetricsPanel />
+          <IntelligencePanel />
         </div>
 
         {/* Right panel: 40%, split 60/40 vertically */}

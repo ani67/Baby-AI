@@ -75,7 +75,7 @@ class _EmbeddingCache:
         if not os.path.exists(self._db_path):
             return 0
         try:
-            self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
+            self._conn = sqlite3.connect(self._db_path, check_same_thread=False, timeout=10)
             self._conn.row_factory = sqlite3.Row
             # Check table exists
             row = self._conn.execute(
