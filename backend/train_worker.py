@@ -235,7 +235,7 @@ def distill_step(loop, items, items_processed):
     item = random.choice(candidates)
     loss = loop.native_text_encoder.distill_step(item.description, item.expected_vector)
     loop.metrics.record_text_distill(1.0 - loss)
-    if items_processed % 7500 == 0:
+    if items_processed % 7500 < 50:
         loop._save_native_checkpoints()
 
 
@@ -278,7 +278,7 @@ def record_cofiring(loop, activations, items_processed):
 
     if len(loop._cofiring_buffer) > 5000:
         loop._cofiring_buffer = loop._cofiring_buffer[-5000:]
-    if items_processed % 7000 == 0 and loop._cofiring_buffer:
+    if items_processed % 7000 < 50 and loop._cofiring_buffer:
         loop.store.batch_update_cofiring(loop._cofiring_buffer, loop.model.step)
         loop._cofiring_buffer = []
 
@@ -313,6 +313,8 @@ def save_checkpoint(loop, items_processed=0):
             model_state_dict=state_dict, graph_json=graph_json,
         )
         loop.store.prune_old_snapshots()
+        # Also save native encoder weights alongside brain checkpoint
+        loop._save_native_checkpoints()
     except Exception as e:
         print(f"[checkpoint] error: {e}", flush=True)
 
