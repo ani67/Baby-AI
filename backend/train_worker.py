@@ -188,10 +188,13 @@ def build_components():
 # ── Pipeline stages ──
 
 def prepare_batch(loop, batch_size=32, batch_count=0):
-    """Stage 1: Load data. Returns (items, replay) or None."""
+    """Stage 1: Smart curriculum — test candidates, train on what the brain doesn't know.
+
+    Fetch 3x candidates, test each (forward only), pick the ones with
+    highest error. Every training step teaches something NEW."""
     graph_summary = loop._cached_graph_summary
 
-    # Cache category weights, refresh every 50 micro-batches
+    # Cache category weights
     if not hasattr(loop, '_cat_weights_cache') or batch_count % 50 == 0:
         try:
             cats = loop.store.get_category_performance()
@@ -204,22 +207,44 @@ def prepare_batch(loop, batch_size=32, batch_count=0):
             loop._cat_weights_cache = None
     cat_weights = loop._cat_weights_cache
 
-    items = loop.curriculum.next_batch(batch_size, stage=loop._stage, model_state=graph_summary, category_weights=cat_weights)
-    if not items:
+    # Fetch 3x candidates (images + text + vision)
+    candidate_size = batch_size * 3
+    candidates = loop.curriculum.next_batch(candidate_size, stage=loop._stage, model_state=graph_summary, category_weights=cat_weights)
+    if not candidates:
         return None
 
-    # Mix text (20%)
+    # Mix text candidates
     if loop._text_curriculum:
-        text_items = loop._text_curriculum.next_batch(max(1, len(items) // 5), model_step=loop.model.step)
-        if text_items:
-            items.extend(text_items)
+        text_cands = loop._text_curriculum.next_batch(max(3, candidate_size // 5), model_step=loop.model.step)
+        if text_cands:
+            candidates.extend(text_cands)
 
-    # Mix native vision items (~10% of batch) — raw images through ConvNet
+    # Mix native vision candidates
     if loop.native_vision_encoder is not None and _native_vision_items:
         import random as _rv
-        n_vis = max(1, len(items) // 10)
+        n_vis = max(1, candidate_size // 10)
         for img_item in _rv.sample(_native_vision_items, min(n_vis, len(_native_vision_items))):
-            items.append(img_item)
+            candidates.append(img_item)
+
+    # ── SMART SELECTION: test candidates, pick highest error ──
+    # Forward-only pass on each candidate (no update, cheap)
+    scored = []
+    pre = loop.model.brain.pre_sense()  # cache weights for fast forward
+    for item in candidates:
+        if item.expected_vector is None:
+            scored.append((item, 0.5))  # default score for items without teacher
+            continue
+        try:
+            pred, _ = loop.model.brain.forward(item.expected_vector, _pre_sensed=pre)
+            sim = float(torch.dot(pred, F.normalize(item.expected_vector, dim=0)).item())
+            error = 1.0 - sim  # higher = more confused = should train on this
+            scored.append((item, error))
+        except Exception:
+            scored.append((item, 0.5))
+
+    # Pick top batch_size by error (most confused items)
+    scored.sort(key=lambda x: x[1], reverse=True)
+    items = [item for item, _ in scored[:batch_size]]
 
     # Saturation cap
     active = [c for c in loop.model.graph.clusters if not c.dormant]
