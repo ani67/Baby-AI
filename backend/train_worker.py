@@ -137,7 +137,7 @@ def build_components():
 
 # ── Pipeline stages ──
 
-def prepare_batch(loop, batch_size=8, batch_count=0):
+def prepare_batch(loop, batch_size=32, batch_count=0):
     """Stage 1: Load data. Returns (items, replay) or None."""
     graph_summary = loop._cached_graph_summary
 
