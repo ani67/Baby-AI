@@ -108,10 +108,11 @@ class LearningLoop:
         self._text_curriculum = None
         try:
             from .text_curriculum import TextCurriculum
-            text_enc = native_text_encoder or self.text_encoder
+            # Use CLIP for text encoding (native encoder isn't converged yet).
+            # Switch to native once distillation cos_sim > 0.85.
             self._text_curriculum = TextCurriculum(
                 data_dir=getattr(store, 'path', 'data').rsplit('/', 1)[0] or 'data',
-                text_encoder=text_enc,
+                text_encoder=self.text_encoder,
             )
             if self._text_curriculum.size > 0:
                 print(f"[text_curriculum] loaded {self._text_curriculum.size} items", flush=True)
@@ -128,10 +129,10 @@ class LearningLoop:
             data_dir = getattr(store, 'path', 'data').rsplit('/', 1)[0] or 'data'
             tasks_path = os.path.join(data_dir, 'reasoning_tasks.json')
             if os.path.exists(tasks_path):
-                text_enc = native_text_encoder or self.text_encoder
+                # Use CLIP for reasoning encoding (native not converged yet)
                 self._reasoning_trainer = ReasoningTrainer(
                     tasks_path=tasks_path,
-                    text_encoder=text_enc,
+                    text_encoder=self.text_encoder,
                     brain=model.brain,
                 )
                 print(f"[reasoning] loaded trainer", flush=True)
@@ -560,30 +561,17 @@ class LearningLoop:
         changes, prediction, activations, anchor_pred, elapsed_ms, all_activations = \
             self._batch_compute(items, replay_samples)
 
-        # ── Native text encoder distillation (piggyback on batch captions) ──
+        # ── Native text encoder distillation (every 4th batch) ──
+        self._distill_count += 1  # always increment (was inside the if — only ran once!)
         if self.native_text_encoder is not None and self._distill_count % 4 == 0:
-            # Distill on one random item's caption per batch (cheap)
             import random as _rand_distill
             distill_items = [i for i in items if i.description and i.expected_vector is not None]
             if distill_items:
                 di = _rand_distill.choice(distill_items)
                 loss = self.native_text_encoder.distill_step(di.description, di.expected_vector)
                 self.metrics.record_text_distill(1.0 - loss)
-                self._distill_count += 1
                 if self._distill_count % 500 == 0:
                     self._save_native_checkpoints()
-
-        # ── Reasoning training (every 10 batches) ──
-        if self._reasoning_trainer is not None and self._batch_count % 10 == 0:
-            try:
-                result_r = self._reasoning_trainer.train_step()
-                self.metrics.record_reasoning(
-                    result_r['type'],
-                    result_r['correct'],
-                    result_r.get('similarity', 0.0),
-                )
-            except Exception:
-                pass  # reasoning is best-effort, don't break training
 
         # ── Main-thread work: growth, health, co-firing, logging, viz ──
 
@@ -759,7 +747,29 @@ class LearningLoop:
                 flush=True,
             )
 
-        # Stages collapsed — no auto-advance. LR decays naturally.
+        # ── Reasoning training (every 10 batches, AFTER all batch work) ──
+        # Save/restore brain state so reasoning doesn't pollute training context.
+        if self._reasoning_trainer is not None and self._batch_count % 10 == 0:
+            try:
+                saved_buffer = self.model.brain.activation_buffer.clone()
+                saved_fired = getattr(self.model.brain, '_last_fired', None)
+                saved_scores = getattr(self.model.brain, '_last_scores', None)
+                saved_pred = getattr(self.model.brain, '_last_prediction', None)
+
+                result_r = self._reasoning_trainer.train_step()
+                self.metrics.record_reasoning(
+                    result_r['type'],
+                    result_r['correct'],
+                    result_r.get('similarity', 0.0),
+                )
+
+                # Restore brain state
+                self.model.brain.activation_buffer = saved_buffer
+                self.model.brain._last_fired = saved_fired
+                self.model.brain._last_scores = saved_scores
+                self.model.brain._last_prediction = saved_pred
+            except Exception:
+                pass
 
         return StepResult(
             step=self.model.step,
