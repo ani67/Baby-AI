@@ -559,6 +559,9 @@ class LearningLoop:
         replay_samples = self.memory.sample_replay(n=8, category_weights=cat_weights)
 
         # ── Batch compute (forward + update) ──
+        # Release GIL briefly so uvicorn can process HTTP requests
+        import time as _time_yield
+        _time_yield.sleep(0)  # yields GIL to other threads
         changes, prediction, activations, anchor_pred, elapsed_ms, all_activations = \
             self._batch_compute(items, replay_samples)
 
@@ -573,6 +576,8 @@ class LearningLoop:
                 self.metrics.record_text_distill(1.0 - loss)
                 if self._distill_count % 500 == 0:
                     self._save_native_checkpoints()
+
+        _time_yield.sleep(0)  # yield GIL for HTTP
 
         # ── Main-thread work: growth, health, co-firing, logging, viz ──
 
@@ -594,6 +599,7 @@ class LearningLoop:
 
         # Growth check (must run on main thread — uses SQLite store)
         growth_events = self.model.growth_check(self.store)
+        _time_yield.sleep(0)  # yield GIL for HTTP
 
         # Episodic memory: store significant experiences
         for item in sample_items:
