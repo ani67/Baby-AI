@@ -128,11 +128,18 @@ def build_components():
     nt_path = os.path.join(os.path.dirname(config.db_path), "checkpoints", "native_text.pt")
     nv_path = os.path.join(os.path.dirname(config.db_path), "checkpoints", "native_vision.pt")
     if os.path.exists(nt_path):
-        native_text.load_state_dict(torch.load(nt_path, weights_only=True))
-        print("Restored native text encoder.")
+        try:
+            native_text.load_state_dict(torch.load(nt_path, weights_only=True))
+            print("Restored native text encoder.")
+        except Exception as e:
+            print(f"Warning: native text checkpoint incompatible ({e}), starting fresh.")
     if os.path.exists(nv_path):
-        native_vision.load(nv_path)
-        print("Restored native vision encoder.")
+        try:
+            native_vision.load(nv_path)
+            print("Restored native vision encoder.")
+        except Exception as e:
+            print(f"Warning: native vision checkpoint incompatible ({e}), starting fresh.")
+            os.unlink(nv_path)  # delete incompatible checkpoint
 
     teacher = TeacherBridge(host=config.ollama_url, model=config.teacher_model)
     model = BabyModel(initial_clusters=config.initial_clusters, nodes_per_cluster=config.nodes_per_cluster)
