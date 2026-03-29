@@ -817,6 +817,16 @@ async def cluster_tree():
 
 @app.get("/dashboard")
 async def dashboard():
+    loop = app.state.loop
+    # Return cached dashboard if available (computed every 10 batches in training thread)
+    cached = getattr(loop, '_cached_dashboard', None)
+    if cached is not None:
+        return cached
+    # Fallback: compute live (only when training is idle)
+    return _compute_dashboard()
+
+
+def _compute_dashboard():
     import json
     import math
     from collections import Counter, defaultdict
@@ -825,7 +835,7 @@ async def dashboard():
     loop = app.state.loop
     graph = loop.model.graph
 
-    gs = graph.summary()
+    gs = loop._cached_graph_summary
     categories = store.get_category_performance()
 
     # ── Structure metrics ──

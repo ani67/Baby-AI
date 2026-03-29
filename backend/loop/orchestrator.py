@@ -162,6 +162,7 @@ class LearningLoop:
         self._prev_active_cids: list[str] = []  # cross-step temporal co-firing
         self._batch_count: int = 0
         self._batch_total_ms: float = 0.0
+        self._cached_graph_summary = model.graph.summary()  # initial snapshot
 
         # Episodic memory
         from .memory import EpisodicMemory
@@ -780,6 +781,9 @@ class LearningLoop:
             except Exception:
                 pass
 
+        # Cache status for HTTP endpoints (avoids GIL contention)
+        self._update_cached_status()
+
         return StepResult(
             step=self.model.step,
             question=f"[batch {len(items)}]",
@@ -863,15 +867,23 @@ class LearningLoop:
     # ── Status ──
 
     def get_status(self) -> LoopStatus:
+        """Return cached status — never blocks on model access."""
         return LoopStatus(
             state=self._state.value,
             step=self.model.step,
             stage=self._stage,
             delay_ms=self._delay_ms,
             error_message=self._error_message,
-            graph_summary=self.model.graph.summary(),
+            graph_summary=self._cached_graph_summary,
             teacher_healthy=True,
         )
+
+    def _update_cached_status(self):
+        """Snapshot graph summary for HTTP endpoints. Called from batch thread."""
+        try:
+            self._cached_graph_summary = self.model.graph.summary()
+        except Exception:
+            pass
 
     # ── Human interaction ──
 
