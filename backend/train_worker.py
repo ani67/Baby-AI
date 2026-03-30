@@ -101,7 +101,11 @@ def write_command(command: str):
 def build_components():
     from config import Config
     from state.store import StateStore
-    from model.baby_model_v2 import BabyModelV2 as BabyModel
+    from config_brain_v2 import USE_BRAIN_V2
+    if USE_BRAIN_V2:
+        from model.baby_model_v2_reflect import BabyModelV2Reflect as BabyModel
+    else:
+        from model.baby_model_v2 import BabyModelV2 as BabyModel
     from loop.orchestrator import LearningLoop
     from loop.curriculum import Curriculum
     from encoder.clip_mlx import CLIPWrapper
@@ -191,7 +195,11 @@ def build_worker_components(worker_id: int, pre_encoded_text: list[dict],
     """
     from config import Config
     from state.store import StateStore
-    from model.baby_model_v2 import BabyModelV2 as BabyModel
+    from config_brain_v2 import USE_BRAIN_V2
+    if USE_BRAIN_V2:
+        from model.baby_model_v2_reflect import BabyModelV2Reflect as BabyModel
+    else:
+        from model.baby_model_v2 import BabyModelV2 as BabyModel
     from loop.orchestrator import LearningLoop
     from loop.curriculum import Curriculum, CurriculumItem
     from loop.text_curriculum import PreEncodedTextCurriculum
