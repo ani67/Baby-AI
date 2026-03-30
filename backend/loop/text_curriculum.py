@@ -257,11 +257,12 @@ class PreEncodedTextCurriculum(TextCurriculum):
         self._cursor = 0
         self._encoder = native_text_encoder
         self._pre_encoded: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+        self._clip_targets: dict[str, torch.Tensor] = {}
         self._use_pre_encoded = True
 
         for item in pre_encoded_items:
             idx = item["index"]
-            self._items.append({
+            raw = {
                 "index": idx,
                 "text": item.get("text", ""),
                 "question": item.get("question", ""),
@@ -269,8 +270,20 @@ class PreEncodedTextCurriculum(TextCurriculum):
                 "category": item.get("category", "text"),
                 "level": item.get("level", 1),
                 "source": item.get("source", "pre_encoded"),
-            })
+            }
+            self._items.append(raw)
             self._pre_encoded[idx] = (item["input_vec"], item["expected_vec"])
+
+            # Cache CLIP expected_vector keyed by description (survives native switch)
+            has_question = bool(raw["question"] and raw["answer"])
+            has_text_answer = bool(raw["text"] and raw["answer"])
+            if has_question:
+                desc = f"Q: {raw['question']} A: {raw['answer']}"
+            elif has_text_answer:
+                desc = f"Q: {raw['text']} A: {raw['answer']}"
+            else:
+                desc = raw["text"]
+            self._clip_targets[desc] = item["expected_vec"].detach()
 
         if self._items:
             random.shuffle(self._items)
@@ -321,7 +334,19 @@ class PreEncodedTextCurriculum(TextCurriculum):
             return None
 
     def switch_to_native(self):
-        """Drop pre-encoded CLIP vectors, start using native encoder."""
+        """Drop pre-encoded CLIP vectors, start using native encoder.
+
+        Preserves _clip_targets so distill_step() can still train the native
+        encoder against CLIP outputs (not its own).
+        """
         self._use_pre_encoded = False
         self._pre_encoded.clear()
-        print("[text_curriculum] switched to native encoder, freed pre-encoded cache", flush=True)
+        print(
+            f"[text_curriculum] switched to native encoder, freed pre-encoded cache "
+            f"(kept {len(self._clip_targets)} CLIP targets for distillation)",
+            flush=True,
+        )
+
+    def get_clip_target(self, description: str) -> torch.Tensor | None:
+        """Return the cached CLIP vector for a description, or None."""
+        return self._clip_targets.get(description)

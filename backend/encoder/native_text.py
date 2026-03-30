@@ -40,6 +40,8 @@ class NativeTextEncoder:
     def __init__(self, vocab: Vocabulary, word_embeddings: torch.Tensor):
         self.vocab = vocab
         self.word_embeddings = word_embeddings  # shared reference, not a copy
+        if not self.word_embeddings.requires_grad:
+            self.word_embeddings.requires_grad_(True)
 
         # 4-layer context MLP (~1.6M params)
         self.context_mlp = nn.Sequential(
@@ -155,11 +157,13 @@ class NativeTextEncoder:
 
         Returns the loss value (lower is better, 0 = perfect match).
         """
-        # Lazy optimizer creation (covers MLP params + shared embeddings)
+        # Lazy optimizer creation: MLP params + shared word embeddings
+        # Word embeddings use a lower LR to avoid disrupting the decoder
         if self._optimizer is None:
-            self._optimizer = torch.optim.Adam(
-                self.context_mlp.parameters(), lr=0.001
-            )
+            self._optimizer = torch.optim.Adam([
+                {"params": self.context_mlp.parameters(), "lr": 0.001},
+                {"params": [self.word_embeddings], "lr": 0.0003},
+            ])
 
         self.context_mlp.train()
 
@@ -197,10 +201,15 @@ class NativeTextEncoder:
             print("[native_text] restored context MLP weights", flush=True)
         if "optimizer" in d:
             if self._optimizer is None:
-                self._optimizer = torch.optim.Adam(
-                    self.context_mlp.parameters(), lr=0.001
-                )
-            self._optimizer.load_state_dict(d["optimizer"])
+                self._optimizer = torch.optim.Adam([
+                    {"params": self.context_mlp.parameters(), "lr": 0.001},
+                    {"params": [self.word_embeddings], "lr": 0.0003},
+                ])
+            try:
+                self._optimizer.load_state_dict(d["optimizer"])
+            except (ValueError, KeyError):
+                # Optimizer shape changed (e.g., word_embeddings group added)
+                print("[native_text] optimizer state incompatible, re-initialized", flush=True)
         if "pos_enc" in d and self._pos_enc is not None:
             self._pos_enc.load_state_dict(d["pos_enc"])
             print("[native_text] restored positional encoding", flush=True)
