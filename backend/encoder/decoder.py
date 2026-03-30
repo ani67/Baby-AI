@@ -515,7 +515,7 @@ class GroundedDecoder:
         # Expand embedding matrix if needed
         if idx >= self.word_embeddings.shape[0]:
             extra = torch.zeros(idx - self.word_embeddings.shape[0] + 1, 512)
-            self.word_embeddings = torch.cat([self.word_embeddings, extra], dim=0)
+            self.word_embeddings = torch.cat([self.word_embeddings, extra], dim=0).detach()
             self.word_embeddings.requires_grad_(False)
         vec = self._text_encoder.encode(f"a photo of a {word}")
         self.word_embeddings[idx] = vec
@@ -529,7 +529,7 @@ class GroundedDecoder:
 
     def load_state_dict(self, d: dict):
         if "word_embeddings" in d:
-            self.word_embeddings = d["word_embeddings"]
+            self.word_embeddings = d["word_embeddings"].detach()
             self.word_embeddings.requires_grad_(False)
             print(f"[decoder] restored {self.word_embeddings.shape[0]} word embeddings", flush=True)
         if "projection" in d:

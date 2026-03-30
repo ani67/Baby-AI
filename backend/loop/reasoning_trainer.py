@@ -74,8 +74,8 @@ class ReasoningTrainer:
     # ------------------------------------------------------------------
 
     def _encode(self, text: str) -> torch.Tensor:
-        """Encode text to L2-normalized 512-d vector (detached)."""
-        return self._encoder.encode(text).detach()
+        """Encode text to L2-normalized 512-d vector (detached, on brain device)."""
+        return self._encoder.encode(text).detach().to(self._brain.device)
 
     def _cosine(self, a: torch.Tensor, b: torch.Tensor) -> float:
         """Cosine similarity between two vectors."""
@@ -84,7 +84,7 @@ class ReasoningTrainer:
     def _get_memory(self):
         """Return the brain's working memory, creating if needed."""
         if not hasattr(self._brain, "_working_memory") or self._brain._working_memory is None:
-            from ..model.working_memory import WorkingMemory
+            from model.working_memory import WorkingMemory
             self._brain._working_memory = WorkingMemory(
                 slots=8, dim=self._brain.dim, device=str(self._brain.device)
             )

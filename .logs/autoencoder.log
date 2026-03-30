@@ -1,0 +1,1046 @@
+[autoencoder] Found 786 images in /Users/ani/Frameo/Baby/backend/data/stage0
+[autoencoder] Train: 707, Val: 79
+[native_vision] partial load (old checkpoint), skip connections freshly initialized
+[autoencoder] Loaded encoder checkpoint: /Users/ani/Frameo/Baby/backend/data/checkpoints/native_vision.pt
+[autoencoder] Encoder params: 2,077,952
+[autoencoder] Decoder params: 2,791,587
+[native_vision] partial load (old checkpoint), skip connections freshly initialized
+[autoencoder] Perceptual loss encoder frozen and ready.
+[autoencoder] Pre-computing training embeddings for NN baseline...
+[autoencoder] Cached 707 training embeddings.
+[autoencoder] Epoch 1/2000  loss=0.315486  mse=0.064678  percept=0.501615  steps=45
+  [NN baseline] sample 0: decoder_mse=0.03610  nearest_mse=0.10087  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.01209  nearest_mse=0.06280  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.08292  nearest_mse=0.11548  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.04704  nearest_mse=0.14587  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_001.png
+  step 50  loss=0.27746  mse=0.05721  percept=0.44051
+[autoencoder] Epoch 2/2000  loss=0.288062  mse=0.051398  percept=0.473328  steps=90
+  [NN baseline] sample 0: decoder_mse=0.03744  nearest_mse=0.08895  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.01317  nearest_mse=0.02816  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.07491  nearest_mse=0.07977  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.05165  nearest_mse=0.15088  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_002.png
+  step 100  loss=0.22804  mse=0.04314  percept=0.36980
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_000100.png
+[autoencoder] Epoch 3/2000  loss=0.281579  mse=0.048222  percept=0.466714  steps=135
+  [NN baseline] sample 0: decoder_mse=0.03549  nearest_mse=0.06338  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.01603  nearest_mse=0.03393  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.07574  nearest_mse=0.11548  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.04177  nearest_mse=0.14799  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_003.png
+  step 150  loss=0.18838  mse=0.03935  percept=0.29806
+[autoencoder] Epoch 4/2000  loss=0.279135  mse=0.046186  percept=0.465900  steps=180
+  [NN baseline] sample 0: decoder_mse=0.03554  nearest_mse=0.06871  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.01077  nearest_mse=0.07050  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.06568  nearest_mse=0.15078  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.04000  nearest_mse=0.11088  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_004.png
+  step 200  loss=0.34723  mse=0.04379  percept=0.60688
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_000200.png
+[autoencoder] Epoch 5/2000  loss=0.267676  mse=0.043700  percept=0.447953  steps=225
+  [NN baseline] sample 0: decoder_mse=0.03446  nearest_mse=0.08793  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00905  nearest_mse=0.03118  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.06473  nearest_mse=0.10367  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.03490  nearest_mse=0.16908  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_005.png
+  step 250  loss=0.25110  mse=0.03706  percept=0.42808
+[autoencoder] Epoch 6/2000  loss=0.261329  mse=0.041760  percept=0.439138  steps=270
+  [NN baseline] sample 0: decoder_mse=0.03374  nearest_mse=0.07985  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.01163  nearest_mse=0.04962  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05395  nearest_mse=0.20529  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.02570  nearest_mse=0.10924  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_006.png
+  step 300  loss=0.25890  mse=0.03941  percept=0.43899
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_000300.png
+[autoencoder] Epoch 7/2000  loss=0.256241  mse=0.040539  percept=0.431403  steps=315
+  [NN baseline] sample 0: decoder_mse=0.03412  nearest_mse=0.10364  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00941  nearest_mse=0.04451  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05451  nearest_mse=0.18795  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.02395  nearest_mse=0.14372  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_007.png
+  step 350  loss=0.22099  mse=0.03962  percept=0.36273
+[autoencoder] Epoch 8/2000  loss=0.253016  mse=0.040670  percept=0.424693  steps=360
+  [NN baseline] sample 0: decoder_mse=0.03260  nearest_mse=0.07859  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00761  nearest_mse=0.12877  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05278  nearest_mse=0.13784  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.02102  nearest_mse=0.10116  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_008.png
+  step 400  loss=0.18719  mse=0.03248  percept=0.30941
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_000400.png
+[autoencoder] Epoch 9/2000  loss=0.252973  mse=0.038939  percept=0.428068  steps=405
+  [NN baseline] sample 0: decoder_mse=0.03216  nearest_mse=0.06919  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00649  nearest_mse=0.05856  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05101  nearest_mse=0.16878  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.02058  nearest_mse=0.08420  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_009.png
+  step 450  loss=0.23613  mse=0.05683  percept=0.35861
+[autoencoder] Epoch 10/2000  loss=0.251742  mse=0.039419  percept=0.424647  steps=450
+  [NN baseline] sample 0: decoder_mse=0.03409  nearest_mse=0.07597  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00860  nearest_mse=0.04760  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05280  nearest_mse=0.22322  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.02298  nearest_mse=0.09058  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_010.png
+[autoencoder] Epoch 11/2000  loss=0.251436  mse=0.039358  percept=0.424157  steps=495
+  [NN baseline] sample 0: decoder_mse=0.03193  nearest_mse=0.07965  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00572  nearest_mse=0.07271  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05910  nearest_mse=0.11309  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.02004  nearest_mse=0.16273  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_011.png
+  step 500  loss=0.31306  mse=0.03991  percept=0.54630
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_000500.png
+[autoencoder] Epoch 12/2000  loss=0.250405  mse=0.037188  percept=0.426435  steps=540
+  [NN baseline] sample 0: decoder_mse=0.03240  nearest_mse=0.09025  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00629  nearest_mse=0.08175  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05531  nearest_mse=0.14191  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.02106  nearest_mse=0.12164  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_012.png
+  step 550  loss=0.29417  mse=0.04437  percept=0.49961
+[autoencoder] Epoch 13/2000  loss=0.251735  mse=0.036676  percept=0.430118  steps=585
+  [NN baseline] sample 0: decoder_mse=0.03276  nearest_mse=0.04598  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00838  nearest_mse=0.06428  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05541  nearest_mse=0.15887  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01685  nearest_mse=0.12836  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_013.png
+  step 600  loss=0.20215  mse=0.03426  percept=0.33577
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_000600.png
+[autoencoder] Epoch 14/2000  loss=0.247867  mse=0.036701  percept=0.422334  steps=630
+  [NN baseline] sample 0: decoder_mse=0.03314  nearest_mse=0.11339  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00554  nearest_mse=0.06890  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05098  nearest_mse=0.16741  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01700  nearest_mse=0.10359  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_014.png
+  step 650  loss=0.22285  mse=0.03356  percept=0.37858
+[autoencoder] Epoch 15/2000  loss=0.241467  mse=0.034887  percept=0.413161  steps=675
+  [NN baseline] sample 0: decoder_mse=0.03251  nearest_mse=0.08341  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00537  nearest_mse=0.03755  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05808  nearest_mse=0.07408  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01755  nearest_mse=0.08860  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_015.png
+  step 700  loss=0.29462  mse=0.03602  percept=0.51719
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_000700.png
+[autoencoder] Epoch 16/2000  loss=0.249369  mse=0.036335  percept=0.426067  steps=720
+  [NN baseline] sample 0: decoder_mse=0.03205  nearest_mse=0.07080  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00758  nearest_mse=0.03861  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.06014  nearest_mse=0.11459  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01676  nearest_mse=0.20311  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_016.png
+  step 750  loss=0.21702  mse=0.03513  percept=0.36378
+[autoencoder] Epoch 17/2000  loss=0.243152  mse=0.034556  percept=0.417193  steps=765
+  [NN baseline] sample 0: decoder_mse=0.03393  nearest_mse=0.11506  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00693  nearest_mse=0.10863  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05517  nearest_mse=0.11435  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01749  nearest_mse=0.07003  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_017.png
+  step 800  loss=0.27328  mse=0.03706  percept=0.47245
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_000800.png
+[autoencoder] Epoch 18/2000  loss=0.241537  mse=0.034809  percept=0.413455  steps=810
+  [NN baseline] sample 0: decoder_mse=0.03372  nearest_mse=0.09688  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00764  nearest_mse=0.08577  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05647  nearest_mse=0.14557  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01730  nearest_mse=0.04359  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_018.png
+  step 850  loss=0.20159  mse=0.02919  percept=0.34480
+[autoencoder] Epoch 19/2000  loss=0.249738  mse=0.035116  percept=0.429244  steps=855
+  [NN baseline] sample 0: decoder_mse=0.03470  nearest_mse=0.10517  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00786  nearest_mse=0.10977  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05659  nearest_mse=0.26479  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.02006  nearest_mse=0.10163  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_019.png
+  step 900  loss=0.21142  mse=0.03314  percept=0.35656
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_000900.png
+[autoencoder] Epoch 20/2000  loss=0.240711  mse=0.034723  percept=0.411975  steps=900
+  [NN baseline] sample 0: decoder_mse=0.03271  nearest_mse=0.08409  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00593  nearest_mse=0.06755  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05451  nearest_mse=0.14006  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01687  nearest_mse=0.18834  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_020.png
+[autoencoder] Epoch 21/2000  loss=0.240084  mse=0.033679  percept=0.412810  steps=945
+  [NN baseline] sample 0: decoder_mse=0.03359  nearest_mse=0.12570  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00659  nearest_mse=0.17405  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05336  nearest_mse=0.08278  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.02127  nearest_mse=0.08129  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_021.png
+  step 950  loss=0.28378  mse=0.03640  percept=0.49475
+[autoencoder] Epoch 22/2000  loss=0.234792  mse=0.032218  percept=0.405148  steps=990
+  [NN baseline] sample 0: decoder_mse=0.03151  nearest_mse=0.13272  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00746  nearest_mse=0.09833  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05718  nearest_mse=0.16484  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01580  nearest_mse=0.10163  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_022.png
+  step 1000  loss=0.20736  mse=0.03012  percept=0.35448
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_001000.png
+[autoencoder] Epoch 23/2000  loss=0.235639  mse=0.032437  percept=0.406404  steps=1035
+  [NN baseline] sample 0: decoder_mse=0.03248  nearest_mse=0.09411  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00614  nearest_mse=0.07566  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05607  nearest_mse=0.14218  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01776  nearest_mse=0.11347  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_023.png
+  step 1050  loss=0.25740  mse=0.03410  percept=0.44658
+[autoencoder] Epoch 24/2000  loss=0.237874  mse=0.032788  percept=0.410170  steps=1080
+  [NN baseline] sample 0: decoder_mse=0.03239  nearest_mse=0.11765  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00659  nearest_mse=0.05979  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05779  nearest_mse=0.14878  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.02069  nearest_mse=0.10235  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_024.png
+  step 1100  loss=0.21742  mse=0.03396  percept=0.36693
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_001100.png
+[autoencoder] Epoch 25/2000  loss=0.235884  mse=0.032738  percept=0.406292  steps=1125
+  [NN baseline] sample 0: decoder_mse=0.03139  nearest_mse=0.14689  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00793  nearest_mse=0.06700  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05411  nearest_mse=0.13784  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01900  nearest_mse=0.16946  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_025.png
+  step 1150  loss=0.24088  mse=0.03545  percept=0.41087
+[autoencoder] Epoch 26/2000  loss=0.233739  mse=0.032131  percept=0.403215  steps=1170
+  [NN baseline] sample 0: decoder_mse=0.03175  nearest_mse=0.07873  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00775  nearest_mse=0.06432  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05783  nearest_mse=0.10303  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.02495  nearest_mse=0.13735  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_026.png
+  step 1200  loss=0.20783  mse=0.03619  percept=0.34327
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_001200.png
+[autoencoder] Epoch 27/2000  loss=0.239213  mse=0.031922  percept=0.414582  steps=1215
+  [NN baseline] sample 0: decoder_mse=0.03160  nearest_mse=0.09781  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00716  nearest_mse=0.09889  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05500  nearest_mse=0.14126  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01602  nearest_mse=0.11960  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_027.png
+  step 1250  loss=0.15123  mse=0.02394  percept=0.25458
+[autoencoder] Epoch 28/2000  loss=0.232291  mse=0.031382  percept=0.401819  steps=1260
+  [NN baseline] sample 0: decoder_mse=0.03072  nearest_mse=0.10271  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00664  nearest_mse=0.07539  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05996  nearest_mse=0.16130  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01704  nearest_mse=0.04733  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_028.png
+  step 1300  loss=0.24023  mse=0.03057  percept=0.41932
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_001300.png
+[autoencoder] Epoch 29/2000  loss=0.228960  mse=0.030367  percept=0.397186  steps=1305
+  [NN baseline] sample 0: decoder_mse=0.03243  nearest_mse=0.08086  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00578  nearest_mse=0.17120  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05300  nearest_mse=0.20668  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01984  nearest_mse=0.11923  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_029.png
+  step 1350  loss=0.17474  mse=0.02685  percept=0.29577
+[autoencoder] Epoch 30/2000  loss=0.229811  mse=0.030106  percept=0.399411  steps=1350
+  [NN baseline] sample 0: decoder_mse=0.03208  nearest_mse=0.08998  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00668  nearest_mse=0.11466  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05482  nearest_mse=0.21154  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01570  nearest_mse=0.13415  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_030.png
+[autoencoder] Epoch 31/2000  loss=0.227227  mse=0.029987  percept=0.394480  steps=1395
+  [NN baseline] sample 0: decoder_mse=0.03052  nearest_mse=0.10196  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00674  nearest_mse=0.08320  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05649  nearest_mse=0.12648  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.02226  nearest_mse=0.12506  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_031.png
+  step 1400  loss=0.24203  mse=0.03438  percept=0.41531
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_001400.png
+[autoencoder] Epoch 32/2000  loss=0.230307  mse=0.030959  percept=0.398695  steps=1440
+  [NN baseline] sample 0: decoder_mse=0.03447  nearest_mse=0.12705  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00922  nearest_mse=0.05398  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05895  nearest_mse=0.20611  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.02016  nearest_mse=0.10103  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_032.png
+  step 1450  loss=0.20149  mse=0.02638  percept=0.35022
+[autoencoder] Epoch 33/2000  loss=0.229513  mse=0.030928  percept=0.397169  steps=1485
+  [NN baseline] sample 0: decoder_mse=0.03209  nearest_mse=0.04040  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00606  nearest_mse=0.03604  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05585  nearest_mse=0.14368  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.02086  nearest_mse=0.10716  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_033.png
+  step 1500  loss=0.21620  mse=0.02911  percept=0.37418
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_001500.png
+[autoencoder] Epoch 34/2000  loss=0.227437  mse=0.029630  percept=0.395613  steps=1530
+  [NN baseline] sample 0: decoder_mse=0.03305  nearest_mse=0.13216  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00591  nearest_mse=0.01903  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05273  nearest_mse=0.09513  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01468  nearest_mse=0.17523  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_034.png
+  step 1550  loss=0.20455  mse=0.03054  percept=0.34801
+[autoencoder] Epoch 35/2000  loss=0.224825  mse=0.029525  percept=0.390599  steps=1575
+  [NN baseline] sample 0: decoder_mse=0.03295  nearest_mse=0.07985  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00601  nearest_mse=0.08769  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05334  nearest_mse=0.14030  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01781  nearest_mse=0.11330  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_035.png
+  step 1600  loss=0.26535  mse=0.02989  percept=0.47093
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_001600.png
+[autoencoder] Epoch 36/2000  loss=0.226050  mse=0.029488  percept=0.393125  steps=1620
+  [NN baseline] sample 0: decoder_mse=0.03115  nearest_mse=0.09025  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00627  nearest_mse=0.06251  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05714  nearest_mse=0.16782  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01489  nearest_mse=0.08946  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_036.png
+  step 1650  loss=0.25440  mse=0.02971  percept=0.44937
+[autoencoder] Epoch 37/2000  loss=0.224775  mse=0.028948  percept=0.391654  steps=1665
+  [NN baseline] sample 0: decoder_mse=0.03143  nearest_mse=0.12618  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00668  nearest_mse=0.07566  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05436  nearest_mse=0.12689  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.02025  nearest_mse=0.17973  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_037.png
+  step 1700  loss=0.23937  mse=0.02511  percept=0.42852
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_001700.png
+[autoencoder] Epoch 38/2000  loss=0.224460  mse=0.028373  percept=0.392174  steps=1710
+  [NN baseline] sample 0: decoder_mse=0.03192  nearest_mse=0.15183  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00570  nearest_mse=0.07771  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05454  nearest_mse=0.11663  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01397  nearest_mse=0.09696  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_038.png
+  step 1750  loss=0.21926  mse=0.02945  percept=0.37963
+[autoencoder] Epoch 39/2000  loss=0.225721  mse=0.029475  percept=0.392492  steps=1755
+  [NN baseline] sample 0: decoder_mse=0.03300  nearest_mse=0.09835  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00848  nearest_mse=0.09853  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05601  nearest_mse=0.20818  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01663  nearest_mse=0.06213  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_039.png
+  step 1800  loss=0.19317  mse=0.02725  percept=0.33184
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_001800.png
+[autoencoder] Epoch 40/2000  loss=0.222231  mse=0.028051  percept=0.388360  steps=1800
+  [NN baseline] sample 0: decoder_mse=0.03532  nearest_mse=0.06617  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00669  nearest_mse=0.05898  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05773  nearest_mse=0.14390  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01882  nearest_mse=0.10359  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_040.png
+[autoencoder] Epoch 41/2000  loss=0.226595  mse=0.028993  percept=0.395203  steps=1845
+  [NN baseline] sample 0: decoder_mse=0.03330  nearest_mse=0.12570  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00683  nearest_mse=0.06671  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05719  nearest_mse=0.09513  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01675  nearest_mse=0.13725  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_041.png
+  step 1850  loss=0.20343  mse=0.03134  percept=0.34418
+[autoencoder] Epoch 42/2000  loss=0.223561  mse=0.029130  percept=0.388863  steps=1890
+  [NN baseline] sample 0: decoder_mse=0.03211  nearest_mse=0.07633  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00615  nearest_mse=0.04828  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05944  nearest_mse=0.12081  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01580  nearest_mse=0.22981  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_042.png
+  step 1900  loss=0.17256  mse=0.02281  percept=0.29948
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_001900.png
+[autoencoder] Epoch 43/2000  loss=0.221209  mse=0.028275  percept=0.385869  steps=1935
+  [NN baseline] sample 0: decoder_mse=0.03110  nearest_mse=0.08988  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00639  nearest_mse=0.06199  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05907  nearest_mse=0.16660  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01731  nearest_mse=0.06256  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_043.png
+  step 1950  loss=0.19413  mse=0.02434  percept=0.33958
+[autoencoder] Epoch 44/2000  loss=0.220117  mse=0.028330  percept=0.383574  steps=1980
+  [NN baseline] sample 0: decoder_mse=0.03142  nearest_mse=0.10092  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00613  nearest_mse=0.07207  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05605  nearest_mse=0.11174  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01846  nearest_mse=0.12164  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_044.png
+  step 2000  loss=0.15123  mse=0.02104  percept=0.26038
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_002000.png
+[autoencoder] Epoch 45/2000  loss=0.220309  mse=0.028599  percept=0.383421  steps=2025
+  [NN baseline] sample 0: decoder_mse=0.03188  nearest_mse=0.18798  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00677  nearest_mse=0.06099  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05481  nearest_mse=0.16239  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01773  nearest_mse=0.11210  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_045.png
+  step 2050  loss=0.22858  mse=0.03744  percept=0.38227
+[autoencoder] Epoch 46/2000  loss=0.220323  mse=0.028269  percept=0.384107  steps=2070
+  [NN baseline] sample 0: decoder_mse=0.03248  nearest_mse=0.11401  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00681  nearest_mse=0.04971  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05085  nearest_mse=0.13905  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01776  nearest_mse=0.14139  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_046.png
+  step 2100  loss=0.19291  mse=0.02711  percept=0.33162
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_002100.png
+[autoencoder] Epoch 47/2000  loss=0.217049  mse=0.027238  percept=0.379621  steps=2115
+  [NN baseline] sample 0: decoder_mse=0.03216  nearest_mse=0.12914  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00735  nearest_mse=0.04320  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05880  nearest_mse=0.15606  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01627  nearest_mse=0.08967  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_047.png
+  step 2150  loss=0.19224  mse=0.03292  percept=0.31863
+[autoencoder] Epoch 48/2000  loss=0.215682  mse=0.026528  percept=0.378309  steps=2160
+  [NN baseline] sample 0: decoder_mse=0.03151  nearest_mse=0.08856  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00579  nearest_mse=0.08320  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05730  nearest_mse=0.12648  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01339  nearest_mse=0.15863  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_048.png
+  step 2200  loss=0.19286  mse=0.02615  percept=0.33342
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_002200.png
+[autoencoder] Epoch 49/2000  loss=0.216699  mse=0.027338  percept=0.378723  steps=2205
+  [NN baseline] sample 0: decoder_mse=0.03120  nearest_mse=0.07985  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00591  nearest_mse=0.09575  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05675  nearest_mse=0.14542  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01852  nearest_mse=0.15565  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_049.png
+  step 2250  loss=0.18460  mse=0.04099  percept=0.28723
+[autoencoder] Epoch 50/2000  loss=0.216994  mse=0.027672  percept=0.378643  steps=2250
+  [NN baseline] sample 0: decoder_mse=0.03287  nearest_mse=0.14267  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00634  nearest_mse=0.04885  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05326  nearest_mse=0.10965  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01497  nearest_mse=0.08808  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_050.png
+[autoencoder] Epoch 51/2000  loss=0.215666  mse=0.027683  percept=0.375966  steps=2295
+  [NN baseline] sample 0: decoder_mse=0.03104  nearest_mse=0.08341  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00605  nearest_mse=0.10756  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05653  nearest_mse=0.17213  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01670  nearest_mse=0.10767  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_051.png
+  step 2300  loss=0.24816  mse=0.02980  percept=0.43673
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_002300.png
+[autoencoder] Epoch 52/2000  loss=0.214488  mse=0.026332  percept=0.376312  steps=2340
+  [NN baseline] sample 0: decoder_mse=0.03099  nearest_mse=0.05842  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00619  nearest_mse=0.04538  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05574  nearest_mse=0.14350  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01656  nearest_mse=0.19210  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_052.png
+  step 2350  loss=0.20430  mse=0.02515  percept=0.35832
+[autoencoder] Epoch 53/2000  loss=0.213822  mse=0.026705  percept=0.374234  steps=2385
+  [NN baseline] sample 0: decoder_mse=0.03176  nearest_mse=0.12367  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00541  nearest_mse=0.08436  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05474  nearest_mse=0.20709  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01652  nearest_mse=0.13052  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_053.png
+  step 2400  loss=0.22212  mse=0.02825  percept=0.38773
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_002400.png
+[autoencoder] Epoch 54/2000  loss=0.217938  mse=0.026292  percept=0.383291  steps=2430
+  [NN baseline] sample 0: decoder_mse=0.03128  nearest_mse=0.08998  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00639  nearest_mse=0.10936  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05407  nearest_mse=0.10049  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01871  nearest_mse=0.06472  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_054.png
+  step 2450  loss=0.28010  mse=0.03041  percept=0.49939
+[autoencoder] Epoch 55/2000  loss=0.210432  mse=0.025812  percept=0.369241  steps=2475
+  [NN baseline] sample 0: decoder_mse=0.03034  nearest_mse=0.07159  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00593  nearest_mse=0.04401  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05424  nearest_mse=0.16764  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01629  nearest_mse=0.13365  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_055.png
+  step 2500  loss=0.19724  mse=0.02628  percept=0.34193
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_002500.png
+[autoencoder] Epoch 56/2000  loss=0.211982  mse=0.025754  percept=0.372456  steps=2520
+  [NN baseline] sample 0: decoder_mse=0.03077  nearest_mse=0.13245  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00609  nearest_mse=0.06763  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05361  nearest_mse=0.07968  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01769  nearest_mse=0.10343  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_056.png
+  step 2550  loss=0.24216  mse=0.02753  percept=0.42924
+[autoencoder] Epoch 57/2000  loss=0.208159  mse=0.025995  percept=0.364329  steps=2565
+  [NN baseline] sample 0: decoder_mse=0.03237  nearest_mse=0.14115  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00632  nearest_mse=0.12062  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05761  nearest_mse=0.24935  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01644  nearest_mse=0.17485  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_057.png
+  step 2600  loss=0.19629  mse=0.02654  percept=0.33951
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_002600.png
+[autoencoder] Epoch 58/2000  loss=0.210916  mse=0.025631  percept=0.370570  steps=2610
+  [NN baseline] sample 0: decoder_mse=0.03078  nearest_mse=0.07084  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00597  nearest_mse=0.02877  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05561  nearest_mse=0.14218  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01906  nearest_mse=0.07823  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_058.png
+  step 2650  loss=0.16368  mse=0.02197  percept=0.28342
+[autoencoder] Epoch 59/2000  loss=0.206457  mse=0.025837  percept=0.361241  steps=2655
+  [NN baseline] sample 0: decoder_mse=0.03105  nearest_mse=0.08086  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00616  nearest_mse=0.07296  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05649  nearest_mse=0.14705  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01891  nearest_mse=0.11330  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_059.png
+  step 2700  loss=0.26762  mse=0.04501  percept=0.44523
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_002700.png
+[autoencoder] Epoch 60/2000  loss=0.207390  mse=0.025259  percept=0.364263  steps=2700
+  [NN baseline] sample 0: decoder_mse=0.02889  nearest_mse=0.08339  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00530  nearest_mse=0.08536  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05314  nearest_mse=0.17950  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.02043  nearest_mse=0.13905  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_060.png
+[autoencoder] Epoch 61/2000  loss=0.207495  mse=0.025511  percept=0.363969  steps=2745
+  [NN baseline] sample 0: decoder_mse=0.03065  nearest_mse=0.09464  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00596  nearest_mse=0.08662  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.04872  nearest_mse=0.16690  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01468  nearest_mse=0.20141  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_061.png
+  step 2750  loss=0.20146  mse=0.02422  percept=0.35447
+[autoencoder] Epoch 62/2000  loss=0.210666  mse=0.025033  percept=0.371265  steps=2790
+  [NN baseline] sample 0: decoder_mse=0.03074  nearest_mse=0.07080  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00582  nearest_mse=0.07172  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05692  nearest_mse=0.12858  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01611  nearest_mse=0.11298  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_062.png
+  step 2800  loss=0.20686  mse=0.02590  percept=0.36192
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_002800.png
+[autoencoder] Epoch 63/2000  loss=0.207718  mse=0.025046  percept=0.365343  steps=2835
+  [NN baseline] sample 0: decoder_mse=0.03016  nearest_mse=0.18938  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00588  nearest_mse=0.06428  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05637  nearest_mse=0.14508  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01624  nearest_mse=0.06588  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_063.png
+  step 2850  loss=0.18685  mse=0.02016  percept=0.33337
+[autoencoder] Epoch 64/2000  loss=0.206232  mse=0.025456  percept=0.361551  steps=2880
+  [NN baseline] sample 0: decoder_mse=0.02977  nearest_mse=0.14689  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00572  nearest_mse=0.06448  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05606  nearest_mse=0.15852  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01451  nearest_mse=0.26202  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_064.png
+  step 2900  loss=0.20081  mse=0.02685  percept=0.34792
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_002900.png
+[autoencoder] Epoch 65/2000  loss=0.204466  mse=0.025735  percept=0.357464  steps=2925
+  [NN baseline] sample 0: decoder_mse=0.02972  nearest_mse=0.08369  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00643  nearest_mse=0.06458  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05088  nearest_mse=0.15823  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01439  nearest_mse=0.17837  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_065.png
+  step 2950  loss=0.19023  mse=0.02159  percept=0.33729
+[autoencoder] Epoch 66/2000  loss=0.203300  mse=0.025098  percept=0.356404  steps=2970
+  [NN baseline] sample 0: decoder_mse=0.02990  nearest_mse=0.08345  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00616  nearest_mse=0.05510  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05357  nearest_mse=0.12460  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01474  nearest_mse=0.18834  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_066.png
+  step 3000  loss=0.19097  mse=0.02768  percept=0.32658
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_003000.png
+[autoencoder] Epoch 67/2000  loss=0.204413  mse=0.025246  percept=0.358334  steps=3015
+  [NN baseline] sample 0: decoder_mse=0.02893  nearest_mse=0.18938  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00563  nearest_mse=0.05045  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05265  nearest_mse=0.15927  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01581  nearest_mse=0.14138  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_067.png
+  step 3050  loss=0.19404  mse=0.02712  percept=0.33385
+[autoencoder] Epoch 68/2000  loss=0.202711  mse=0.024016  percept=0.357391  steps=3060
+  [NN baseline] sample 0: decoder_mse=0.02893  nearest_mse=0.08182  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00670  nearest_mse=0.11058  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05342  nearest_mse=0.20920  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01943  nearest_mse=0.07941  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_068.png
+  step 3100  loss=0.20452  mse=0.02566  percept=0.35771
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_003100.png
+[autoencoder] Epoch 69/2000  loss=0.204147  mse=0.025310  percept=0.357673  steps=3105
+  [NN baseline] sample 0: decoder_mse=0.03032  nearest_mse=0.07331  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00691  nearest_mse=0.10961  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05935  nearest_mse=0.14950  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01588  nearest_mse=0.10327  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_069.png
+  step 3150  loss=0.14442  mse=0.02202  percept=0.24480
+[autoencoder] Epoch 70/2000  loss=0.201305  mse=0.024743  percept=0.353123  steps=3150
+  [NN baseline] sample 0: decoder_mse=0.02920  nearest_mse=0.17274  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00605  nearest_mse=0.06240  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05359  nearest_mse=0.16741  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01679  nearest_mse=0.11497  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_070.png
+[autoencoder] Epoch 71/2000  loss=0.202402  mse=0.024123  percept=0.356557  steps=3195
+  [NN baseline] sample 0: decoder_mse=0.02984  nearest_mse=0.20665  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00595  nearest_mse=0.06583  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05244  nearest_mse=0.23318  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01894  nearest_mse=0.09944  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_071.png
+  step 3200  loss=0.24891  mse=0.03182  percept=0.43417
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_003200.png
+[autoencoder] Epoch 72/2000  loss=0.202782  mse=0.024589  percept=0.356386  steps=3240
+  [NN baseline] sample 0: decoder_mse=0.02895  nearest_mse=0.08028  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00481  nearest_mse=0.06036  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05472  nearest_mse=0.10194  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01536  nearest_mse=0.10155  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_072.png
+  step 3250  loss=0.19064  mse=0.02393  percept=0.33342
+[autoencoder] Epoch 73/2000  loss=0.201332  mse=0.024060  percept=0.354544  steps=3285
+  [NN baseline] sample 0: decoder_mse=0.02898  nearest_mse=0.13476  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00509  nearest_mse=0.07642  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05013  nearest_mse=0.27677  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01684  nearest_mse=0.10284  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_073.png
+  step 3300  loss=0.27123  mse=0.02753  percept=0.48739
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_003300.png
+[autoencoder] Epoch 74/2000  loss=0.199659  mse=0.024010  percept=0.351298  steps=3330
+  [NN baseline] sample 0: decoder_mse=0.02878  nearest_mse=0.08341  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00492  nearest_mse=0.03634  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.04969  nearest_mse=0.19344  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01779  nearest_mse=0.13147  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_074.png
+  step 3350  loss=0.20795  mse=0.01974  percept=0.37642
+[autoencoder] Epoch 75/2000  loss=0.199927  mse=0.023725  percept=0.352403  steps=3375
+  [NN baseline] sample 0: decoder_mse=0.02950  nearest_mse=0.14320  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00609  nearest_mse=0.09648  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05807  nearest_mse=0.12501  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01603  nearest_mse=0.11763  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_075.png
+  step 3400  loss=0.18964  mse=0.02525  percept=0.32878
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_003400.png
+[autoencoder] Epoch 76/2000  loss=0.197171  mse=0.022714  percept=0.348915  steps=3420
+  [NN baseline] sample 0: decoder_mse=0.02943  nearest_mse=0.05851  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00652  nearest_mse=0.06458  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05670  nearest_mse=0.20141  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01423  nearest_mse=0.19088  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_076.png
+  step 3450  loss=0.15595  mse=0.02267  percept=0.26655
+[autoencoder] Epoch 77/2000  loss=0.196311  mse=0.023282  percept=0.346059  steps=3465
+  [NN baseline] sample 0: decoder_mse=0.02947  nearest_mse=0.14115  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00508  nearest_mse=0.03634  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05088  nearest_mse=0.13451  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01633  nearest_mse=0.17808  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_077.png
+  step 3500  loss=0.21128  mse=0.02371  percept=0.37513
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_003500.png
+[autoencoder] Epoch 78/2000  loss=0.196468  mse=0.023446  percept=0.346043  steps=3510
+  [NN baseline] sample 0: decoder_mse=0.02976  nearest_mse=0.12435  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00716  nearest_mse=0.07788  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05495  nearest_mse=0.13646  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01810  nearest_mse=0.12509  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_078.png
+  step 3550  loss=0.19846  mse=0.02397  percept=0.34897
+[autoencoder] Epoch 79/2000  loss=0.195361  mse=0.023121  percept=0.344480  steps=3555
+  [NN baseline] sample 0: decoder_mse=0.02953  nearest_mse=0.05851  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00573  nearest_mse=0.04914  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05535  nearest_mse=0.11707  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01728  nearest_mse=0.13944  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_079.png
+  step 3600  loss=0.23562  mse=0.02326  percept=0.42473
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_003600.png
+[autoencoder] Epoch 80/2000  loss=0.199465  mse=0.023550  percept=0.351830  steps=3600
+  [NN baseline] sample 0: decoder_mse=0.02882  nearest_mse=0.11389  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00507  nearest_mse=0.07539  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05512  nearest_mse=0.11222  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01574  nearest_mse=0.06356  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_080.png
+[autoencoder] Epoch 81/2000  loss=0.198751  mse=0.023526  percept=0.350449  steps=3645
+  [NN baseline] sample 0: decoder_mse=0.02879  nearest_mse=0.16139  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00593  nearest_mse=0.06235  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05919  nearest_mse=0.16764  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01681  nearest_mse=0.10611  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_081.png
+  step 3650  loss=0.20863  mse=0.02823  percept=0.36079
+[autoencoder] Epoch 82/2000  loss=0.197060  mse=0.022784  percept=0.348551  steps=3690
+  [NN baseline] sample 0: decoder_mse=0.03010  nearest_mse=0.07581  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00626  nearest_mse=0.09509  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05984  nearest_mse=0.16741  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.02029  nearest_mse=0.08035  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_082.png
+  step 3700  loss=0.22070  mse=0.02364  percept=0.39410
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_003700.png
+[autoencoder] Epoch 83/2000  loss=0.197218  mse=0.023365  percept=0.347705  steps=3735
+  [NN baseline] sample 0: decoder_mse=0.02895  nearest_mse=0.06494  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00542  nearest_mse=0.07172  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05596  nearest_mse=0.08833  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01638  nearest_mse=0.13177  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_083.png
+  step 3750  loss=0.19435  mse=0.02044  percept=0.34783
+[autoencoder] Epoch 84/2000  loss=0.196278  mse=0.023425  percept=0.345706  steps=3780
+  [NN baseline] sample 0: decoder_mse=0.02953  nearest_mse=0.09224  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00584  nearest_mse=0.04172  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05514  nearest_mse=0.14440  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01632  nearest_mse=0.24339  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_084.png
+  step 3800  loss=0.21952  mse=0.02787  percept=0.38330
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_003800.png
+[autoencoder] Epoch 85/2000  loss=0.200157  mse=0.023605  percept=0.353105  steps=3825
+  [NN baseline] sample 0: decoder_mse=0.02985  nearest_mse=0.07277  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00585  nearest_mse=0.04792  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05611  nearest_mse=0.15571  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01881  nearest_mse=0.10442  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_085.png
+  step 3850  loss=0.18001  mse=0.01859  percept=0.32285
+[autoencoder] Epoch 86/2000  loss=0.196322  mse=0.023133  percept=0.346378  steps=3870
+  [NN baseline] sample 0: decoder_mse=0.02950  nearest_mse=0.09027  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00548  nearest_mse=0.12983  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05065  nearest_mse=0.18730  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01666  nearest_mse=0.11938  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_086.png
+  step 3900  loss=0.16248  mse=0.02289  percept=0.27916
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_003900.png
+[autoencoder] Epoch 87/2000  loss=0.196966  mse=0.022986  percept=0.347961  steps=3915
+  [NN baseline] sample 0: decoder_mse=0.02859  nearest_mse=0.07061  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00593  nearest_mse=0.05392  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05212  nearest_mse=0.19912  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01873  nearest_mse=0.11088  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_087.png
+  step 3950  loss=0.23142  mse=0.02387  percept=0.41508
+[autoencoder] Epoch 88/2000  loss=0.196645  mse=0.022523  percept=0.348244  steps=3960
+  [NN baseline] sample 0: decoder_mse=0.02918  nearest_mse=0.08086  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00601  nearest_mse=0.08175  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05162  nearest_mse=0.23130  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01628  nearest_mse=0.06657  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_088.png
+  step 4000  loss=0.20660  mse=0.02279  percept=0.36762
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_004000.png
+[autoencoder] Epoch 89/2000  loss=0.193544  mse=0.022556  percept=0.341976  steps=4005
+  [NN baseline] sample 0: decoder_mse=0.02942  nearest_mse=0.12627  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00572  nearest_mse=0.11486  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.04700  nearest_mse=0.11158  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01575  nearest_mse=0.10432  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_089.png
+  step 4050  loss=0.34517  mse=0.03669  percept=0.61696
+[autoencoder] Epoch 90/2000  loss=0.198094  mse=0.023198  percept=0.349792  steps=4050
+  [NN baseline] sample 0: decoder_mse=0.02948  nearest_mse=0.11376  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00481  nearest_mse=0.06432  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.04892  nearest_mse=0.14601  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01787  nearest_mse=0.11514  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_090.png
+[autoencoder] Epoch 91/2000  loss=0.193007  mse=0.022459  percept=0.341097  steps=4095
+  [NN baseline] sample 0: decoder_mse=0.02923  nearest_mse=0.08016  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00456  nearest_mse=0.07271  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.04953  nearest_mse=0.21228  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01720  nearest_mse=0.10556  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_091.png
+  step 4100  loss=0.21724  mse=0.02052  percept=0.39344
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_004100.png
+[autoencoder] Epoch 92/2000  loss=0.195612  mse=0.022712  percept=0.345799  steps=4140
+  [NN baseline] sample 0: decoder_mse=0.02943  nearest_mse=0.12896  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00512  nearest_mse=0.09285  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.04872  nearest_mse=0.13895  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01340  nearest_mse=0.11347  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_092.png
+  step 4150  loss=0.22695  mse=0.02673  percept=0.40045
+[autoencoder] Epoch 93/2000  loss=0.192954  mse=0.022080  percept=0.341748  steps=4185
+  [NN baseline] sample 0: decoder_mse=0.02974  nearest_mse=0.28352  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00486  nearest_mse=0.07052  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05204  nearest_mse=0.19032  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01645  nearest_mse=0.05838  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_093.png
+  step 4200  loss=0.22189  mse=0.02449  percept=0.39481
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_004200.png
+[autoencoder] Epoch 94/2000  loss=0.194758  mse=0.022326  percept=0.344863  steps=4230
+  [NN baseline] sample 0: decoder_mse=0.03007  nearest_mse=0.07219  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00588  nearest_mse=0.06151  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05598  nearest_mse=0.17768  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01694  nearest_mse=0.10112  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_094.png
+  step 4250  loss=0.16299  mse=0.01589  percept=0.29420
+[autoencoder] Epoch 95/2000  loss=0.193156  mse=0.021984  percept=0.342346  steps=4275
+  [NN baseline] sample 0: decoder_mse=0.02924  nearest_mse=0.09997  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00488  nearest_mse=0.05301  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05361  nearest_mse=0.13268  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01674  nearest_mse=0.15088  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_095.png
+  step 4300  loss=0.16918  mse=0.02004  percept=0.29828
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_004300.png
+[autoencoder] Epoch 96/2000  loss=0.190681  mse=0.021579  percept=0.338205  steps=4320
+  [NN baseline] sample 0: decoder_mse=0.02834  nearest_mse=0.07537  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00489  nearest_mse=0.12751  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05230  nearest_mse=0.15606  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01744  nearest_mse=0.12534  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_096.png
+  step 4350  loss=0.19208  mse=0.02134  percept=0.34148
+[autoencoder] Epoch 97/2000  loss=0.191998  mse=0.021927  percept=0.340142  steps=4365
+  [NN baseline] sample 0: decoder_mse=0.02885  nearest_mse=0.09553  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00516  nearest_mse=0.06890  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05719  nearest_mse=0.16024  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01467  nearest_mse=0.14448  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_097.png
+  step 4400  loss=0.17642  mse=0.02436  percept=0.30412
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_004400.png
+[autoencoder] Epoch 98/2000  loss=0.190082  mse=0.021674  percept=0.336817  steps=4410
+  [NN baseline] sample 0: decoder_mse=0.03005  nearest_mse=0.06925  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00448  nearest_mse=0.09053  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05460  nearest_mse=0.10616  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01734  nearest_mse=0.06064  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_098.png
+  step 4450  loss=0.17399  mse=0.01650  percept=0.31498
+[autoencoder] Epoch 99/2000  loss=0.192858  mse=0.021591  percept=0.342535  steps=4455
+  [NN baseline] sample 0: decoder_mse=0.02807  nearest_mse=0.12618  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00550  nearest_mse=0.06235  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.04992  nearest_mse=0.17460  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01731  nearest_mse=0.10041  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_099.png
+  step 4500  loss=0.39519  mse=0.03147  percept=0.72743
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_004500.png
+[autoencoder] Epoch 100/2000  loss=0.194682  mse=0.021717  percept=0.345930  steps=4500
+  [NN baseline] sample 0: decoder_mse=0.02818  nearest_mse=0.11114  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00542  nearest_mse=0.06467  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.04828  nearest_mse=0.15436  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01671  nearest_mse=0.11791  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_100.png
+[autoencoder] Epoch 101/2000  loss=0.191081  mse=0.021692  percept=0.338777  steps=4545
+  [NN baseline] sample 0: decoder_mse=0.02860  nearest_mse=0.13521  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00540  nearest_mse=0.04800  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05279  nearest_mse=0.18227  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01369  nearest_mse=0.12193  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_101.png
+  step 4550  loss=0.20095  mse=0.02238  percept=0.35715
+[autoencoder] Epoch 102/2000  loss=0.190204  mse=0.021201  percept=0.338007  steps=4590
+  [NN baseline] sample 0: decoder_mse=0.02941  nearest_mse=0.12928  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00491  nearest_mse=0.08030  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.06102  nearest_mse=0.16423  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01764  nearest_mse=0.13147  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_102.png
+  step 4600  loss=0.19593  mse=0.02243  percept=0.34700
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_004600.png
+[autoencoder] Epoch 103/2000  loss=0.193452  mse=0.022586  percept=0.341732  steps=4635
+  [NN baseline] sample 0: decoder_mse=0.02822  nearest_mse=0.13020  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00494  nearest_mse=0.08703  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05725  nearest_mse=0.16561  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01503  nearest_mse=0.08027  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_103.png
+  step 4650  loss=0.17269  mse=0.01833  percept=0.30872
+[autoencoder] Epoch 104/2000  loss=0.190247  mse=0.021562  percept=0.337369  steps=4680
+  [NN baseline] sample 0: decoder_mse=0.02813  nearest_mse=0.17274  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00527  nearest_mse=0.10600  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.04913  nearest_mse=0.14082  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01470  nearest_mse=0.10359  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_104.png
+  step 4700  loss=0.27064  mse=0.02944  percept=0.48241
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_004700.png
+[autoencoder] Epoch 105/2000  loss=0.191465  mse=0.022003  percept=0.338924  steps=4725
+  [NN baseline] sample 0: decoder_mse=0.02917  nearest_mse=0.09821  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00490  nearest_mse=0.04879  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05743  nearest_mse=0.15823  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01931  nearest_mse=0.12461  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_105.png
+  step 4750  loss=0.19646  mse=0.01839  percept=0.35614
+[autoencoder] Epoch 106/2000  loss=0.194269  mse=0.021673  percept=0.345192  steps=4770
+  [NN baseline] sample 0: decoder_mse=0.03010  nearest_mse=0.07677  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00477  nearest_mse=0.07091  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05110  nearest_mse=0.11995  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01500  nearest_mse=0.07347  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_106.png
+  step 4800  loss=0.21863  mse=0.01989  percept=0.39748
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_004800.png
+[autoencoder] Epoch 107/2000  loss=0.187469  mse=0.021009  percept=0.332919  steps=4815
+  [NN baseline] sample 0: decoder_mse=0.02867  nearest_mse=0.14267  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00472  nearest_mse=0.03803  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05565  nearest_mse=0.16029  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01645  nearest_mse=0.14399  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_107.png
+  step 4850  loss=0.14226  mse=0.01653  percept=0.25146
+[autoencoder] Epoch 108/2000  loss=0.189238  mse=0.020934  percept=0.336610  steps=4860
+  [NN baseline] sample 0: decoder_mse=0.02921  nearest_mse=0.06151  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00471  nearest_mse=0.10925  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05030  nearest_mse=0.09762  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01495  nearest_mse=0.19088  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_108.png
+  step 4900  loss=0.19545  mse=0.02457  percept=0.34175
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_004900.png
+[autoencoder] Epoch 109/2000  loss=0.189456  mse=0.021009  percept=0.336895  steps=4905
+  [NN baseline] sample 0: decoder_mse=0.02955  nearest_mse=0.12832  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00590  nearest_mse=0.05453  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05300  nearest_mse=0.14705  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01646  nearest_mse=0.05867  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_109.png
+  step 4950  loss=0.10921  mse=0.01795  percept=0.18252
+[autoencoder] Epoch 110/2000  loss=0.187512  mse=0.020704  percept=0.333615  steps=4950
+  [NN baseline] sample 0: decoder_mse=0.02906  nearest_mse=0.08574  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00490  nearest_mse=0.08474  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.04718  nearest_mse=0.27327  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01501  nearest_mse=0.11347  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_110.png
+[autoencoder] Epoch 111/2000  loss=0.187783  mse=0.020656  percept=0.334253  steps=4995
+  [NN baseline] sample 0: decoder_mse=0.03002  nearest_mse=0.07604  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00569  nearest_mse=0.10470  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.04762  nearest_mse=0.12145  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01626  nearest_mse=0.14436  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_111.png
+  step 5000  loss=0.20382  mse=0.02163  percept=0.36438
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_005000.png
+[autoencoder] Epoch 112/2000  loss=0.189188  mse=0.020906  percept=0.336565  steps=5040
+  [NN baseline] sample 0: decoder_mse=0.02960  nearest_mse=0.05124  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00427  nearest_mse=0.03586  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05294  nearest_mse=0.22258  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01496  nearest_mse=0.07847  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_112.png
+  step 5050  loss=0.19651  mse=0.02232  percept=0.34838
+[autoencoder] Epoch 113/2000  loss=0.187310  mse=0.020142  percept=0.334336  steps=5085
+  [NN baseline] sample 0: decoder_mse=0.02979  nearest_mse=0.11842  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00560  nearest_mse=0.09280  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05141  nearest_mse=0.16457  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01567  nearest_mse=0.10284  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_113.png
+  step 5100  loss=0.20307  mse=0.02080  percept=0.36454
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_005100.png
+[autoencoder] Epoch 114/2000  loss=0.187877  mse=0.020778  percept=0.334198  steps=5130
+  [NN baseline] sample 0: decoder_mse=0.02941  nearest_mse=0.14330  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00461  nearest_mse=0.02816  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05035  nearest_mse=0.18085  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01640  nearest_mse=0.04915  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_114.png
+  step 5150  loss=0.18199  mse=0.01854  percept=0.32690
+[autoencoder] Epoch 115/2000  loss=0.187438  mse=0.020476  percept=0.333925  steps=5175
+  [NN baseline] sample 0: decoder_mse=0.02932  nearest_mse=0.07742  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00546  nearest_mse=0.10365  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05461  nearest_mse=0.11336  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01691  nearest_mse=0.04158  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_115.png
+  step 5200  loss=0.17816  mse=0.01833  percept=0.31966
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_005200.png
+[autoencoder] Epoch 116/2000  loss=0.188069  mse=0.021169  percept=0.333800  steps=5220
+  [NN baseline] sample 0: decoder_mse=0.03004  nearest_mse=0.08508  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00518  nearest_mse=0.07486  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05676  nearest_mse=0.13615  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01639  nearest_mse=0.16035  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_116.png
+  step 5250  loss=0.17312  mse=0.01972  percept=0.30679
+[autoencoder] Epoch 117/2000  loss=0.189604  mse=0.021282  percept=0.336644  steps=5265
+  [NN baseline] sample 0: decoder_mse=0.02969  nearest_mse=0.16781  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00468  nearest_mse=0.09280  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05404  nearest_mse=0.16623  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01695  nearest_mse=0.10675  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_117.png
+  step 5300  loss=0.16744  mse=0.01839  percept=0.29809
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_005300.png
+[autoencoder] Epoch 118/2000  loss=0.188306  mse=0.020603  percept=0.335405  steps=5310
+  [NN baseline] sample 0: decoder_mse=0.02843  nearest_mse=0.09709  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00427  nearest_mse=0.05262  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05650  nearest_mse=0.12116  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01934  nearest_mse=0.10611  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_118.png
+  step 5350  loss=0.17334  mse=0.01910  percept=0.30848
+[autoencoder] Epoch 119/2000  loss=0.186487  mse=0.020653  percept=0.331669  steps=5355
+  [NN baseline] sample 0: decoder_mse=0.03000  nearest_mse=0.09300  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00620  nearest_mse=0.04690  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05628  nearest_mse=0.08875  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01491  nearest_mse=0.07664  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_119.png
+  step 5400  loss=0.18020  mse=0.03487  percept=0.29066
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_005400.png
+[autoencoder] Epoch 120/2000  loss=0.187830  mse=0.020771  percept=0.334117  steps=5400
+  [NN baseline] sample 0: decoder_mse=0.02967  nearest_mse=0.16973  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00599  nearest_mse=0.04914  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05443  nearest_mse=0.15964  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01585  nearest_mse=0.11388  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_120.png
+[autoencoder] Epoch 121/2000  loss=0.186581  mse=0.020635  percept=0.331892  steps=5445
+  [NN baseline] sample 0: decoder_mse=0.03008  nearest_mse=0.07635  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00612  nearest_mse=0.06251  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05294  nearest_mse=0.14082  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01509  nearest_mse=0.13939  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_121.png
+  step 5450  loss=0.20773  mse=0.02243  percept=0.37059
+[autoencoder] Epoch 122/2000  loss=0.185957  mse=0.020418  percept=0.331079  steps=5490
+  [NN baseline] sample 0: decoder_mse=0.02976  nearest_mse=0.12935  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00497  nearest_mse=0.07653  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.04986  nearest_mse=0.10972  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01487  nearest_mse=0.07823  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_122.png
+  step 5500  loss=0.18548  mse=0.01918  percept=0.33261
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_005500.png
+[autoencoder] Epoch 123/2000  loss=0.184914  mse=0.019987  percept=0.329854  steps=5535
+  [NN baseline] sample 0: decoder_mse=0.02940  nearest_mse=0.07061  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00511  nearest_mse=0.11200  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05836  nearest_mse=0.19501  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01376  nearest_mse=0.11359  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_123.png
+  step 5550  loss=0.19922  mse=0.01847  percept=0.36150
+[autoencoder] Epoch 124/2000  loss=0.185151  mse=0.019772  percept=0.330758  steps=5580
+  [NN baseline] sample 0: decoder_mse=0.02907  nearest_mse=0.08710  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00485  nearest_mse=0.04993  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05346  nearest_mse=0.18730  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01438  nearest_mse=0.14384  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_124.png
+  step 5600  loss=0.21188  mse=0.02111  percept=0.38155
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_005600.png
+[autoencoder] Epoch 125/2000  loss=0.186529  mse=0.019784  percept=0.333489  steps=5625
+  [NN baseline] sample 0: decoder_mse=0.02952  nearest_mse=0.07084  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00481  nearest_mse=0.07279  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05984  nearest_mse=0.14759  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01344  nearest_mse=0.13052  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_125.png
+  step 5650  loss=0.21406  mse=0.01904  percept=0.39002
+[autoencoder] Epoch 126/2000  loss=0.185010  mse=0.020380  percept=0.329259  steps=5670
+  [NN baseline] sample 0: decoder_mse=0.03059  nearest_mse=0.06998  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00535  nearest_mse=0.08703  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05456  nearest_mse=0.21069  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01664  nearest_mse=0.21139  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_126.png
+  step 5700  loss=0.18114  mse=0.01838  percept=0.32553
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_005700.png
+[autoencoder] Epoch 127/2000  loss=0.182494  mse=0.019699  percept=0.325591  steps=5715
+  [NN baseline] sample 0: decoder_mse=0.03004  nearest_mse=0.11842  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00510  nearest_mse=0.04156  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05761  nearest_mse=0.12116  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01689  nearest_mse=0.10368  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_127.png
+  step 5750  loss=0.14976  mse=0.01552  percept=0.26850
+[autoencoder] Epoch 128/2000  loss=0.182152  mse=0.019357  percept=0.325590  steps=5760
+  [NN baseline] sample 0: decoder_mse=0.02981  nearest_mse=0.11407  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00482  nearest_mse=0.03755  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05165  nearest_mse=0.20027  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01581  nearest_mse=0.22374  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_128.png
+  step 5800  loss=0.25960  mse=0.02651  percept=0.46616
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_005800.png
+[autoencoder] Epoch 129/2000  loss=0.182897  mse=0.019362  percept=0.327070  steps=5805
+  [NN baseline] sample 0: decoder_mse=0.02929  nearest_mse=0.09459  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00523  nearest_mse=0.08479  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05197  nearest_mse=0.13628  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01743  nearest_mse=0.08256  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_129.png
+  step 5850  loss=0.26759  mse=0.03066  percept=0.47386
+[autoencoder] Epoch 130/2000  loss=0.185648  mse=0.020077  percept=0.331142  steps=5850
+  [NN baseline] sample 0: decoder_mse=0.03033  nearest_mse=0.10654  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00488  nearest_mse=0.06879  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05230  nearest_mse=0.10267  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01329  nearest_mse=0.21021  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_130.png
+[autoencoder] Epoch 131/2000  loss=0.185003  mse=0.020204  percept=0.329598  steps=5895
+  [NN baseline] sample 0: decoder_mse=0.03014  nearest_mse=0.05179  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00464  nearest_mse=0.06448  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05402  nearest_mse=0.07977  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01774  nearest_mse=0.12855  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_131.png
+  step 5900  loss=0.20153  mse=0.02147  percept=0.36012
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_005900.png
+[autoencoder] Epoch 132/2000  loss=0.182015  mse=0.019676  percept=0.324679  steps=5940
+  [NN baseline] sample 0: decoder_mse=0.03018  nearest_mse=0.06740  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00445  nearest_mse=0.05620  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05062  nearest_mse=0.07590  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01581  nearest_mse=0.24927  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_132.png
+  step 5950  loss=0.16594  mse=0.01596  percept=0.29996
+[autoencoder] Epoch 133/2000  loss=0.184930  mse=0.020346  percept=0.329169  steps=5985
+  [NN baseline] sample 0: decoder_mse=0.03051  nearest_mse=0.05015  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00547  nearest_mse=0.06838  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05403  nearest_mse=0.17353  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01717  nearest_mse=0.07735  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_133.png
+  step 6000  loss=0.15686  mse=0.01633  percept=0.28106
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_006000.png
+[autoencoder] Epoch 134/2000  loss=0.182575  mse=0.019581  percept=0.325987  steps=6030
+  [NN baseline] sample 0: decoder_mse=0.03033  nearest_mse=0.09688  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00630  nearest_mse=0.09758  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05251  nearest_mse=0.19590  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01481  nearest_mse=0.08771  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_134.png
+  step 6050  loss=0.22369  mse=0.02303  percept=0.40132
+[autoencoder] Epoch 135/2000  loss=0.182908  mse=0.019339  percept=0.327137  steps=6075
+  [NN baseline] sample 0: decoder_mse=0.02927  nearest_mse=0.23095  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00589  nearest_mse=0.04192  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05481  nearest_mse=0.09937  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01460  nearest_mse=0.06111  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_135.png
+  step 6100  loss=0.15909  mse=0.01756  percept=0.28306
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_006100.png
+[autoencoder] Epoch 136/2000  loss=0.182121  mse=0.019540  percept=0.325162  steps=6120
+  [NN baseline] sample 0: decoder_mse=0.02931  nearest_mse=0.07538  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00554  nearest_mse=0.06938  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05754  nearest_mse=0.21761  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01615  nearest_mse=0.14707  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_136.png
+  step 6150  loss=0.19626  mse=0.02066  percept=0.35119
+[autoencoder] Epoch 137/2000  loss=0.180401  mse=0.019186  percept=0.322430  steps=6165
+  [NN baseline] sample 0: decoder_mse=0.02844  nearest_mse=0.18745  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00490  nearest_mse=0.06251  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05862  nearest_mse=0.19922  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01489  nearest_mse=0.05623  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_137.png
+  step 6200  loss=0.19263  mse=0.02023  percept=0.34480
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_006200.png
+[autoencoder] Epoch 138/2000  loss=0.182244  mse=0.019205  percept=0.326078  steps=6210
+  [NN baseline] sample 0: decoder_mse=0.02968  nearest_mse=0.06611  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00515  nearest_mse=0.07639  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05518  nearest_mse=0.10616  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01728  nearest_mse=0.10163  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_138.png
+  step 6250  loss=0.20985  mse=0.01905  percept=0.38160
+[autoencoder] Epoch 139/2000  loss=0.180621  mse=0.019260  percept=0.322721  steps=6255
+  [NN baseline] sample 0: decoder_mse=0.02959  nearest_mse=0.13612  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00445  nearest_mse=0.07997  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05581  nearest_mse=0.15169  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01609  nearest_mse=0.11577  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_139.png
+  step 6300  loss=0.20547  mse=0.02442  percept=0.36209
+  [autoencoder] Saved sample -> /Users/ani/Frameo/Baby/backend/data/reconstructions/step_006300.png
+[autoencoder] Epoch 140/2000  loss=0.182048  mse=0.018927  percept=0.326242  steps=6300
+  [NN baseline] sample 0: decoder_mse=0.02862  nearest_mse=0.15434  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00446  nearest_mse=0.06069  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.05436  nearest_mse=0.15208  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.01634  nearest_mse=0.07260  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_140.png
+[autoencoder] Epoch 141/2000  loss=0.180923  mse=0.019232  percept=0.323383  steps=6345
+  [NN baseline] sample 0: decoder_mse=0.02940  nearest_mse=0.11427  DECODER WINS
+  [NN baseline] sample 1: decoder_mse=0.00500  nearest_mse=0.05258  DECODER WINS
+  [NN baseline] sample 2: decoder_mse=0.04821  nearest_mse=0.12145  DECODER WINS
+  [NN baseline] sample 3: decoder_mse=0.02148  nearest_mse=0.13764  DECODER WINS
+  [NN baseline] Saved comparison -> /Users/ani/Frameo/Baby/backend/data/reconstructions/nn_baseline_epoch_141.png
+  step 6350  loss=0.15763  mse=0.01636  percept=0.28254
