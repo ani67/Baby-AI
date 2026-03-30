@@ -270,21 +270,19 @@ class BrainV2:
     # ── REFLECT: Backward Error Propagation ──
 
     @torch.no_grad()
-    def reflect(self, error: torch.Tensor) -> dict[int, float]:
+    def reflect(self, error: torch.Tensor) -> torch.Tensor:
         """
-        Propagate error backward through edges, layer by layer (top → bottom).
+        Propagate error backward through edges in ONE sparse matmul.
 
-        For each edge (i → j) where j is in the current layer:
-            neuron_errors[i] += edge_strength(i,j) * neuron_errors[j]
+        The edge matrix transpose naturally reverses signal flow (j->i instead
+        of i->j), so a single matmul propagates error from output neurons back
+        through the entire edge network.
 
-        Returns per-neuron error magnitudes as {neuron_idx: error_magnitude}.
-
-        Uses sparse matrix operations for efficiency: the transpose of the edge
-        matrix naturally reverses signal flow direction.
+        Returns per-neuron error magnitudes as a tensor of shape (n,).
         """
         n = self.n
         if n == 0 or not self._edge_strengths:
-            return {}
+            return torch.zeros(max(n, 1), device=self.device)
 
         error = error.to(self.device)
 
@@ -295,70 +293,28 @@ class BrainV2:
         if self._last_fired is not None and self._last_scores is not None:
             fired_idx = self._last_fired.nonzero().squeeze(1)
             if len(fired_idx) > 0:
-                # Error magnitude projected onto each neuron's weight direction
                 fired_weights = F.normalize(self.weights[fired_idx], dim=1)
                 per_neuron_err = (fired_weights * error.unsqueeze(0)).sum(dim=1).abs()
                 neuron_errors[fired_idx] = per_neuron_err
 
-        # Get unique layers sorted top-to-bottom (descending)
-        active_mask = ~self.dormant[:n]
-        active_layers = self.layer_indices[:n][active_mask]
-        if active_layers.numel() == 0:
-            return {}
-        unique_layers = active_layers.unique().sort(descending=True).values
-
-        # Build edge matrix (sparse) and its transpose for backward flow
+        # Single sparse matmul: transpose reverses edge direction for backward flow
         edge_mat = self._build_edge_matrix()
-        edge_mat_t = edge_mat.t()  # transpose reverses direction
+        backflow = torch.sparse.mm(
+            edge_mat.t(), neuron_errors.unsqueeze(1)
+        ).squeeze(1)
+        neuron_errors = neuron_errors + backflow
 
-        # Propagate layer by layer, top to bottom
-        for layer_val in unique_layers:
-            # Neurons in this layer
-            layer_mask = (self.layer_indices[:n] == layer_val) & active_mask
-            if layer_mask.sum() == 0:
-                continue
-
-            # Sparse matmul: backflow = edge_mat.T @ neuron_errors
-            # This accumulates error from downstream (higher layer) neurons
-            # into upstream (lower layer) neurons via reversed edges.
-            backflow = torch.sparse.mm(
-                edge_mat_t,
-                neuron_errors.unsqueeze(1),
-            ).squeeze(1)
-
-            # Only update neurons in layers BELOW current layer
-            # (current layer errors are already set from higher layers)
-            lower_mask = (self.layer_indices[:n] < layer_val) & active_mask
-            if lower_mask.sum() > 0:
-                lower_idx = lower_mask.nonzero().squeeze(1)
-                neuron_errors[lower_idx] += backflow[lower_idx]
-
-        # Normalize per layer to prevent explosion
-        for layer_val in unique_layers:
-            layer_mask = (self.layer_indices[:n] == layer_val) & active_mask
-            layer_idx = layer_mask.nonzero().squeeze(1)
-            if len(layer_idx) == 0:
-                continue
-            layer_err = neuron_errors[layer_idx]
-            layer_norm = layer_err.norm()
-            if layer_norm > 1.0:
-                neuron_errors[layer_idx] = layer_err / layer_norm
+        # Normalize to prevent explosion (L2 norm cap)
+        err_norm = neuron_errors.norm()
+        if err_norm > 1.0:
+            neuron_errors = neuron_errors / err_norm
 
         # Update persistent error buffer (EMA smoothing)
         self._neuron_error_buffer[:n] = (
             0.9 * self._neuron_error_buffer[:n] + 0.1 * neuron_errors
         )
 
-        # Build return dict (only non-zero entries)
-        result: dict[int, float] = {}
-        nonzero_mask = neuron_errors > 1e-6
-        if nonzero_mask.sum() > 0:
-            nz_idx = nonzero_mask.nonzero().squeeze(1)
-            nz_vals = neuron_errors[nz_idx]
-            for i, idx in enumerate(nz_idx.cpu().tolist()):
-                result[idx] = nz_vals[i].item()
-
-        return result
+        return neuron_errors
 
     # ── Forward Pass ──
 
@@ -459,11 +415,23 @@ class BrainV2:
                 )
                 scores = new_scores
 
-            # Mark traversed edges as used
-            fired_set = set(fired.nonzero().squeeze(1).cpu().tolist())
-            for (i, j) in self._edge_strengths:
-                if i in fired_set or j in fired_set:
-                    self._edge_last_used[(i, j)] = self._step_count
+            # Mark traversed edges as used (via sparse tensor indices)
+            fired_set_t = fired.nonzero().squeeze(1)
+            if len(fired_set_t) > 0 and edge_mat._nnz() > 0:
+                edge_indices = edge_mat.indices()  # (2, E)
+                # Check if either endpoint is fired
+                fired_lookup = torch.zeros(n, dtype=torch.bool, device=self.device)
+                fired_lookup[fired_set_t] = True
+                src_fired = fired_lookup[edge_indices[0]]
+                dst_fired = fired_lookup[edge_indices[1]]
+                touched = src_fired | dst_fired
+                touched_idx = touched.nonzero().squeeze(1)
+                if len(touched_idx) > 0:
+                    step = self._step_count
+                    src_list = edge_indices[0][touched_idx].cpu().tolist()
+                    dst_list = edge_indices[1][touched_idx].cpu().tolist()
+                    for si, di in zip(src_list, dst_list):
+                        self._edge_last_used[(si, di)] = step
 
         # 4. OUTPUT — confidence-weighted aggregate
         fired_idx = fired.nonzero().squeeze(1)
@@ -549,16 +517,12 @@ class BrainV2:
         ff_deltas = signs.unsqueeze(1) * (local_targets - fired_weights)
 
         # ── REFLECT SIGNAL ──
-        neuron_errors = self.reflect(error)
+        neuron_errors = self.reflect(error)  # tensor of shape (n,)
 
-        reflect_deltas = torch.zeros_like(fired_weights)
-        if neuron_errors:
-            for local_i, global_i in enumerate(fired_idx.cpu().tolist()):
-                err_mag = neuron_errors.get(global_i, 0.0)
-                if err_mag > 1e-6:
-                    # Direction: toward teacher, scaled by reflect error magnitude
-                    direction = teacher_vec - self.weights[global_i]
-                    reflect_deltas[local_i] = err_mag * direction
+        # Vectorized: direction toward teacher scaled by per-neuron error magnitude
+        err_magnitudes = neuron_errors[fired_idx]  # (num_fired,)
+        directions = teacher_vec.unsqueeze(0) - self.weights[fired_idx]  # (num_fired, dim)
+        reflect_deltas = err_magnitudes.unsqueeze(1) * directions
 
         # ── HYBRID COMBINE ──
         combined = self.alpha * ff_deltas + self.beta * reflect_deltas
@@ -582,82 +546,118 @@ class BrainV2:
 
     def _reflect_edge_formation(
         self,
-        neuron_errors: dict[int, float],
+        neuron_errors: torch.Tensor,
         fired_idx: torch.Tensor,
         scores: torch.Tensor,
     ):
         """Form new edges based on REFLECT error correlations.
 
         Neurons with high backward error that lack connections to high-activation
-        neurons get wired together. This is the "neurons that SHOULD coordinate
-        get wired together" principle from the design doc.
+        neurons get wired together. Uses tensor operations to find candidate pairs.
         """
-        if not neuron_errors:
+        n = self.n
+        if n == 0 or neuron_errors.sum() < 1e-6:
             return
 
-        n = self.n
         active_count = int((~self.dormant[:n]).sum().item())
         current_edge_density = len(self._edge_strengths) / max(active_count, 1)
         if current_edge_density >= self.target_edges_per_neuron:
-            return  # already at target density
+            return
 
-        # Find neurons with high error (top 10%)
-        err_items = sorted(neuron_errors.items(), key=lambda x: x[1], reverse=True)
-        high_error_neurons = [idx for idx, mag in err_items[:max(1, len(err_items) // 10)]]
+        # High error neurons: top 10% by error magnitude
+        error_threshold = neuron_errors.quantile(0.9)
+        high_err_idx = (neuron_errors > error_threshold.clamp(min=1e-6)).nonzero().squeeze(1)
+        if len(high_err_idx) == 0:
+            return
 
-        # Find neurons with high activation
-        fired_list = fired_idx.cpu().tolist()
-        fired_scores = scores[fired_idx].cpu().tolist()
-        high_activation = [
-            idx for idx, sc in zip(fired_list, fired_scores)
-            if sc > 0.3  # reasonably activated
-        ]
+        # High activation neurons: scores > 0.3 among fired
+        high_act_mask = scores > 0.3
+        high_act_idx = high_act_mask.nonzero().squeeze(1)
+        if len(high_act_idx) == 0:
+            return
 
-        # Form edges between high-error and high-activation neurons
+        # Limit candidates to keep this bounded
+        if len(high_err_idx) > 10:
+            high_err_idx = high_err_idx[:10]
+        if len(high_act_idx) > 10:
+            high_act_idx = high_act_idx[:10]
+
+        # Score candidate pairs by error * activation product
+        err_vals = neuron_errors[high_err_idx]  # (E,)
+        act_vals = scores[high_act_idx]  # (A,)
+        pair_scores = err_vals.unsqueeze(1) * act_vals.unsqueeze(0)  # (E, A)
+
+        # Flatten and get top-K
+        max_new = 50
+        flat_scores = pair_scores.flatten()
+        k = min(max_new, len(flat_scores))
+        _, top_flat = flat_scores.topk(k)
+        err_indices = top_flat // len(high_act_idx)
+        act_indices = top_flat % len(high_act_idx)
+
+        # Convert back to global neuron indices and add edges
+        err_global = high_err_idx[err_indices].cpu().tolist()
+        act_global = high_act_idx[act_indices].cpu().tolist()
+
         new_edges = 0
-        max_new = min(20, self.target_edges_per_neuron)  # cap per update
-        for a in high_error_neurons:
-            for b in high_activation:
-                if a == b:
-                    continue
-                if (a, b) not in self._edge_strengths:
-                    self._edge_strengths[(a, b)] = 0.1
-                    self._edge_last_used[(a, b)] = self._step_count
-                    new_edges += 1
-                    if new_edges >= max_new:
-                        break
-            if new_edges >= max_new:
-                break
+        step = self._step_count
+        for a, b in zip(err_global, act_global):
+            if a == b:
+                continue
+            if (a, b) not in self._edge_strengths:
+                self._edge_strengths[(a, b)] = 0.1
+                self._edge_last_used[(a, b)] = step
+                new_edges += 1
 
         if new_edges > 0:
             self._invalidate_edge_cache()
 
     def _hebbian_update(self, fired_idx: torch.Tensor, scores: torch.Tensor):
         """Synaptic plasticity + edge lifecycle management."""
-        # 1. Global decay + age-based pruning
+        # 1. Global decay + age-based pruning (batch via sparse tensor)
         self._decay_counter = getattr(self, "_decay_counter", 0) + 1
-        if self._decay_counter % 100 == 0:
-            dead = []
-            step = self._step_count
-            for k, s in self._edge_strengths.items():
-                self._edge_strengths[k] = s * 0.99
-                last_used = self._edge_last_used.get(k, 0)
-                age = step - last_used
-                # Prune: low strength AND unused for 5000 steps
-                if self._edge_strengths[k] < 0.01 and age > 5000:
-                    dead.append(k)
-                elif self._edge_strengths[k] < 0.005:
-                    dead.append(k)
-            for k in dead:
-                del self._edge_strengths[k]
-                self._edge_last_used.pop(k, None)
-            if dead:
-                self._invalidate_edge_cache()
+        if self._decay_counter % 100 == 0 and self._edge_strengths:
+            edge_mat = self._build_edge_matrix()
+            vals = edge_mat.values()
+            decayed = vals * 0.99
+            indices = edge_mat.indices()  # (2, E)
 
-        # 2. Hebbian reinforcement — co-fired edges strengthen
+            # Build last_used tensor for age check
+            step = self._step_count
+            edge_keys = list(zip(indices[0].cpu().tolist(), indices[1].cpu().tolist()))
+            last_used_t = torch.tensor(
+                [self._edge_last_used.get(k, 0) for k in edge_keys],
+                device=self.device, dtype=torch.float32,
+            )
+            ages = step - last_used_t
+
+            # Prune: (strength < 0.01 AND age > 5000) OR strength < 0.005
+            prune_mask = ((decayed < 0.01) & (ages > 5000)) | (decayed < 0.005)
+            keep_mask = ~prune_mask
+
+            if prune_mask.any():
+                # Remove pruned edges from dicts
+                prune_indices = prune_mask.nonzero().squeeze(1).cpu().tolist()
+                for pi in prune_indices:
+                    k = edge_keys[pi]
+                    self._edge_strengths.pop(k, None)
+                    self._edge_last_used.pop(k, None)
+
+            # Update surviving edge strengths in dict
+            if keep_mask.any():
+                keep_indices = keep_mask.nonzero().squeeze(1).cpu().tolist()
+                decayed_cpu = decayed.cpu()
+                for ki in keep_indices:
+                    k = edge_keys[ki]
+                    self._edge_strengths[k] = decayed_cpu[ki].item()
+
+            self._invalidate_edge_cache()
+
+        # 2. Hebbian reinforcement — co-fired edges strengthen (small loop, max 5 neurons)
         if len(fired_idx) < 2:
             return
         fired_list = fired_idx[:5].tolist()
+        step = self._step_count
         for i in range(len(fired_list)):
             for j in range(i + 1, len(fired_list)):
                 idx_i, idx_j = fired_list[i], fired_list[j]
@@ -667,9 +667,9 @@ class BrainV2:
                         self._edge_strengths[pair] = min(
                             self._edge_strengths[pair] + 0.001 * co_act, 1.0
                         )
-                        self._edge_last_used[pair] = self._step_count
+                        self._edge_last_used[pair] = step
 
-        # 3. Predictive coding
+        # 3. Predictive coding (uses edge matrix for neighbor lookup)
         if self._decay_counter % 50 == 0 and len(fired_idx) >= 2:
             fired_set = set(fired_idx[:10].tolist())
             for idx_i in list(fired_set)[:5]:
@@ -677,12 +677,15 @@ class BrainV2:
                 if pred_w.norm() < 1e-6:
                     self.prediction_weights[idx_i] = self.weights[idx_i].detach().clone()
                     continue
-                for (a, b), s in list(self._edge_strengths.items())[:20]:
-                    if a != idx_i:
+                # Find neighbors of idx_i via edge dict (bounded by fired set size)
+                for idx_j in list(fired_set):
+                    if idx_j == idx_i:
                         continue
-                    neighbor_w = self.weights[b]
+                    if (idx_i, idx_j) not in self._edge_strengths:
+                        continue
+                    neighbor_w = self.weights[idx_j]
                     predicted = torch.dot(pred_w, neighbor_w).item()
-                    actual = 1.0 if b in fired_set else 0.0
+                    actual = 1.0
                     if abs(predicted - actual) > 0.3:
                         direction = neighbor_w if actual > predicted else -neighbor_w
                         self.prediction_weights[idx_i] = F.normalize(
