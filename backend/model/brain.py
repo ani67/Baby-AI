@@ -511,6 +511,59 @@ class BrainState:
 
         return prediction.cpu(), merged_activations
 
+    @torch.no_grad()
+    def score_candidates(self, candidates: torch.Tensor) -> torch.Tensor:
+        """Batched read-only scoring: how well does the brain already know each candidate?
+
+        Takes (N, dim) tensor, returns (N,) similarity scores.
+        No state mutation — no buffer updates, no age increments, no step_count changes.
+        No message passing — pure SENSE → FIRE → OUTPUT pipeline.
+        """
+        candidates = F.normalize(candidates.to(self.device), dim=1)  # (N, dim)
+
+        # PROJECT — match forward()'s learned residual transform
+        if self.projection_alpha > 0:
+            candidates = F.normalize(
+                candidates + self.projection_alpha * (candidates @ self.projection.T),
+                dim=1,
+            )
+
+        # SENSE — single batched matmul over active neurons
+        active_mask = ~self.dormant[:self.n]
+        active_idx = active_mask.nonzero().squeeze(1)
+        n_active = len(active_idx)
+        if n_active == 0:
+            return torch.zeros(candidates.shape[0], device=self.device)
+
+        active_weights = F.normalize(self.weights[active_idx], dim=1)  # (A, dim)
+        active_thresholds = self.thresholds[active_idx]                # (A,)
+
+        scores = active_weights @ candidates.T  # (A, N)
+
+        # FIRE — vectorized thresholding
+        fired = scores > active_thresholds.unsqueeze(1)  # (A, N)
+
+        # Guarantee minimum firing per candidate (match forward's min-4 rule)
+        fire_counts = fired.sum(dim=0)  # (N,)
+        low_fire = (fire_counts < 4).nonzero().squeeze(1)
+        if len(low_fire) > 0:
+            _, top_k = scores[:, low_fire].topk(min(4, n_active), dim=0)  # (4, len(low_fire))
+            for col_i, cand_i in enumerate(low_fire):
+                fired[top_k[:, col_i], cand_i] = True
+
+        # OUTPUT — confidence-weighted aggregate (matches forward's attn logic)
+        confidence = (scores - active_thresholds.unsqueeze(1)) / active_thresholds.clamp(min=0.01).unsqueeze(1)
+        confidence[~fired] = -1e9
+        attn = F.softmax(confidence * 2.0, dim=0)  # (A, N)
+        attn[~fired] = 0.0  # zero out unfired after softmax
+
+        predictions = (attn.T @ active_weights)  # (N, dim)
+        predictions = F.normalize(predictions, dim=1)
+
+        # Similarity: cosine between prediction and input
+        similarities = (predictions * candidates).sum(dim=1)  # (N,)
+        return similarities
+
     def pre_sense(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Cache the normalized active weight matrix for batched SENSE.
         Call once, then use the result for multiple forward() calls.

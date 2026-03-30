@@ -349,23 +349,37 @@ def prepare_batch(loop, batch_size=32, batch_count=0):
         for img_item in _rv.sample(_native_vision_items, min(n_vis, len(_native_vision_items))):
             candidates.append(img_item)
 
-    # ── SMART SELECTION: test candidates, pick highest error ──
-    scored = []
-    pre = loop.model.brain.pre_sense()
+    # ── SMART SELECTION: batched scoring — one matmul instead of N forward() calls ──
+    vec_items = []
+    vec_tensors = []
+    no_vec_items = []
     for item in candidates:
         if item.expected_vector is None:
-            scored.append((item, 0.5))
-            continue
+            no_vec_items.append(item)
+        else:
+            vec_items.append(item)
+            vec_tensors.append(item.expected_vector)
+
+    scored = [(item, 0.5) for item in no_vec_items]
+
+    if vec_tensors:
         try:
-            pred, _ = loop.model.brain.forward(item.expected_vector, _pre_sensed=pre)
-            sim = float(torch.dot(pred, F.normalize(item.expected_vector, dim=0)).item())
-            error = 1.0 - sim
-            scored.append((item, error))
+            candidates_tensor = torch.stack(vec_tensors)  # (N, dim)
+            similarities = loop.model.brain.score_candidates(candidates_tensor)  # (N,)
+            errors = 1.0 - similarities.cpu()
+            scored.extend((item, float(err)) for item, err in zip(vec_items, errors))
         except Exception:
-            scored.append((item, 0.5))
+            scored.extend((item, 0.5) for item in vec_items)
 
     scored.sort(key=lambda x: x[1], reverse=True)
-    all_items = [item for item, _ in scored[:total_needed]]
+
+    # ── VISION FLOOR: guarantee ≥25% vision items per scoring round ──
+    vision_scored = [(it, err) for it, err in scored if it.item_type == "image"]
+    non_vision_scored = [(it, err) for it, err in scored if it.item_type != "image"]
+    vision_floor = total_needed // 4  # 25% of total
+    vision_pick = [it for it, _ in vision_scored[:vision_floor]]
+    non_vision_pick = [it for it, _ in non_vision_scored[:total_needed - len(vision_pick)]]
+    all_items = vision_pick + non_vision_pick
 
     # Saturation cap
     active = [c for c in loop.model.graph.clusters if not c.dormant]
@@ -398,9 +412,21 @@ def distill_step(loop, items, items_processed):
     candidates = [i for i in items if i.description and i.expected_vector is not None]
     if not candidates:
         return
+    # Check if curriculum has cached CLIP targets (PreEncodedTextCurriculum).
+    # After native switch, item.expected_vector is the native encoder's own
+    # output — distilling against it is a self-reinforcing no-op.
+    has_clip_cache = (
+        hasattr(loop, '_text_curriculum')
+        and hasattr(loop._text_curriculum, 'get_clip_target')
+    )
     # Distill on up to 3 items per batch (more signal, still cheap)
     for item in random.sample(candidates, min(3, len(candidates))):
-        loss = loop.native_text_encoder.distill_step(item.description, item.expected_vector)
+        # Always use CLIP target; fall back to expected_vector only pre-switch
+        clip_target = None
+        if has_clip_cache:
+            clip_target = loop._text_curriculum.get_clip_target(item.description)
+        target = clip_target if clip_target is not None else item.expected_vector
+        loss = loop.native_text_encoder.distill_step(item.description, target)
         loop.metrics.record_text_distill(1.0 - loss)
     if items_processed % 7500 < 50:
         loop._save_native_checkpoints()
@@ -501,7 +527,7 @@ def distill_vision_step(loop, items_processed):
             return
         import PIL.Image
         _vision_distill_images = []
-        for path in image_paths[:200]:
+        for path in image_paths:
             try:
                 img = PIL.Image.open(path).convert("RGB")
                 clip_vec = loop.image_encoder.encode(img)
@@ -515,10 +541,10 @@ def distill_vision_step(loop, items_processed):
     if not _vision_distill_images:
         return
 
-    # Distill on 2 random images per batch — reload from disk (cheap)
+    # Distill on 8 random images per batch — reload from disk (cheap)
     import random
     import PIL.Image
-    samples = random.sample(_vision_distill_images, min(2, len(_vision_distill_images)))
+    samples = random.sample(_vision_distill_images, min(8, len(_vision_distill_images)))
     for path, clip_vec in samples:
         try:
             img = PIL.Image.open(path).convert("RGB")
@@ -550,7 +576,7 @@ def distill_vision_step_parallel(loop, items_processed):
     # Lazy-build cache: paths + pre-encoded CLIP vectors only (no PIL images)
     if _vision_distill_cache is None:
         _vision_distill_cache = []
-        for item in _native_vision_items[:200]:
+        for item in _native_vision_items:
             path = getattr(item, 'image_path', '')
             if not path or not os.path.exists(path):
                 continue
@@ -564,7 +590,7 @@ def distill_vision_step_parallel(loop, items_processed):
 
     import random
     import PIL.Image
-    samples = random.sample(_vision_distill_cache, min(2, len(_vision_distill_cache)))
+    samples = random.sample(_vision_distill_cache, min(8, len(_vision_distill_cache)))
     for path, clip_vec in samples:
         try:
             img = PIL.Image.open(path).convert("RGB")
@@ -593,7 +619,14 @@ def track_categories(loop, items, items_processed):
         cat = item.label
         if not cat and item.description:
             import re
-            m = re.search(r'\b(dog|cat|bird|car|bus|person|horse|elephant)\b', item.description, re.I)
+            m = re.search(
+                r'\b(dog|cat|bird|car|bus|person|horse|elephant'
+                r'|knife|bottle|fork|cup|book|chair|table|clock|bowl|spoon'
+                r'|laptop|phone|banana|pizza|sandwich|cake|couch|bed|toilet|tv'
+                r'|remote|keyboard|mouse|oven|sink|refrigerator|microwave|toaster'
+                r'|scissors|vase|umbrella|backpack|handbag|suitcase'
+                r'|skateboard|surfboard|tennis|baseball|kite|frisbee)\b',
+                item.description, re.I)
             cat = m.group(1).lower() if m else None
         if cat:
             pred, _ = loop.model.forward(item.expected_vector, return_activations=False)
@@ -998,10 +1031,15 @@ def run(loop):
 
     print("Training started.", flush=True)
 
-    # If native text checkpoint exists, switch immediately
+    # If native text checkpoint exists AND quality is sufficient, switch to native.
+    # Gate on cos_sim > 0.5 so a fresh/poor checkpoint doesn't bypass CLIP training.
     if os.path.exists(os.path.join("data", "checkpoints", "native_text.pt")):
-        _switch_to_native_text(loop, cos_sim=0.0)
-        print("[startup] native text encoder checkpoint found — using native from start", flush=True)
+        startup_sim = loop.metrics.snapshot()["distillation"].get("text_cosine_sim", 0.0) or 0.0
+        if startup_sim > 0.5:
+            _switch_to_native_text(loop, cos_sim=startup_sim)
+            print(f"[startup] native text checkpoint found, cos_sim={startup_sim:.3f} > 0.5 — using native", flush=True)
+        else:
+            print(f"[startup] native text checkpoint found but cos_sim={startup_sim:.3f} <= 0.5 — keeping CLIP targets", flush=True)
 
     # Build native vision training items from local stage0 images
     _build_native_vision_items(loop)
@@ -1118,11 +1156,23 @@ def run(loop):
             try:
                 teacher_answer = items[-1].description or ""
                 teacher_clip = items[-1].expected_vector if items[-1].expected_vector is not None else prediction
-                loop.decoder.train_step(teacher_clip, teacher_answer)
+                loop.decoder.train_step(teacher_clip, teacher_answer, brain=loop.model.brain, model_step=loop.model.step)
                 add_dialogue(items, prediction, loop)
             except Exception as e:
                 print(f"[decoder] error: {e}", flush=True)
             _t["decoder"] = time.perf_counter() - _t0
+
+            # 8b. Generation probe (every 50 batches)
+            if batch_count % 50 == 0:
+                try:
+                    response = loop.decoder.generate(prediction, brain=loop.model.brain, max_tokens=6, model_step=loop.model.step)
+                    if items[-1].expected_vector is not None:
+                        relevance = float(torch.dot(prediction, F.normalize(items[-1].expected_vector, dim=0)).item())
+                    else:
+                        relevance = 0.0
+                    loop.metrics.record_generation(items[-1].description or "", response, relevance)
+                except Exception as e:
+                    print(f"[gen-probe] error: {e}", flush=True)
 
             # 9. Checkpoint (every 15000 items)
             _t0 = time.perf_counter()
