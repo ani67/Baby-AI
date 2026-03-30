@@ -21,8 +21,8 @@ from torchvision import transforms
 # ---------------------------------------------------------------------------
 
 _preprocess = transforms.Compose([
-    transforms.Resize((128, 128), interpolation=transforms.InterpolationMode.LANCZOS),
-    transforms.ToTensor(),                         # (3, 128, 128), float32, [0, 1]
+    transforms.Resize((192, 192), interpolation=transforms.InterpolationMode.LANCZOS),
+    transforms.ToTensor(),                         # (3, 192, 192), float32, [0, 1]
     transforms.Normalize(
         mean=[0.485, 0.456, 0.406],
         std=[0.229, 0.224, 0.225],
@@ -31,12 +31,12 @@ _preprocess = transforms.Compose([
 
 
 def _prepare(image: PIL.Image.Image) -> torch.Tensor:
-    """PIL image → (1, 3, 128, 128) preprocessed tensor."""
+    """PIL image → (1, 3, 192, 192) preprocessed tensor."""
     return _preprocess(image.convert("RGB")).unsqueeze(0)
 
 
 def _prepare_batch(images: list[PIL.Image.Image]) -> torch.Tensor:
-    """List of PIL images → (N, 3, 128, 128) preprocessed tensor."""
+    """List of PIL images → (N, 3, 192, 192) preprocessed tensor."""
     return torch.stack([_preprocess(img.convert("RGB")) for img in images])
 
 
@@ -46,79 +46,93 @@ def _prepare_batch(images: list[PIL.Image.Image]) -> torch.Tensor:
 
 class _ConvNet(nn.Module):
     """
-    5-layer ConvNet producing a 512-dim global vector and 256 spatial patches.
+    5-layer residual ConvNet producing a 512-dim global vector and spatial patches.
 
-    Architecture (128×128 input):
-        128×128×3 → 64×64×32   (conv1)
-                  → 32×32×64   (conv2)
-                  → 16×16×128  (conv3)  ← spatial patches tapped here (256 patches)
-                  → 8×8×256    (conv4)
-                  → 4×4×512    (conv5)
-                  → 1×1×512    (pool)
+    Architecture (192x192 input, adaptive pool makes it resolution-agnostic):
+        192×192×3 → 96×96×32   (conv1 + skip via 1x1)
+                  → 48×48×64   (conv2 + skip via 1x1)
+                  → 24×24×128  (conv3 + skip via 1x1)  ← spatial patches tapped here
+                  → 12×12×256  (conv4 + skip via 1x1)
+                  → 6×6×512    (conv5 + skip via 1x1)
+                  → 1×1×512    (adaptive pool)
                   → 512        (fc)
+
+    Every block has a residual connection. Where channels change, a 1x1 conv
+    projects the skip to match dimensions. Improves gradient flow without
+    significant parameter overhead.
     """
 
     def __init__(self) -> None:
         super().__init__()
 
+        # Conv blocks (no final ReLU — applied after residual addition)
         self.conv1 = nn.Sequential(
             nn.Conv2d(3, 32, 5, stride=2, padding=2),
             nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
         )
         self.conv2 = nn.Sequential(
             nn.Conv2d(32, 64, 3, stride=2, padding=1),
             nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
         )
         self.conv3 = nn.Sequential(
             nn.Conv2d(64, 128, 3, stride=2, padding=1),
             nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
         )
         self.conv4 = nn.Sequential(
             nn.Conv2d(128, 256, 3, stride=2, padding=1),
             nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
         )
         self.conv5 = nn.Sequential(
             nn.Conv2d(256, 512, 3, stride=2, padding=1),
             nn.BatchNorm2d(512),
-            nn.ReLU(inplace=True),
         )
+
+        # 1x1 skip projections (channel mismatch at every block)
+        self.skip1 = nn.Sequential(nn.Conv2d(3, 32, 1, stride=2), nn.BatchNorm2d(32))
+        self.skip2 = nn.Sequential(nn.Conv2d(32, 64, 1, stride=2), nn.BatchNorm2d(64))
+        self.skip3 = nn.Sequential(nn.Conv2d(64, 128, 1, stride=2), nn.BatchNorm2d(128))
+        self.skip4 = nn.Sequential(nn.Conv2d(128, 256, 1, stride=2), nn.BatchNorm2d(256))
+        self.skip5 = nn.Sequential(nn.Conv2d(256, 512, 1, stride=2), nn.BatchNorm2d(512))
 
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Linear(512, 512)
         self.patch_head = nn.Linear(128, 512)
+
+    def extract_features(self, x: torch.Tensor) -> list[torch.Tensor]:
+        """Run through conv1-conv3 with residuals, return [f1, f2, f3]."""
+        f1 = F.relu(self.conv1(x) + self.skip1(x))
+        f2 = F.relu(self.conv2(f1) + self.skip2(f1))
+        f3 = F.relu(self.conv3(f2) + self.skip3(f2))
+        return [f1, f2, f3]
 
     def forward(
         self, x: torch.Tensor, *, with_patches: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """
         Args:
-            x: (N, 3, 128, 128)
+            x: (N, 3, H, W) — any resolution, adaptive pool handles it.
             with_patches: if True, also return spatial patch features.
 
         Returns:
             global_emb: (N, 512) L2-normalized
-            patches:    (N, 256, 512) L2-normalized  — or None
+            patches:    (N, P, 512) L2-normalized  — or None
         """
-        x = self.conv1(x)               # (N, 32, 64, 64)
-        x = self.conv2(x)               # (N, 64, 32, 32)
-        feat3 = self.conv3(x)            # (N, 128, 16, 16)
-        x = self.conv4(feat3)            # (N, 256, 8, 8)
-        x = self.conv5(x)               # (N, 512, 4, 4)
+        x = F.relu(self.conv1(x) + self.skip1(x))
+        x = F.relu(self.conv2(x) + self.skip2(x))
+        feat3 = F.relu(self.conv3(x) + self.skip3(x))
+        x = F.relu(self.conv4(feat3) + self.skip4(feat3))
+        x = F.relu(self.conv5(x) + self.skip5(x))
 
         # Global embedding
         pooled = self.pool(x).flatten(1)  # (N, 512)
         global_emb = F.normalize(self.fc(pooled), dim=-1)
 
-        # Spatial patches from layer-3 feature map (16×16 = 256 patches)
+        # Spatial patches from layer-3 feature map
         patches = None
         if with_patches:
-            n, c, h, w = feat3.shape      # (N, 128, 16, 16)
-            flat = feat3.permute(0, 2, 3, 1).reshape(n, h * w, c)  # (N, 256, 128)
-            patches = F.normalize(self.patch_head(flat), dim=-1)    # (N, 256, 512)
+            n, c, h, w = feat3.shape
+            flat = feat3.permute(0, 2, 3, 1).reshape(n, h * w, c)  # (N, h*w, 128)
+            patches = F.normalize(self.patch_head(flat), dim=-1)    # (N, h*w, 512)
 
         return global_emb, patches
 
@@ -168,7 +182,7 @@ class NativeVisionEncoder:
     def encode_with_patches(
         self, image: PIL.Image.Image,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Returns (global_512, patches_64x512)."""
+        """Returns (global_512, patches_Px512)."""
         with torch.no_grad():
             x = _prepare(image).to(self.device)
             emb, patches = self.net(x, with_patches=True)
@@ -177,28 +191,24 @@ class NativeVisionEncoder:
     # -- Patch grid (sequential) -----------------------------------------------
 
     def encode_patches_grid(self, image: PIL.Image.Image) -> list[torch.Tensor]:
-        """Image → 16 patch vectors (4×4 grid) with positional encoding.
+        """Image -> 16 patch vectors (4x4 grid) with positional encoding.
 
-        Downsamples 16×16 layer-3 features to 4×4 via avg pooling, then adds
-        learned positional encoding for spatial awareness. Used for patch-by-patch
-        sequential presentation to the brain.
+        Layer-3 features (h x w) are adaptive-avg-pooled to 4x4, projected
+        to 512-dim, then positional encoding is added. Resolution-agnostic.
         """
         with torch.no_grad():
             x = _prepare(image).to(self.device)
-            _, patches_256x512 = self.net(x, with_patches=True)
+            _, _, feat3 = self.net.extract_features(x)
 
-        # patches_256x512: (1, 256, 512) from 16×16 grid
-        # Reshape to spatial grid and avg pool to 4×4
-        grid = patches_256x512.squeeze(0).reshape(16, 16, 512)  # (16, 16, 512)
-        # Pool 4×4 blocks: each output cell is mean of 4×4 region
-        grid = grid.reshape(4, 4, 4, 4, 512)  # (4, block_h, 4, block_w, 512)
-        pooled = grid.mean(dim=(1, 3))  # (4, 4, 512)
-        flat = F.normalize(pooled.reshape(16, 512), dim=-1).cpu()  # (16, 512)
+        # feat3: (1, 128, H, W) — adaptive pool to 4x4
+        pooled = F.adaptive_avg_pool2d(feat3, (4, 4))  # (1, 128, 4, 4)
+        flat = pooled.squeeze(0).permute(1, 2, 0).reshape(16, 128)  # (16, 128)
+        patches = F.normalize(self.net.patch_head(flat), dim=-1).cpu()  # (16, 512)
 
         # Add positional encoding (raster scan: top-left to bottom-right)
         if self._pos_enc is not None:
-            return [self._pos_enc.encode(i, flat[i]) for i in range(16)]
-        return [flat[i] for i in range(16)]
+            return [self._pos_enc.encode(i, patches[i]) for i in range(16)]
+        return [patches[i] for i in range(16)]
 
     # -- Distillation --------------------------------------------------------
 
@@ -256,10 +266,13 @@ class NativeVisionEncoder:
 
     def load_state_dict(self, d: dict) -> None:
         # Backward compat: old checkpoints save net state directly
-        if "net" in d:
-            self.net.load_state_dict(d["net"])
-        else:
-            self.net.load_state_dict(d)
+        net_state = d["net"] if "net" in d else d
+        try:
+            self.net.load_state_dict(net_state)
+        except RuntimeError:
+            # Old checkpoint missing skip connection weights — load what we can
+            self.net.load_state_dict(net_state, strict=False)
+            print("[native_vision] partial load (old checkpoint), skip connections freshly initialized", flush=True)
         self.net.eval()
         if "pos_enc" in d and self._pos_enc is not None:
             self._pos_enc.load_state_dict(d["pos_enc"])

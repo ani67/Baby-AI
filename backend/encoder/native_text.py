@@ -1,16 +1,16 @@
 """
-Native text encoder: learned embeddings + context MLP.
+Native text encoder: learned embeddings + self-attention + context MLP.
 
 Replaces CLIP text encoding with a lightweight native encoder that shares
 word embeddings with the GroundedDecoder. Trained via distillation from CLIP
 outputs, then gradually takes over as the primary text encoder.
 
 Architecture:
-    word → embedding(512) → MLP(512→512→512) → mean pool → L2 normalize
+    word → embedding(512) → positional encoding → self-attention → residual + LayerNorm
+         → MLP(512→768→768→512→512) → mean pool → L2 normalize
 
-The MLP contextualizes each word embedding before pooling, giving the encoder
-capacity to represent word-order effects and compositional meaning beyond
-simple bag-of-words averaging.
+Single-head self-attention captures word-order and inter-word dependencies,
+breaking the bag-of-words ceiling of the previous MLP-only design.
 """
 
 import torch
@@ -18,9 +18,43 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .vocab import Vocabulary
+from .positional import PositionalEncoding
 
 # Skip special tokens when tokenizing
 _NUM_SPECIAL = len(Vocabulary.SPECIAL_TOKENS)
+
+
+class _SelfAttention(nn.Module):
+    """Single-head self-attention with residual connection and LayerNorm.
+
+    Input:  (seq_len, 512) word embeddings with positional encoding
+    Output: (seq_len, 512) attended embeddings
+
+    ~1.5M params (3 projection matrices + output projection + LayerNorm).
+    """
+
+    def __init__(self, dim: int = 512):
+        super().__init__()
+        self.dim = dim
+        self.q_proj = nn.Linear(dim, dim)
+        self.k_proj = nn.Linear(dim, dim)
+        self.v_proj = nn.Linear(dim, dim)
+        self.out_proj = nn.Linear(dim, dim)
+        self.norm = nn.LayerNorm(dim)
+        self._scale = dim ** -0.5
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (seq_len, dim) → (seq_len, dim)"""
+        q = self.q_proj(x)                          # (S, D)
+        k = self.k_proj(x)                          # (S, D)
+        v = self.v_proj(x)                          # (S, D)
+
+        attn = (q @ k.T) * self._scale               # (S, S)
+        attn = F.softmax(attn, dim=-1)
+        attended = attn @ v                           # (S, D)
+
+        out = self.out_proj(attended)
+        return self.norm(x + out)                     # residual + LayerNorm
 
 
 class NativeTextEncoder:
@@ -43,6 +77,9 @@ class NativeTextEncoder:
         if not self.word_embeddings.requires_grad:
             self.word_embeddings.requires_grad_(True)
 
+        # Single-head self-attention (~1.5M params)
+        self.self_attn = _SelfAttention(dim=512)
+
         # 4-layer context MLP (~1.6M params)
         self.context_mlp = nn.Sequential(
             nn.Linear(512, 768),
@@ -54,8 +91,7 @@ class NativeTextEncoder:
             nn.Linear(512, 512),
         )
 
-        # Positional encoding for sequential processing
-        from .positional import PositionalEncoding
+        # Positional encoding for sequential processing and attention input
         self._pos_enc = PositionalEncoding(max_positions=32, dim=512)
 
         # Optimizer created lazily on first distill_step
@@ -95,8 +131,15 @@ class NativeTextEncoder:
         # Gather embeddings: (N, 512)
         embs = torch.stack([self.word_embeddings[i] for i in ids])
 
+        # Add positional encoding so attention knows word order
+        for i in range(len(ids)):
+            embs[i] = self._pos_enc.embeddings[min(i, self._pos_enc.max_positions - 1)].to(embs.device) + embs[i]
+
+        # Self-attention: captures inter-word dependencies
+        attended = self.self_attn(embs)  # (N, 512)
+
         # Contextualize each word through MLP
-        contextualized = self.context_mlp(embs)  # (N, 512)
+        contextualized = self.context_mlp(attended)  # (N, 512)
 
         # Mean pool → single vector
         pooled = contextualized.mean(dim=0)  # (512,)
@@ -157,14 +200,16 @@ class NativeTextEncoder:
 
         Returns the loss value (lower is better, 0 = perfect match).
         """
-        # Lazy optimizer creation: MLP params + shared word embeddings
+        # Lazy optimizer creation: attention + MLP params + shared word embeddings
         # Word embeddings use a lower LR to avoid disrupting the decoder
         if self._optimizer is None:
             self._optimizer = torch.optim.Adam([
                 {"params": self.context_mlp.parameters(), "lr": 0.001},
                 {"params": [self.word_embeddings], "lr": 0.0003},
+                {"params": self.self_attn.parameters(), "lr": 0.001},
             ])
 
+        self.self_attn.train()
         self.context_mlp.train()
 
         native = self.encode(text)
@@ -186,8 +231,11 @@ class NativeTextEncoder:
     # ------------------------------------------------------------------
 
     def state_dict(self) -> dict:
-        """Return serializable state (MLP weights + optimizer + positional)."""
-        d = {"context_mlp": self.context_mlp.state_dict()}
+        """Return serializable state (attention + MLP weights + optimizer + positional)."""
+        d = {
+            "context_mlp": self.context_mlp.state_dict(),
+            "self_attn": self.self_attn.state_dict(),
+        }
         if self._optimizer is not None:
             d["optimizer"] = self._optimizer.state_dict()
         if self._pos_enc is not None:
@@ -195,20 +243,27 @@ class NativeTextEncoder:
         return d
 
     def load_state_dict(self, d: dict) -> None:
-        """Restore MLP weights and optimizer state."""
+        """Restore attention + MLP weights and optimizer state."""
         if "context_mlp" in d:
             self.context_mlp.load_state_dict(d["context_mlp"])
             print("[native_text] restored context MLP weights", flush=True)
+        if "self_attn" in d:
+            self.self_attn.load_state_dict(d["self_attn"])
+            print("[native_text] restored self-attention weights", flush=True)
+        else:
+            # Old checkpoint without attention — keep fresh init
+            print("[native_text] no self-attention in checkpoint, using fresh init", flush=True)
         if "optimizer" in d:
             if self._optimizer is None:
                 self._optimizer = torch.optim.Adam([
                     {"params": self.context_mlp.parameters(), "lr": 0.001},
                     {"params": [self.word_embeddings], "lr": 0.0003},
+                    {"params": self.self_attn.parameters(), "lr": 0.001},
                 ])
             try:
                 self._optimizer.load_state_dict(d["optimizer"])
             except (ValueError, KeyError):
-                # Optimizer shape changed (e.g., word_embeddings group added)
+                # Optimizer shape changed (e.g., attention group added)
                 print("[native_text] optimizer state incompatible, re-initialized", flush=True)
         if "pos_enc" in d and self._pos_enc is not None:
             self._pos_enc.load_state_dict(d["pos_enc"])
