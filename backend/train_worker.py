@@ -474,6 +474,12 @@ def _build_native_vision_items(loop):
 
     image_paths = glob.glob("data/stage0/**/*.jpg", recursive=True)
     image_paths += glob.glob("data/stage0/**/*.png", recursive=True)
+    # Add COCO images (subsample to keep startup fast — full set used in distillation)
+    coco_paths = glob.glob("data/datasets/coco/images/*.jpg")
+    if coco_paths:
+        import random as _r
+        _r.shuffle(coco_paths)
+        image_paths += coco_paths[:2000]  # 2K COCO images for brain training
     if not image_paths:
         return
 
@@ -485,9 +491,10 @@ def _build_native_vision_items(loop):
             native_vec = loop.native_vision_encoder.encode(img)
             # Also get CLIP embedding as teacher signal
             clip_vec = loop.image_encoder.encode(img)
-            # Extract label from directory name
+            # Extract label from directory name (stage0) or filename (COCO)
             import os
-            label = os.path.basename(os.path.dirname(path))
+            dirname = os.path.basename(os.path.dirname(path))
+            label = dirname if dirname not in ("images", "stage0", "") else "coco"
 
             # Patch-based sequential vectors (4×4 grid with positional encoding)
             patch_seq = None
@@ -531,6 +538,12 @@ def distill_vision_step(loop, items_processed):
         import glob
         image_paths = glob.glob("data/stage0/**/*.jpg", recursive=True)
         image_paths += glob.glob("data/stage0/**/*.png", recursive=True)
+        # Add COCO images for distillation (subsample for memory)
+        coco_paths = glob.glob("data/datasets/coco/images/*.jpg")
+        if coco_paths:
+            import random as _r
+            _r.shuffle(coco_paths)
+            image_paths += coco_paths[:5000]  # 5K COCO for distillation
         if not image_paths:
             return
         import PIL.Image
