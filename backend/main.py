@@ -203,14 +203,10 @@ def _build_components_real(config):
     emitter._last_graph_json = model.graph.to_json()
     emitter._step = model.step
 
-    # Pre-load patch features at startup (takes ~30s but blocks only during init, not event loop)
+    # patch_features.pt is 11GB — skip loading to avoid OOM.
+    # Patches are optional enrichment, not needed for training.
     if hasattr(curriculum, '_cache') and curriculum._cache is not None:
-        cache = curriculum._cache
-        if cache._patches is None and cache._patches_path is not None:
-            import torch as _torch
-            print("Loading patch features (~30s)...", flush=True)
-            cache._patches = _torch.load(cache._patches_path, weights_only=False)
-            print(f"Patch features loaded: {len(cache._patches)} images.", flush=True)
+        curriculum._cache._patches_path = None
 
     return loop, emitter, store, curriculum
 

@@ -193,6 +193,18 @@ class TextCurriculum:
                 expected_vec = vec
                 description = raw["text"]
 
+            # Sequential encoding: per-word vectors with positional encoding
+            # Only when encoder supports it (NativeTextEncoder after switch)
+            sequence = None
+            if hasattr(self._encoder, 'encode_sequential'):
+                try:
+                    # Use answer text for sequence (that's what brain learns to predict)
+                    seq_text = raw["answer"] if (raw["answer"] and (raw["question"] or raw["text"])) else raw["text"]
+                    if seq_text and len(seq_text.split()) > 2:
+                        sequence = self._encoder.encode_sequential(seq_text)
+                except Exception:
+                    pass  # fall back to non-sequential
+
             return CurriculumItem(
                 id=f"text_{raw['index']}",
                 stage=0,
@@ -205,6 +217,7 @@ class TextCurriculum:
                 template_slots={"description": description},
                 stage_relevance=1.0,
                 precomputed=True,
+                sequence=sequence,
             )
         except Exception as e:
             logger.warning("[text_curriculum] failed to encode item %d: %s", raw["index"], e)
@@ -222,3 +235,93 @@ class TextCurriculum:
             lv = item["level"]
             counts[lv] = counts.get(lv, 0) + 1
         return counts
+
+
+class PreEncodedTextCurriculum(TextCurriculum):
+    """TextCurriculum variant that serves pre-encoded CLIP vectors.
+
+    Used by parallel training workers to avoid loading CLIP (~400MB) per process.
+    Parent pre-encodes all items once, workers use cached vectors.
+
+    After native encoder switch (cos_sim > 0.65), re-encodes via the lightweight
+    native encoder instead of using stale CLIP vectors.
+    """
+
+    def __init__(self, pre_encoded_items: list[dict], native_text_encoder=None):
+        """Initialize from pre-encoded item dicts.
+
+        Each dict has: index, text, question, answer, category, level, source,
+        input_vec (Tensor), expected_vec (Tensor).
+        """
+        self._items = []
+        self._cursor = 0
+        self._encoder = native_text_encoder
+        self._pre_encoded: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+        self._use_pre_encoded = True
+
+        for item in pre_encoded_items:
+            idx = item["index"]
+            self._items.append({
+                "index": idx,
+                "text": item.get("text", ""),
+                "question": item.get("question", ""),
+                "answer": item.get("answer", ""),
+                "category": item.get("category", "text"),
+                "level": item.get("level", 1),
+                "source": item.get("source", "pre_encoded"),
+            })
+            self._pre_encoded[idx] = (item["input_vec"], item["expected_vec"])
+
+        if self._items:
+            random.shuffle(self._items)
+            print(f"[text_curriculum] pre-encoded: {len(self._items)} items", flush=True)
+
+    def _encode(self, text: str) -> torch.Tensor:
+        """Encode via native encoder (only called after CLIP→native switch)."""
+        if self._encoder is None:
+            raise RuntimeError("No encoder available — pre-encoded vectors should be used")
+        return self._encoder.encode(text)
+
+    def _make_curriculum_item(self, raw: dict) -> CurriculumItem | None:
+        """Build item from pre-encoded vectors, or re-encode via native encoder."""
+        idx = raw["index"]
+
+        # After native encoder switch, encode fresh (native encoder is tiny)
+        if not self._use_pre_encoded or idx not in self._pre_encoded:
+            return super()._make_curriculum_item(raw)
+
+        try:
+            input_vec, expected_vec = self._pre_encoded[idx]
+
+            has_question = bool(raw["question"] and raw["answer"])
+            has_text_answer = bool(raw["text"] and raw["answer"])
+
+            if has_question:
+                description = f"Q: {raw['question']} A: {raw['answer']}"
+            elif has_text_answer:
+                description = f"Q: {raw['text']} A: {raw['answer']}"
+            else:
+                description = raw["text"]
+
+            return CurriculumItem(
+                id=f"text_{idx}",
+                stage=0,
+                item_type="text",
+                input_vector=input_vec,
+                expected_vector=expected_vec,
+                label=raw["category"],
+                description=description,
+                context=description,
+                template_slots={"description": description},
+                stage_relevance=1.0,
+                precomputed=True,
+            )
+        except Exception as e:
+            logger.warning("[pre_encoded] failed for item %d: %s", idx, e)
+            return None
+
+    def switch_to_native(self):
+        """Drop pre-encoded CLIP vectors, start using native encoder."""
+        self._use_pre_encoded = False
+        self._pre_encoded.clear()
+        print("[text_curriculum] switched to native encoder, freed pre-encoded cache", flush=True)

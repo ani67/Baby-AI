@@ -3,6 +3,7 @@ import random
 import sqlite3
 import struct
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
@@ -33,6 +34,7 @@ class CurriculumItem:
     image_url: str | None = None                # remote URL for frontend thumbnail
     precomputed: bool = False                    # True when item came from embedding_cache
     patches: torch.Tensor | None = None         # C.3: (49, 512) patch-level features
+    sequence: list[torch.Tensor] | None = None  # sequential vectors (per-word or per-patch)
 
 
 class EmptyPoolError(Exception):
@@ -59,7 +61,7 @@ class _EmbeddingCache:
         self._ids: list[int] = []
         self._count: int = 0
         self._cursor_idx: int = 0  # sequential position for round-robin
-        self._step_times: list[float] = []
+        self._step_times: deque[float] = deque(maxlen=1000)
         self._has_image_url: bool = False
         self._patches: dict[int, torch.Tensor] | None = None  # C.3: lazy-loaded
         self._patches_path: str | None = None
@@ -95,11 +97,9 @@ class _EmbeddingCache:
             # Detect image_url column for backwards compat
             cols = {r[1] for r in self._conn.execute("PRAGMA table_info(embedding_cache)").fetchall()}
             self._has_image_url = "image_url" in cols
-            # C.3: Defer patch features loading until first access
-            patches_path = os.path.join(os.path.dirname(self._db_path), "patch_features.pt")
-            if os.path.exists(patches_path):
-                self._patches_path = patches_path
-                print(f"[curriculum] patch features available (lazy-load)", flush=True)
+            # patch_features.pt is 11GB — skip loading to avoid OOM.
+            # Patches are optional enrichment, not needed for core training.
+            self._patches_path = None
             # Sequential episodes: discover categories
             self._init_categories()
         except Exception as e:

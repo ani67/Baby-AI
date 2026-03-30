@@ -765,7 +765,10 @@ class LearningLoop:
             if not is_positive:
                 vec = F.normalize(torch.randn(self.model.input_dim), dim=0)
             patches = getattr(item, "patches", None)  # C.3: (49, 512) or None
-            samples.append((vec, is_positive, teacher_vec, patches))
+            # Sequential items: pass word/patch sequence for position-aware learning
+            seq = getattr(item, "sequence", None)
+            input_data = seq if seq else vec
+            samples.append((input_data, is_positive, teacher_vec, patches))
 
         # Log skip rate periodically
         if skipped > 0 and self._batch_count % 50 == 0:
