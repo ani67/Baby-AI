@@ -52,6 +52,10 @@ class NativeTextEncoder:
             nn.Linear(512, 512),
         )
 
+        # Positional encoding for sequential processing
+        from .positional import PositionalEncoding
+        self._pos_enc = PositionalEncoding(max_positions=32, dim=512)
+
         # Optimizer created lazily on first distill_step
         self._optimizer: torch.optim.Adam | None = None
 
@@ -100,6 +104,25 @@ class NativeTextEncoder:
     def encode_batch(self, texts: list[str]) -> torch.Tensor:
         """Batch of texts → (N, 512) L2-normalized vectors."""
         return torch.stack([self.encode(t) for t in texts])
+
+    def encode_sequential(self, text: str) -> list[torch.Tensor]:
+        """Text → list of per-word vectors with positional encoding.
+
+        Each word gets its own contextualized embedding + position signal.
+        Used for sequential presentation to the brain (word-by-word).
+        Falls back to [encode(text)] for single-word inputs.
+        """
+        ids = self._tokenize(text)
+        if len(ids) <= 1:
+            return [self.encode(text)]
+
+        embs = torch.stack([self.word_embeddings[i] for i in ids])
+        contextualized = self.context_mlp(embs)  # (N, 512)
+
+        if self._pos_enc is None:
+            return [F.normalize(contextualized[i], dim=0) for i in range(len(ids))]
+
+        return [self._pos_enc.encode(i, contextualized[i]) for i in range(len(ids))]
 
     # ------------------------------------------------------------------
     # Blended encoding (smooth CLIP → native transition)
@@ -159,10 +182,12 @@ class NativeTextEncoder:
     # ------------------------------------------------------------------
 
     def state_dict(self) -> dict:
-        """Return serializable state (MLP weights + optimizer)."""
+        """Return serializable state (MLP weights + optimizer + positional)."""
         d = {"context_mlp": self.context_mlp.state_dict()}
         if self._optimizer is not None:
             d["optimizer"] = self._optimizer.state_dict()
+        if self._pos_enc is not None:
+            d["pos_enc"] = self._pos_enc.state_dict()
         return d
 
     def load_state_dict(self, d: dict) -> None:
@@ -176,3 +201,6 @@ class NativeTextEncoder:
                     self.context_mlp.parameters(), lr=0.001
                 )
             self._optimizer.load_state_dict(d["optimizer"])
+        if "pos_enc" in d and self._pos_enc is not None:
+            self._pos_enc.load_state_dict(d["pos_enc"])
+            print("[native_text] restored positional encoding", flush=True)

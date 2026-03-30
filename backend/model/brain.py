@@ -567,6 +567,65 @@ class BrainState:
 
         return prediction, activations
 
+    # ── Sequential Forward ──
+
+    @torch.no_grad()
+    def forward_sequence(
+        self,
+        vectors: list[torch.Tensor],
+        memory: "WorkingMemory | None" = None,
+    ) -> tuple[torch.Tensor, dict]:
+        """
+        Process a sequence of vectors through the brain, building temporal
+        context via the activation buffer. Used for word-by-word text and
+        patch-by-patch vision.
+
+        For vectors [v0, v1, ..., vN]:
+          - v0..vN-1: forward-only (no update), accumulate buffer context
+          - vN: forward → return prediction + activations
+
+        Buffer params are temporarily adjusted for sequences:
+          - buffer_decay: 0.95 (slower decay → earlier tokens survive)
+          - buffer_weight: 0.30 (stronger context → position matters more)
+
+        If memory is provided: write each step's prediction, read before
+        each forward (spatial attention for patch scanning).
+        """
+        if not vectors:
+            return torch.zeros(self.dim, device=self.device), {}
+
+        if len(vectors) == 1:
+            return self.forward(vectors[0])
+
+        # Save buffer params
+        orig_decay = self.buffer_decay
+        orig_weight = self.buffer_weight
+        self.buffer_decay = 0.95
+        self.buffer_weight = 0.30
+
+        prediction = torch.zeros(self.dim, device=self.device)
+        activations: dict = {}
+
+        for i, v in enumerate(vectors):
+            x = v
+
+            # Memory read: blend stored patch/word context
+            if memory is not None and memory.occupancy > 0:
+                mem_context = memory.read(x)
+                x = F.normalize(0.85 * x + 0.15 * mem_context, dim=0)
+
+            prediction, activations = self.forward(x)
+
+            # Memory write: store prediction for future steps
+            if memory is not None:
+                memory.write(prediction)
+
+        # Restore buffer params (keep accumulated buffer — that's the point)
+        self.buffer_decay = orig_decay
+        self.buffer_weight = orig_weight
+
+        return prediction, activations
+
     # ── Learning: Parallel Correction-Based ──
 
     @torch.no_grad()
@@ -955,17 +1014,16 @@ class BrainState:
 
     def summary(self) -> dict:
         n = self.n
-        active = (~self.dormant[:n]).sum().item()
-        layers = set()
-        for i in range(n):
-            if not self.dormant[i]:
-                layers.add(int(self.layer_indices[i].item()))
+        dormant = self.dormant[:n]
+        active = int((~dormant).sum().item())
+        active_layers = self.layer_indices[:n][~dormant].cpu()
+        layer_count = int(active_layers.unique().numel())
         return {
             "cluster_count": active,
-            "node_count": active,  # 1:1 in v2
+            "node_count": active,
             "edge_count": len(self._edge_strengths),
-            "dormant_count": self.dormant[:n].sum().item(),
-            "layer_count": len(layers),
+            "dormant_count": n - active,
+            "layer_count": layer_count,
             "active_tiles": active,
             "quadtree_depth": 0,
         }

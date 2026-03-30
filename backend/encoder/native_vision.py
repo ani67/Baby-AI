@@ -137,6 +137,8 @@ class NativeVisionEncoder:
     def __init__(self, device: str = "cpu") -> None:
         self.device = torch.device(device)
         self.net = _ConvNet().to(self.device)
+        from .positional import PositionalEncoding
+        self._pos_enc = PositionalEncoding(max_positions=32, dim=512)
         self.net.eval()
         self._optimizer: torch.optim.Adam | None = None
 
@@ -171,6 +173,32 @@ class NativeVisionEncoder:
             x = _prepare(image).to(self.device)
             emb, patches = self.net(x, with_patches=True)
         return emb.squeeze(0).cpu(), patches.squeeze(0).cpu()
+
+    # -- Patch grid (sequential) -----------------------------------------------
+
+    def encode_patches_grid(self, image: PIL.Image.Image) -> list[torch.Tensor]:
+        """Image → 16 patch vectors (4×4 grid) with positional encoding.
+
+        Downsamples 16×16 layer-3 features to 4×4 via avg pooling, then adds
+        learned positional encoding for spatial awareness. Used for patch-by-patch
+        sequential presentation to the brain.
+        """
+        with torch.no_grad():
+            x = _prepare(image).to(self.device)
+            _, patches_256x512 = self.net(x, with_patches=True)
+
+        # patches_256x512: (1, 256, 512) from 16×16 grid
+        # Reshape to spatial grid and avg pool to 4×4
+        grid = patches_256x512.squeeze(0).reshape(16, 16, 512)  # (16, 16, 512)
+        # Pool 4×4 blocks: each output cell is mean of 4×4 region
+        grid = grid.reshape(4, 4, 4, 4, 512)  # (4, block_h, 4, block_w, 512)
+        pooled = grid.mean(dim=(1, 3))  # (4, 4, 512)
+        flat = F.normalize(pooled.reshape(16, 512), dim=-1).cpu()  # (16, 512)
+
+        # Add positional encoding (raster scan: top-left to bottom-right)
+        if self._pos_enc is not None:
+            return [self._pos_enc.encode(i, flat[i]) for i in range(16)]
+        return [flat[i] for i in range(16)]
 
     # -- Distillation --------------------------------------------------------
 
@@ -221,11 +249,20 @@ class NativeVisionEncoder:
     # -- Serialization -------------------------------------------------------
 
     def state_dict(self) -> dict:
-        return self.net.state_dict()
+        d = {"net": self.net.state_dict()}
+        if self._pos_enc is not None:
+            d["pos_enc"] = self._pos_enc.state_dict()
+        return d
 
     def load_state_dict(self, d: dict) -> None:
-        self.net.load_state_dict(d)
+        # Backward compat: old checkpoints save net state directly
+        if "net" in d:
+            self.net.load_state_dict(d["net"])
+        else:
+            self.net.load_state_dict(d)
         self.net.eval()
+        if "pos_enc" in d and self._pos_enc is not None:
+            self._pos_enc.load_state_dict(d["pos_enc"])
 
     # -- Convenience ---------------------------------------------------------
 

@@ -307,13 +307,20 @@ class BabyModelV2:
             x = sample[0]
             teacher_vec = sample[2] if len(sample) > 2 else None
 
-            # Forward (with pre-computed weights — avoids re-normalizing each call)
-            prediction, activations = self.brain.forward(x, _pre_sensed=_pre)
-            all_activations.append(activations)
-
-            # Learn from correction
-            if teacher_vec is not None:
-                self.brain.update(x, teacher_vec)
+            # Sequential item: list of vectors (per-word text or per-patch vision)
+            if isinstance(x, list):
+                prediction, activations = self.brain.forward_sequence(
+                    x, memory=self._working_memory,
+                )
+                all_activations.append(activations)
+                if teacher_vec is not None:
+                    self.brain.update(x[-1], teacher_vec)
+            else:
+                # Standard single-vector item
+                prediction, activations = self.brain.forward(x, _pre_sensed=_pre)
+                all_activations.append(activations)
+                if teacher_vec is not None:
+                    self.brain.update(x, teacher_vec)
 
             # Adapt thresholds
             self.brain.adapt_thresholds()

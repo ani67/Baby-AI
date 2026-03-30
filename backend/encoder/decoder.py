@@ -502,3 +502,9 @@ class GroundedDecoder:
         if "word_embeddings" in d:
             self.word_embeddings = d["word_embeddings"]
             print(f"[decoder] restored {self.word_embeddings.shape[0]} word embeddings", flush=True)
+
+    def save_embeddings(self, path: str):
+        torch.save(self.state_dict(), path)
+
+    def load_embeddings(self, path: str):
+        self.load_state_dict(torch.load(path, weights_only=True))
