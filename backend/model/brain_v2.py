@@ -479,6 +479,50 @@ class BrainV2:
         active_weights = F.normalize(self.weights[active_idx], dim=1)
         return active_weights, active_idx
 
+    @torch.no_grad()
+    def score_candidates(self, candidates: torch.Tensor) -> torch.Tensor:
+        """Batched read-only scoring: how well does the brain already know each candidate?
+
+        Takes (N, dim) tensor, returns (N,) similarity scores.
+        No state mutation — no buffer updates, no age increments, no step_count changes.
+        """
+        candidates = F.normalize(candidates.to(self.device), dim=1)
+
+        if self.projection_alpha > 0:
+            candidates = F.normalize(
+                candidates + self.projection_alpha * (candidates @ self.projection.T),
+                dim=1,
+            )
+
+        active_mask = ~self.dormant[:self.n]
+        active_idx = active_mask.nonzero().squeeze(1)
+        n_active = len(active_idx)
+        if n_active == 0:
+            return torch.zeros(candidates.shape[0], device=self.device)
+
+        active_weights = F.normalize(self.weights[active_idx], dim=1)
+        active_thresholds = self.thresholds[active_idx]
+
+        scores = active_weights @ candidates.T  # (A, N)
+
+        fired = scores > active_thresholds.unsqueeze(1)
+        fire_counts = fired.sum(dim=0)
+        low_fire = (fire_counts < 4).nonzero().squeeze(1)
+        if len(low_fire) > 0:
+            _, top_k = scores[:, low_fire].topk(min(4, n_active), dim=0)
+            for col_i, cand_i in enumerate(low_fire):
+                fired[top_k[:, col_i], cand_i] = True
+
+        confidence = (scores - active_thresholds.unsqueeze(1)) / active_thresholds.clamp(min=0.01).unsqueeze(1)
+        confidence[~fired] = -1e9
+        attn = F.softmax(confidence * 2.0, dim=0)
+        attn[~fired] = 0.0
+
+        predictions = (attn.T @ active_weights)  # (N, dim)
+        predictions = F.normalize(predictions, dim=1)
+
+        return (predictions * candidates).sum(dim=1)
+
     # ── Learning: FF + REFLECT Hybrid ──
 
     @torch.no_grad()
