@@ -1,17 +1,18 @@
 """
-Grounded decoder: CLIP-bootstrapped word embeddings + nearest-neighbor retrieval.
+Grounded decoder: CLIP-bootstrapped word embeddings + learned projection.
 
-Each word has a 512-dim embedding in CLIP space, initialized from CLIP's own
-text encoder. Decoding = find the words closest to the model's output vector.
-Grounded by construction: you can only say words near what you see.
+Each word has a frozen 512-dim embedding in CLIP space, initialized from CLIP's
+text encoder. Decoding = project brain output into CLIP space via a learned
+linear layer, then find the nearest words by cosine similarity.
 
-Training: teacher descriptions nudge word embeddings toward the contexts they
-appear in, refining CLIP's initial alignment with the baby's own representations.
+Training: a projection layer learns to map brain vectors into CLIP embedding
+space. Word embeddings stay frozen to prevent collapse.
 """
 
 import math
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 from .vocab import Vocabulary
@@ -65,7 +66,6 @@ class GroundedDecoder:
     def __init__(self, text_encoder=None, vocab_size: int = 2048, db_path: str | None = None):
         self.vocab = Vocabulary(max_size=8192)
         self._text_encoder = text_encoder
-        self._alpha_teacher = 0.005   # nudge toward teacher context
         self.bigrams = BigramTable()
         self._train_call_count = 0
 
@@ -75,6 +75,17 @@ class GroundedDecoder:
 
         if text_encoder is not None:
             self._bootstrap_embeddings(db_path=db_path)
+
+        # Freeze word embeddings — they stay in CLIP space where they are well-separated
+        self.word_embeddings.requires_grad_(False)
+
+        # Learned projection: brain output → CLIP embedding space
+        self.projection = nn.Linear(512, 512)
+        # Near-identity init so decode() works immediately
+        with torch.no_grad():
+            self.projection.weight.copy_(torch.eye(512) + 0.01 * torch.randn(512, 512))
+            self.projection.bias.zero_()
+        self.proj_optimizer = torch.optim.Adam(self.projection.parameters(), lr=0.001)
 
     def _bootstrap_embeddings(self, db_path: str | None = None):
         """Bootstrap word embeddings. Uses mean of actual images per category
@@ -156,7 +167,9 @@ class GroundedDecoder:
         else:
             max_words = min(max_words, 4)
 
-        v = F.normalize(vector.detach(), dim=-1)
+        # Project brain output into CLIP space, then find nearest words
+        projected = self.projection(vector.detach())
+        v = F.normalize(projected, dim=-1)
 
         # Cosine similarity to all word embeddings
         sims = v @ self.word_embeddings.T  # (vocab_size,)
@@ -286,8 +299,9 @@ class GroundedDecoder:
         prev_word = None
 
         for _ in range(max_tokens):
-            # Decode from current brain state
-            v = F.normalize(hidden.detach(), dim=-1)
+            # Decode from current brain state — project into CLIP space first
+            projected = self.projection(hidden.detach())
+            v = F.normalize(projected, dim=-1)
             sims = v @ self.word_embeddings.T
             sims[:_NUM_SPECIAL] = -1.0
 
@@ -344,7 +358,8 @@ class GroundedDecoder:
                 # Restore brain buffer state for this beam
                 brain.activation_buffer = buf_snapshot.clone()
 
-                v = F.normalize(hidden.detach(), dim=-1)
+                projected = self.projection(hidden.detach())
+                v = F.normalize(projected, dim=-1)
                 sims = v @ self.word_embeddings.T
                 sims[:_NUM_SPECIAL] = -1.0
 
@@ -423,9 +438,8 @@ class GroundedDecoder:
         model_step: int = 0,
     ) -> None:
         """
-        Nudge word embeddings toward the contexts they appear in.
-        Extracts content words from teacher text, moves their embeddings
-        toward both the teacher vector and the model's output vector.
+        Train the projection layer to map brain outputs into CLIP embedding space.
+        Word embeddings stay frozen — only the projection learns.
         """
         if not teacher_text:
             return
@@ -441,7 +455,6 @@ class GroundedDecoder:
                     # Try to grow vocabulary
                     self.vocab.add_word(clean)
                     if clean in self.vocab.word_to_id:
-                        # New word added — bootstrap its embedding
                         self._bootstrap_new_word(clean)
                         content_words.append(clean)
 
@@ -451,35 +464,46 @@ class GroundedDecoder:
         # Learn bigram transitions from teacher text
         self.bigrams.observe(content_words)
 
-        teacher_vec = F.normalize(output_vector.detach(), dim=-1)
+        # --- Projection training: maximize similarity to correct word embeddings ---
+        projected = self.projection(output_vector.detach())
+        projected_norm = F.normalize(projected, dim=-1)
 
-        # Nudge each content word's embedding toward the teacher context
-        with torch.no_grad():
-            for word in content_words:
-                idx = self.vocab.word_to_id[word]
-                if idx < _NUM_SPECIAL:
-                    continue
-                emb = self.word_embeddings[idx]
-                if emb.norm() < 1e-6:
-                    continue
-                # Nudge toward teacher/model output context
-                emb = emb + self._alpha_teacher * (teacher_vec - emb)
-                self.word_embeddings[idx] = F.normalize(emb, dim=-1)
+        loss = torch.tensor(0.0)
+        n_targets = 0
+        for word in content_words:
+            idx = self.vocab.word_to_id[word]
+            if idx < _NUM_SPECIAL:
+                continue
+            target_emb = self.word_embeddings[idx]
+            if target_emb.norm() < 1e-6:
+                continue
+            target_norm = F.normalize(target_emb, dim=-1)
+            cos_sim = torch.dot(projected_norm, target_norm)
+            loss = loss + (1.0 - cos_sim)
+            n_targets += 1
+
+        if n_targets > 0:
+            loss = loss / n_targets
+            self.proj_optimizer.zero_grad()
+            loss.backward()
+            self.proj_optimizer.step()
 
         # Sequence-level training: generate, re-encode, compare to target
-        # Only every 10th call (expensive)
+        # Every 3rd call
         self._train_call_count += 1
-        if self._train_call_count % 10 == 0 and brain is not None:
+        if self._train_call_count % 3 == 0 and brain is not None:
             generated = self.generate(output_vector, brain, max_tokens=6, model_step=model_step)
             gen_vector = self.encode_sequence(generated, brain, text_encoder)
             if gen_vector is not None:
-                gap = F.normalize(output_vector, dim=0) - F.normalize(gen_vector, dim=0)
-                with torch.no_grad():
-                    for word in generated.split():
-                        idx = self.vocab.word_to_id.get(word.lower())
-                        if idx is not None and idx >= _NUM_SPECIAL:
-                            self.word_embeddings[idx] += 0.002 * gap
-                            self.word_embeddings[idx] = F.normalize(self.word_embeddings[idx], dim=0)
+                proj_gen = self.projection(gen_vector.detach())
+                proj_target = self.projection(output_vector.detach())
+                seq_loss = 1.0 - F.cosine_similarity(
+                    proj_gen.unsqueeze(0), proj_target.unsqueeze(0),
+                )
+                seq_loss = 0.005 * seq_loss.squeeze()
+                self.proj_optimizer.zero_grad()
+                seq_loss.backward()
+                self.proj_optimizer.step()
 
     def _bootstrap_new_word(self, word: str):
         """Encode a newly-added word via CLIP and append to embeddings."""
@@ -492,19 +516,30 @@ class GroundedDecoder:
         if idx >= self.word_embeddings.shape[0]:
             extra = torch.zeros(idx - self.word_embeddings.shape[0] + 1, 512)
             self.word_embeddings = torch.cat([self.word_embeddings, extra], dim=0)
+            self.word_embeddings.requires_grad_(False)
         vec = self._text_encoder.encode(f"a photo of a {word}")
         self.word_embeddings[idx] = vec
 
     def state_dict(self) -> dict:
-        return {"word_embeddings": self.word_embeddings.clone()}
+        return {
+            "word_embeddings": self.word_embeddings.clone(),
+            "projection": self.projection.state_dict(),
+            "proj_optimizer": self.proj_optimizer.state_dict(),
+        }
 
     def load_state_dict(self, d: dict):
         if "word_embeddings" in d:
             self.word_embeddings = d["word_embeddings"]
+            self.word_embeddings.requires_grad_(False)
             print(f"[decoder] restored {self.word_embeddings.shape[0]} word embeddings", flush=True)
+        if "projection" in d:
+            self.projection.load_state_dict(d["projection"])
+            print("[decoder] restored projection layer", flush=True)
+        if "proj_optimizer" in d:
+            self.proj_optimizer.load_state_dict(d["proj_optimizer"])
 
     def save_embeddings(self, path: str):
         torch.save(self.state_dict(), path)
 
     def load_embeddings(self, path: str):
-        self.load_state_dict(torch.load(path, weights_only=True))
+        self.load_state_dict(torch.load(path, weights_only=False))

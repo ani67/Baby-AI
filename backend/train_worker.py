@@ -615,6 +615,132 @@ def distill_vision_step_parallel(loop, items_processed):
             pass
 
 
+_vision_decoder = None  # lazy-loaded VisionDecoder instance
+_vision_decoder_checked = False  # whether we've attempted to load it
+
+
+def train_vision_decoder_step(loop, items_processed):
+    """Stage 3c: Vision decoder training — reconstruct images from embeddings.
+
+    Runs every batch if the decoder checkpoint exists and stage0 images are
+    available. Picks 2 random images, encodes through the vision encoder,
+    decodes through the vision decoder, computes MSE + perceptual loss,
+    and backprops through the decoder only.
+    """
+    global _vision_decoder, _vision_decoder_checked
+
+    if loop.native_vision_encoder is None:
+        return
+
+    # Lazy-load decoder from checkpoint (only attempt once)
+    if _vision_decoder is None:
+        if _vision_decoder_checked:
+            return
+        _vision_decoder_checked = True
+        dec_path = "data/checkpoints/native_vision_decoder.pt"
+        if not os.path.exists(dec_path):
+            return
+        try:
+            from encoder.native_vision_decoder import VisionDecoder
+            _vision_decoder = VisionDecoder(dim=512)
+            _vision_decoder.load(dec_path)
+            _vision_decoder._optimizer = torch.optim.Adam(
+                _vision_decoder.net.parameters(), lr=0.0005,
+            )
+            print(f"[vision_decoder] Loaded decoder from {dec_path}", flush=True)
+        except Exception as e:
+            print(f"[vision_decoder] Failed to load decoder: {e}", flush=True)
+            return
+
+    # Need stage0 images
+    if not _vision_distill_images and not _native_vision_items:
+        return
+
+    import random as _rd
+    import PIL.Image
+
+    # Pick 2 random images from stage0 (reload from disk — cheap)
+    source = _vision_distill_images if _vision_distill_images else []
+    if not source:
+        # Fall back to native_vision_items paths
+        source = [
+            (item.image_path, item.expected_vector)
+            for item in _native_vision_items
+            if getattr(item, 'image_path', '')
+        ]
+    if len(source) < 2:
+        return
+
+    samples = _rd.sample(source, min(2, len(source)))
+    pil_images = []
+    for path, _ in samples:
+        try:
+            pil_images.append(PIL.Image.open(path).convert("RGB"))
+        except Exception:
+            continue
+    if len(pil_images) < 1:
+        return
+
+    try:
+        # Encode through vision encoder (no grad — encoder is frozen for this step)
+        with torch.no_grad():
+            embeddings = loop.native_vision_encoder.encode_batch(pil_images)
+
+        # Decode through vision decoder
+        _vision_decoder.net.train()
+        reconstructed = _vision_decoder.net(embeddings)  # (N, 3, 64, 64)
+
+        # Target: raw pixels [0, 1] at 64x64
+        from encoder.native_vision_decoder import _prepare_target_batch
+        targets = _prepare_target_batch(pil_images)  # (N, 3, 64, 64)
+
+        # MSE loss
+        mse_loss = F.mse_loss(reconstructed, targets)
+
+        # Perceptual loss: compare conv features of original vs reconstructed
+        # Resize reconstructed to 192x192 for encoder input
+        from encoder.native_vision import _prepare_batch
+        orig_enc = _prepare_batch(pil_images)  # (N, 3, 192, 192) ImageNet-normed
+        recon_up = F.interpolate(reconstructed, size=(192, 192), mode="bilinear", align_corners=False)
+        # Normalize reconstructed to ImageNet stats
+        _mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+        _std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+        recon_normed = (recon_up - _mean) / _std
+
+        with torch.no_grad():
+            f1_orig, f2_orig, f3_orig = loop.native_vision_encoder.net.extract_features(orig_enc)
+
+        f1_rec, f2_rec, f3_rec = loop.native_vision_encoder.net.extract_features(recon_normed)
+
+        percept_loss = (
+            F.mse_loss(f1_rec, f1_orig)
+            + F.mse_loss(f2_rec, f2_orig)
+            + F.mse_loss(f3_rec, f3_orig)
+        ) / 3.0
+
+        loss = mse_loss + 0.5 * percept_loss
+
+        _vision_decoder._optimizer.zero_grad()
+        loss.backward()
+        _vision_decoder._optimizer.step()
+        _vision_decoder.net.eval()
+
+        # Clean up PIL images
+        for img in pil_images:
+            del img
+
+        # Save decoder checkpoint periodically
+        if items_processed % 7500 < 50:
+            try:
+                _vision_decoder.save("data/checkpoints/native_vision_decoder.pt")
+            except Exception:
+                pass
+
+    except Exception as e:
+        _vision_decoder.net.eval()
+        print(f"[vision_decoder] training error: {e}", flush=True)
+
+
 def track_categories(loop, items, items_processed):
     """Stage 4: Category performance tracking (every 1500 items)."""
     if items_processed % 1500 > 50:
@@ -1126,6 +1252,14 @@ def run(loop):
             except Exception as e:
                 print(f"[distill_vision] error: {e}", flush=True)
             _t["distill_vision"] = time.perf_counter() - _t0
+
+            # 3c. Vision decoder training (every batch, if decoder checkpoint exists)
+            _t0 = time.perf_counter()
+            try:
+                train_vision_decoder_step(loop, items_processed)
+            except Exception as e:
+                print(f"[vision_decoder] error: {e}", flush=True)
+            _t["vision_decoder"] = time.perf_counter() - _t0
 
             # 4. Categories (every 1500 items)
             _t0 = time.perf_counter()
