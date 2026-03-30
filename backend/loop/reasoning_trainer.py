@@ -79,6 +79,7 @@ class ReasoningTrainer:
 
     def _cosine(self, a: torch.Tensor, b: torch.Tensor) -> float:
         """Cosine similarity between two vectors."""
+        b = b.to(a.device)
         return F.cosine_similarity(a.unsqueeze(0), b.unsqueeze(0)).item()
 
     def _get_memory(self):

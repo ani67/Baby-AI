@@ -536,28 +536,38 @@ def distill_vision_step(loop, items_processed):
     # Lazy-load CLIP embeddings once (NO PIL images cached — saves ~500MB)
     if _vision_distill_images is None:
         import glob
+        import os
+        _vision_distill_images = []
+
+        # Load pre-encoded COCO embeddings if available (50K images, instant)
+        coco_cache = "data/checkpoints/coco_clip_embeddings.pt"
+        if os.path.exists(coco_cache):
+            import torch as _t
+            coco_embs = _t.load(coco_cache, weights_only=True)
+            coco_img_dir = "data/datasets/coco/images"
+            for fname, clip_vec in coco_embs.items():
+                path = os.path.join(coco_img_dir, fname)
+                if os.path.exists(path):
+                    _vision_distill_images.append((path, clip_vec))
+            del coco_embs
+            print(f"[vision_distill] loaded {len(_vision_distill_images)} pre-encoded COCO embeddings", flush=True)
+
+        # Add stage0 images (encode through CLIP on first load)
         image_paths = glob.glob("data/stage0/**/*.jpg", recursive=True)
         image_paths += glob.glob("data/stage0/**/*.png", recursive=True)
-        # Add COCO images for distillation (subsample for memory)
-        coco_paths = glob.glob("data/datasets/coco/images/*.jpg")
-        if coco_paths:
-            import random as _r
-            _r.shuffle(coco_paths)
-            image_paths += coco_paths[:5000]  # 5K COCO for distillation
-        if not image_paths:
-            return
-        import PIL.Image
-        _vision_distill_images = []
-        for path in image_paths:
-            try:
-                img = PIL.Image.open(path).convert("RGB")
-                clip_vec = loop.image_encoder.encode(img)
-                _vision_distill_images.append((path, clip_vec))
-                del img  # don't keep PIL image in memory
-            except Exception:
-                continue
+        if image_paths:
+            import PIL.Image
+            for path in image_paths:
+                try:
+                    img = PIL.Image.open(path).convert("RGB")
+                    clip_vec = loop.image_encoder.encode(img)
+                    _vision_distill_images.append((path, clip_vec))
+                    del img
+                except Exception:
+                    continue
+
         if _vision_distill_images:
-            print(f"[vision_distill] cached {len(_vision_distill_images)} clip vectors (no images)", flush=True)
+            print(f"[vision_distill] total: {len(_vision_distill_images)} images for distillation", flush=True)
 
     if not _vision_distill_images:
         return
