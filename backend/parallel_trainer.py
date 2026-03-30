@@ -46,8 +46,39 @@ CACHE_PATH = os.path.join(DATA_DIR, "checkpoints", "pre_encoded_cache.pt")
 # ── Pre-encoding (parent process) ──
 
 def _load_raw_text_items() -> list[dict]:
-    """Load all text curriculum JSON files, return raw item dicts."""
+    """Load all text curriculum JSON files + data/datasets/*.json, return raw item dicts.
+
+    Large factual datasets (triviaqa, simple_wikipedia) are capped at 20K items
+    to prevent drowning out reasoning/math/coding items.
+    """
+    import random as _rng
+
+    _HIGH_WEIGHT_CATS = {"math", "coding", "science_reasoning", "reasoning",
+                         "commonsense_reasoning", "pronoun_reasoning"}
+    FACTUAL_CAP = 20_000
+
     items = []
+
+    def _ingest(entries, source_name):
+        count = 0
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            item = {
+                "index": len(items),
+                "text": entry.get("text", ""),
+                "question": entry.get("question", ""),
+                "answer": entry.get("answer", ""),
+                "category": entry.get("category", "text"),
+                "level": int(entry.get("level", 1)),
+                "source": source_name,
+            }
+            if item["text"] or (item["question"] and item["answer"]):
+                items.append(item)
+                count += 1
+        return count
+
+    # Core curriculum files
     filenames = [
         "text_curriculum.json", "text_diverse.json",
         "text_conversations.json", "text_commonsense.json",
@@ -65,20 +96,36 @@ def _load_raw_text_items() -> list[dict]:
             data = data.get("items", [])
         if not isinstance(data, list):
             continue
-        for entry in data:
-            if not isinstance(entry, dict):
+        _ingest(data, filename)
+
+    # Dataset files from data/datasets/
+    datasets_dir = os.path.join(DATA_DIR, "datasets")
+    if os.path.isdir(datasets_dir):
+        for fname in sorted(os.listdir(datasets_dir)):
+            if not fname.endswith(".json"):
                 continue
-            item = {
-                "index": len(items),
-                "text": entry.get("text", ""),
-                "question": entry.get("question", ""),
-                "answer": entry.get("answer", ""),
-                "category": entry.get("category", "text"),
-                "level": int(entry.get("level", 1)),
-                "source": filename,
-            }
-            if item["text"] or (item["question"] and item["answer"]):
-                items.append(item)
+            path = os.path.join(datasets_dir, fname)
+            try:
+                data = json.loads(open(path).read())
+            except (json.JSONDecodeError, OSError):
+                continue
+            if isinstance(data, dict):
+                entries = data.get("items", [])
+            elif isinstance(data, list):
+                entries = data
+            else:
+                continue
+            if not entries:
+                continue
+            # Cap factual datasets
+            sample_cat = entries[0].get("category", "text") if isinstance(entries[0], dict) else "text"
+            if sample_cat not in _HIGH_WEIGHT_CATS and len(entries) > FACTUAL_CAP:
+                _rng.shuffle(entries)
+                entries = entries[:FACTUAL_CAP]
+            count = _ingest(entries, fname)
+            if count:
+                print(f"[pre-encode] dataset {fname}: {count} items", flush=True)
+
     return items
 
 

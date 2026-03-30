@@ -793,16 +793,152 @@ def record_cofiring(loop, activations, items_processed):
 
 
 def run_reasoning(loop, items_processed):
-    """Stage 7: Reasoning tasks (every 1500 items, with state isolation)."""
-    if loop._reasoning_trainer is None or items_processed % 1500 > 50:
+    """Stage 7: Reasoning tasks (every 300 items = ~10 batches, with state isolation).
+    Was every 1500 — way too infrequent for meaningful learning."""
+    if loop._reasoning_trainer is None or items_processed % 300 > 50:
         return
     saved = loop.model.brain.activation_buffer.clone()
     try:
         result = loop._reasoning_trainer.train_step()
         loop.metrics.record_reasoning(result['type'], result['correct'], result.get('similarity', 0.0))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[reasoning] error: {e}", flush=True)
     loop.model.brain.activation_buffer = saved
+
+
+_cot_items: list[dict] = []  # cached chain-of-thought items from gsm8k/arc
+
+
+def _load_cot_items() -> list[dict]:
+    """Load items with multi-step answers (gsm8k, arc) for chain-of-thought training."""
+    import re
+    items = []
+    for fname in ("gsm8k.json", "arc.json"):
+        path = os.path.join("data", "datasets", fname)
+        if not os.path.exists(path):
+            continue
+        try:
+            data = json.loads(open(path).read())
+        except (json.JSONDecodeError, OSError):
+            continue
+        entries = data.get("items", []) if isinstance(data, dict) else data
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            answer = entry.get("answer", "")
+            question = entry.get("question", "") or entry.get("text", "")
+            if not answer or not question:
+                continue
+            # Split answer into reasoning steps
+            # GSM8K uses ".\n" between steps and "#### N" for final answer
+            # Also split on "Step N:" patterns
+            steps = re.split(r'\n|(?<=\.)\s+(?=[A-Z])', answer)
+            steps = [s.strip() for s in steps if s.strip() and len(s.strip()) > 3]
+            if len(steps) < 2:
+                continue
+            # Extract final answer if present (#### marker in gsm8k)
+            final = entry.get("final_answer", "")
+            if not final:
+                m = re.search(r'####\s*(.+)', answer)
+                if m:
+                    final = m.group(1).strip()
+            items.append({
+                "question": question,
+                "steps": steps,
+                "final_answer": final,
+                "category": entry.get("category", "reasoning"),
+            })
+    return items
+
+
+def train_chain_of_thought(loop, items_processed):
+    """Train multi-step reasoning by feeding step-by-step solutions as sequences.
+
+    Uses brain.forward_sequence() to process reasoning steps sequentially.
+    Each step builds temporal context via the activation buffer, teaching the
+    brain to USE its sequential processing for multi-step reasoning.
+
+    Runs every 100 items (expensive: multiple forward + update passes).
+    """
+    global _cot_items
+    if items_processed % 100 > 0:
+        return
+    if loop.native_text_encoder is None and not hasattr(loop, '_text_encoder_for_cot'):
+        return
+
+    # Lazy-load CoT items
+    if not _cot_items:
+        _cot_items = _load_cot_items()
+        if _cot_items:
+            print(f"[cot] loaded {len(_cot_items)} chain-of-thought items", flush=True)
+        else:
+            return
+    if not _cot_items:
+        return
+
+    import random
+    item = random.choice(_cot_items)
+
+    # Pick the encoder (native preferred, fall back to text_enc tuple)
+    encoder = loop.native_text_encoder
+    if encoder is None:
+        _, text_enc, _ = loop._encoders
+        if text_enc is None:
+            return
+        encoder = text_enc
+
+    brain = loop.model.brain
+
+    # Save activation buffer state (isolate CoT from main training)
+    saved_buffer = brain.activation_buffer.clone()
+
+    try:
+        # Encode question and each reasoning step
+        q_vec = encoder.encode(item["question"])
+        step_vecs = [encoder.encode(step) for step in item["steps"]]
+
+        # Build the full sequence: [question, step1, step2, ..., stepN]
+        sequence = [q_vec] + step_vecs
+
+        # Forward sequence through brain — builds temporal context
+        prediction, activations = brain.forward_sequence(sequence)
+
+        # Train: the prediction after all steps should match the final answer
+        if item["final_answer"]:
+            target_vec = encoder.encode(item["final_answer"])
+        else:
+            # Use last step as target
+            target_vec = step_vecs[-1]
+
+        target_vec = F.normalize(target_vec, dim=0)
+
+        # Update brain weights toward the target
+        brain.update(prediction, target_vec)
+
+        # Also train intermediate predictions: each step should predict the next
+        # This teaches the brain that sequential context improves predictions
+        if len(step_vecs) >= 3:
+            # Reset buffer and replay with intermediate targets
+            brain.activation_buffer = saved_buffer.clone()
+            mid = len(step_vecs) // 2
+            mid_sequence = [q_vec] + step_vecs[:mid]
+            mid_pred, _ = brain.forward_sequence(mid_sequence)
+            mid_target = F.normalize(step_vecs[mid], dim=0)
+            brain.update(mid_pred, mid_target)
+
+        # Log periodically
+        sim = float(torch.dot(prediction, target_vec).item())
+        if items_processed % 1000 < 100:
+            print(
+                f"[cot] step={loop.model.step} sim={sim:.3f} "
+                f"steps={len(item['steps'])} cat={item['category']}",
+                flush=True,
+            )
+    except Exception as e:
+        print(f"[cot] error: {e}", flush=True)
+    finally:
+        # Restore buffer state
+        brain.activation_buffer = saved_buffer
 
 
 def save_checkpoint(loop, items_processed=0):
@@ -1292,6 +1428,14 @@ def run(loop):
             except Exception as e:
                 print(f"[reasoning] error: {e}", flush=True)
             _t["reasoning"] = time.perf_counter() - _t0
+
+            # 7b. Chain-of-thought training (every 100 items)
+            _t0 = time.perf_counter()
+            try:
+                train_chain_of_thought(loop, items_processed)
+            except Exception as e:
+                print(f"[cot] error: {e}", flush=True)
+            _t["cot"] = time.perf_counter() - _t0
 
             # 8. Decoder training + dialogue capture
             _t0 = time.perf_counter()

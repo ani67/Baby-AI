@@ -1,16 +1,21 @@
 """
 Text curriculum: serves text training data as CurriculumItems.
 
-Loads structured text data from text_curriculum.json and reasoning_tasks.json,
-encodes on demand via any text encoder with an .encode() method, and gates
-difficulty by model step so the brain progresses from simple sentences to
-multi-sentence reasoning.
+Loads structured text data from text_curriculum.json, reasoning_tasks.json,
+and all datasets in data/datasets/*.json. Encodes on demand via any text
+encoder with an .encode() method, and gates difficulty by model step so
+the brain progresses from simple sentences to multi-sentence reasoning.
 
 Progressive difficulty schedule:
     step 0-5K:    level 1 only (simple noun/verb sentences)
     step 5K-15K:  levels 1-2 (+ relationships, prepositions)
     step 15K-30K: levels 1-3 (+ QA, cause/effect)
     step 30K+:    all levels (+ multi-sentence, reasoning)
+
+Dataset sampling weights (80/20 reasoning focus):
+    2x: math, coding, science_reasoning, reasoning, commonsense_reasoning,
+        pronoun_reasoning
+    1x: facts, factual_qa, commonsense_completion
 """
 
 import json
@@ -31,6 +36,13 @@ _LEVEL_GATES = [
     (15_000, 3),
     (30_000, 999),  # all levels
 ]
+
+# Categories that get 2x sampling weight (reasoning-heavy).
+# Everything else gets 1x.
+_HIGH_WEIGHT_CATEGORIES = frozenset({
+    "math", "coding", "science_reasoning", "reasoning",
+    "commonsense_reasoning", "pronoun_reasoning",
+})
 
 
 def _max_level_for_step(step: int) -> int:
@@ -62,6 +74,7 @@ class TextCurriculum:
         self._load_file("text_conversations.json")
         self._load_file("text_commonsense.json")
         self._load_file("reasoning_tasks.json")
+        self._load_datasets_dir()
 
         if self._items:
             random.shuffle(self._items)
@@ -111,6 +124,72 @@ class TextCurriculum:
             if item["text"] or (item["question"] and item["answer"]):
                 self._items.append(item)
 
+    def _load_datasets_dir(self) -> None:
+        """Load all JSON files from data/datasets/.
+
+        Each file has {"items": [...], "count": N, "source": "name"}.
+        Large factual datasets (triviaqa, simple_wikipedia) are capped to
+        prevent drowning out reasoning items. Reasoning/math/coding datasets
+        are loaded in full.
+        """
+        datasets_dir = self._data_dir / "datasets"
+        if not datasets_dir.exists():
+            return
+
+        # Cap for low-weight (factual) datasets to prevent domination
+        FACTUAL_CAP = 20_000
+
+        loaded_counts: dict[str, int] = {}
+        for path in sorted(datasets_dir.glob("*.json")):
+            try:
+                data = json.loads(path.read_text())
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning("[text_curriculum] failed to load %s: %s", path, e)
+                continue
+
+            if isinstance(data, dict):
+                entries = data.get("items", [])
+            elif isinstance(data, list):
+                entries = data
+            else:
+                continue
+
+            if not entries:
+                continue
+
+            # Determine category from first entry to decide capping
+            sample_cat = entries[0].get("category", "text") if isinstance(entries[0], dict) else "text"
+            is_high_weight = sample_cat in _HIGH_WEIGHT_CATEGORIES
+
+            # Cap factual datasets to prevent them drowning reasoning items
+            if not is_high_weight and len(entries) > FACTUAL_CAP:
+                random.shuffle(entries)
+                entries = entries[:FACTUAL_CAP]
+
+            count = 0
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                item = {
+                    "index": len(self._items),
+                    "text": entry.get("text", ""),
+                    "question": entry.get("question", ""),
+                    "answer": entry.get("answer", ""),
+                    "category": entry.get("category", "text"),
+                    "level": int(entry.get("level", 1)),
+                    "source": path.name,
+                }
+                if item["text"] or (item["question"] and item["answer"]):
+                    self._items.append(item)
+                    count += 1
+
+            loaded_counts[path.name] = count
+
+        if loaded_counts:
+            total = sum(loaded_counts.values())
+            breakdown = ", ".join(f"{k}={v}" for k, v in sorted(loaded_counts.items()))
+            print(f"[text_curriculum] datasets: {total} items ({breakdown})", flush=True)
+
     # ------------------------------------------------------------------
     # Encoding (on demand)
     # ------------------------------------------------------------------
@@ -128,6 +207,42 @@ class TextCurriculum:
         max_lv = _max_level_for_step(model_step)
         return [it for it in self._items if it["level"] <= max_lv]
 
+    def _weighted_sample(self, eligible: list[dict], n: int) -> list[dict]:
+        """Sample n items from eligible pool with 2x weight for reasoning categories."""
+        if not eligible:
+            return []
+        eligible_set = {id(it) for it in eligible}
+        # Build weighted pool from eligible items only
+        weighted = []
+        for it in eligible:
+            weight = 2 if it["category"] in _HIGH_WEIGHT_CATEGORIES else 1
+            weighted.extend([it] * weight)
+        if not weighted:
+            return eligible[:n]
+        if n >= len(weighted):
+            random.shuffle(weighted)
+            # Deduplicate (items appear multiple times due to weighting)
+            seen = set()
+            result = []
+            for it in weighted:
+                idx = it["index"]
+                if idx not in seen:
+                    seen.add(idx)
+                    result.append(it)
+            return result
+        # Sample with replacement then deduplicate
+        selected = []
+        seen = set()
+        attempts = 0
+        while len(selected) < n and attempts < n * 4:
+            it = random.choice(weighted)
+            idx = it["index"]
+            if idx not in seen:
+                seen.add(idx)
+                selected.append(it)
+            attempts += 1
+        return selected
+
     def next_item(self, model_step: int = 0) -> CurriculumItem | None:
         """
         Return the next text training item as a CurriculumItem.
@@ -141,29 +256,20 @@ class TextCurriculum:
         if not eligible:
             return None
 
-        # Round-robin with shuffle on wrap
-        if self._cursor >= len(eligible):
-            random.shuffle(self._items)  # reshuffle full pool for variety
-            self._cursor = 0
+        # Weighted random pick (reasoning/math/coding favored 2x)
+        item = self._weighted_sample(eligible, 1)
+        if not item:
+            return None
 
-        # Pick from eligible pool at cursor (mod to stay in bounds)
-        item = eligible[self._cursor % len(eligible)]
-        self._cursor += 1
-
-        return self._make_curriculum_item(item)
+        return self._make_curriculum_item(item[0])
 
     def next_batch(self, n: int, model_step: int = 0) -> list[CurriculumItem]:
-        """Return up to n text items at the current difficulty level."""
+        """Return up to n text items at the current difficulty level, weighted by category."""
         eligible = self._eligible_items(model_step)
         if not eligible:
             return []
 
-        # Sample with replacement if n > eligible count
-        if n >= len(eligible):
-            selected = eligible[:]
-            random.shuffle(selected)
-        else:
-            selected = random.sample(eligible, n)
+        selected = self._weighted_sample(eligible, n)
 
         items = []
         for raw in selected:

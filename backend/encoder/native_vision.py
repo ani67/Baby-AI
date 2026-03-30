@@ -21,8 +21,8 @@ from torchvision import transforms
 # ---------------------------------------------------------------------------
 
 _preprocess = transforms.Compose([
-    transforms.Resize((192, 192), interpolation=transforms.InterpolationMode.LANCZOS),
-    transforms.ToTensor(),                         # (3, 192, 192), float32, [0, 1]
+    transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.LANCZOS),
+    transforms.ToTensor(),                         # (3, 224, 224), float32, [0, 1]
     transforms.Normalize(
         mean=[0.485, 0.456, 0.406],
         std=[0.229, 0.224, 0.225],
@@ -31,12 +31,12 @@ _preprocess = transforms.Compose([
 
 
 def _prepare(image: PIL.Image.Image) -> torch.Tensor:
-    """PIL image → (1, 3, 192, 192) preprocessed tensor."""
+    """PIL image → (1, 3, 224, 224) preprocessed tensor."""
     return _preprocess(image.convert("RGB")).unsqueeze(0)
 
 
 def _prepare_batch(images: list[PIL.Image.Image]) -> torch.Tensor:
-    """List of PIL images → (N, 3, 192, 192) preprocessed tensor."""
+    """List of PIL images → (N, 3, 224, 224) preprocessed tensor."""
     return torch.stack([_preprocess(img.convert("RGB")) for img in images])
 
 
@@ -48,8 +48,8 @@ class _ConvNet(nn.Module):
     """
     5-layer residual ConvNet producing a 512-dim global vector and spatial patches.
 
-    Architecture (192x192 input, adaptive pool makes it resolution-agnostic):
-        192×192×3 → 96×96×32   (conv1 + skip via 1x1)
+    Architecture (224x224 input, adaptive pool makes it resolution-agnostic):
+        224×224×3 → 96×96×32   (conv1 + skip via 1x1)
                   → 48×48×64   (conv2 + skip via 1x1)
                   → 24×24×128  (conv3 + skip via 1x1)  ← spatial patches tapped here
                   → 12×12×256  (conv4 + skip via 1x1)
