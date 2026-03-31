@@ -72,24 +72,17 @@ def handle_chat(loop):
             pred, _ = loop.model.brain.forward(input_vec)
             response = loop.decoder.decode(pred, max_words=8, model_step=loop.model.step)
         else:
-            # Chat: wave generation — forward+reflect interleaving builds
-            # richer context than a single forward pass
+            # Chat: fast path — single forward + brain-native decode
+            # Wave generation is too slow for interactive use (~8s per word)
             brain = loop.model.brain
             buf_save = brain.activation_buffer.clone()
             try:
-                response = loop.decoder.generate_wave(
-                    message, brain,
-                    text_encoder=loop.text_encoder,
-                    max_tokens=6,
-                )
-            except Exception:
-                # Fall back to old decode path
-                brain.activation_buffer = buf_save.clone()
-                input_vec = loop.text_encoder.encode(message)
+                input_vec = loop.text_encoder.encode(message).to(brain.device)
                 output_vec, _ = brain.forward(input_vec)
                 response = loop.decoder.decode_from_brain(brain, max_words=6)
+            except Exception as e:
+                response = loop.decoder.decode(output_vec.cpu(), max_words=6, model_step=loop.model.step)
             finally:
-                # Restore buffer so chat doesn't corrupt training state
                 brain.activation_buffer = buf_save
 
         os.makedirs(os.path.dirname(CHAT_RESPONSE_FILE), exist_ok=True)
