@@ -317,7 +317,7 @@ class BrainV2:
             0.9 * self._neuron_error_buffer[:n] + 0.1 * neuron_errors
         )
 
-        # Backward-wave edge strengthening: edges where both endpoints have error > 0.05
+        # Backward-wave edge strengthening: top-50 edges where both endpoints have error > 0.05
         if self._edge_strengths and edge_mat._nnz() > 0:
             edge_indices = edge_mat.indices()  # (2, E)
             src_err = neuron_errors[edge_indices[0]]
@@ -326,6 +326,10 @@ class BrainV2:
             if both_err.any():
                 be_idx = both_err.nonzero().squeeze(1)
                 strengthening = 0.001 * (src_err[be_idx] + dst_err[be_idx]) / 2.0
+                if len(be_idx) > 50:
+                    _, top_k = strengthening.topk(50)
+                    be_idx = be_idx[top_k]
+                    strengthening = strengthening[top_k]
                 be_src = edge_indices[0][be_idx].cpu().tolist()
                 be_dst = edge_indices[1][be_idx].cpu().tolist()
                 str_vals = strengthening.cpu().tolist()
@@ -461,32 +465,27 @@ class BrainV2:
                 )
                 scores = new_scores
 
-            # Mark traversed edges as used + forward-wave strengthening
+            # Forward-wave edge strengthening (only on message-passing rounds, top-50 edges)
             fired_set_t = fired.nonzero().squeeze(1)
-            if len(fired_set_t) > 0 and edge_mat._nnz() > 0:
+            if do_message_pass and len(fired_set_t) > 0 and edge_mat._nnz() > 0:
                 edge_indices = edge_mat.indices()  # (2, E)
                 fired_lookup = torch.zeros(n, dtype=torch.bool, device=self.device)
                 fired_lookup[fired_set_t] = True
                 src_fired = fired_lookup[edge_indices[0]]
                 dst_fired = fired_lookup[edge_indices[1]]
 
-                # Update last_used for edges where either endpoint fired
-                touched = src_fired | dst_fired
-                touched_idx = touched.nonzero().squeeze(1)
-                if len(touched_idx) > 0:
-                    step = self._step_count
-                    src_list = edge_indices[0][touched_idx].cpu().tolist()
-                    dst_list = edge_indices[1][touched_idx].cpu().tolist()
-                    for si, di in zip(src_list, dst_list):
-                        self._edge_last_used[(si, di)] = step
-
-                # Strengthen edges where BOTH endpoints fired
+                # Strengthen top-50 edges where BOTH endpoints fired (skip last_used — too expensive)
                 both_fired = src_fired & dst_fired
                 if both_fired.any():
                     bf_idx = both_fired.nonzero().squeeze(1)
                     src_scores = scores[edge_indices[0][bf_idx]]
                     dst_scores = scores[edge_indices[1][bf_idx]]
                     strengthening = 0.001 * torch.min(src_scores, dst_scores)
+                    # Only strengthen top-50 by signal strength (not all)
+                    if len(bf_idx) > 50:
+                        _, top_k = strengthening.topk(50)
+                        bf_idx = bf_idx[top_k]
+                        strengthening = strengthening[top_k]
                     bf_src = edge_indices[0][bf_idx].cpu().tolist()
                     bf_dst = edge_indices[1][bf_idx].cpu().tolist()
                     str_vals = strengthening.cpu().tolist()
@@ -622,10 +621,12 @@ class BrainV2:
         local_targets = F.normalize(fired_weights + shares * error.unsqueeze(0), dim=1)
         ff_deltas = signs.unsqueeze(1) * (local_targets - fired_weights)
 
-        # ── REFLECT SIGNAL ──
-        neuron_errors = self.reflect(error)  # tensor of shape (n,)
+        # ── REFLECT SIGNAL (use cached error buffer, don't recompute) ──
+        # reflect() is called separately in the training loop — reuse its result
+        neuron_errors = getattr(self, '_neuron_error_buffer', torch.zeros(self.n, device=self.device))
+        if neuron_errors.shape[0] < self.n:
+            neuron_errors = torch.zeros(self.n, device=self.device)
 
-        # Vectorized: direction toward teacher scaled by per-neuron error magnitude
         err_magnitudes = neuron_errors[fired_idx]  # (num_fired,)
         directions = teacher_vec.unsqueeze(0) - self.weights[fired_idx]  # (num_fired, dim)
         reflect_deltas = err_magnitudes.unsqueeze(1) * directions
