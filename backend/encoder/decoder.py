@@ -297,12 +297,16 @@ class GroundedDecoder:
         # Candidate scores: word -> max score
         candidates: dict[str, float] = {}
 
-        # Sort fired neurons by score, take top-10 for edge traversal
+        # SURPRISE-BASED ranking: neurons that fired MORE than their average
+        # are the specialists for THIS input. General neurons (high avg fire rate)
+        # get suppressed. This surfaces the experts, not the attention seekers.
         fired_scores = scores[fired_idx]
+        fire_rates = brain.fire_rates[fired_idx].clamp(min=0.001)
+        surprise = fired_scores / fire_rates  # high = specialist, low = general
         if len(fired_idx) > 10:
-            top_k_vals, top_k_local = fired_scores.topk(10)
+            top_k_vals, top_k_local = surprise.topk(10)
             top_fired = fired_idx[top_k_local]
-            top_scores = top_k_vals
+            top_scores = fired_scores[top_k_local]  # use actual scores for word ranking
         else:
             top_fired = fired_idx
             top_scores = fired_scores

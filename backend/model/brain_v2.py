@@ -339,7 +339,8 @@ class BrainV2:
                 self._invalidate_edge_cache()
 
         # New edge creation: high-error neurons -> high-activation neurons (training only)
-        if self.training_mode and self._last_scores is not None and n >= 2:
+        # Hard cap at 300K total edges to prevent OOM
+        if self.training_mode and self._last_scores is not None and n >= 2 and len(self._edge_strengths) < 300000:
             # Top 5% by error
             err_k = max(1, n // 20)
             _, top_err_idx = neuron_errors.topk(min(err_k, n))
@@ -667,7 +668,11 @@ class BrainV2:
             return
 
         active_count = int((~self.dormant[:n]).sum().item())
-        current_edge_density = len(self._edge_strengths) / max(active_count, 1)
+        total_edges = len(self._edge_strengths)
+        # Hard cap at 300K edges to prevent OOM (~2GB memory budget)
+        if total_edges >= 300000:
+            return
+        current_edge_density = total_edges / max(active_count, 1)
         if current_edge_density >= self.target_edges_per_neuron:
             return
 
