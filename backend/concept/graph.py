@@ -70,21 +70,28 @@ class ConceptGraph:
         best_node: ConceptNode | None = None
         best_sim: float = -1.0
 
-        # Check same-name candidates first.
+        # Fast path: exact name match with single candidate — skip vector search entirely.
         if name and name in self._name_index:
-            for nid in self._name_index[name]:
-                node = self._nodes[nid]
-                sim = self._cosine(node.vector, vector)
-                if sim >= 0.85 and sim > best_sim:
-                    best_sim = sim
-                    best_node = node
+            candidates = self._name_index[name]
+            if len(candidates) == 1:
+                # Unambiguous name match — no matmul needed
+                best_node = self._nodes[candidates[0]]
+                best_sim = 1.0
+            else:
+                # Multiple concepts with same name (homonyms) — use vector to pick
+                for nid in candidates:
+                    node = self._nodes[nid]
+                    sim = self._cosine(node.vector, vector)
+                    if sim >= self._match_threshold and sim > best_sim:
+                        best_sim = sim
+                        best_node = node
 
         # If no name match, try global vector search.
-        if best_node is None and self._vector_matrix is not None:
+        if best_node is None and self._vector_matrix is not None and self._vector_matrix.shape[0] > 0:
             sims = self._cosine_batch(vector)
             if sims.numel() > 0:
                 max_sim, max_idx = sims.max(dim=0)
-                if max_sim.item() >= 0.85:
+                if max_sim.item() >= self._match_threshold:
                     best_sim = max_sim.item()
                     best_node = self._nodes[self._vector_id_map[max_idx.item()]]
 
