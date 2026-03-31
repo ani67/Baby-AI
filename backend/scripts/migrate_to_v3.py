@@ -134,18 +134,38 @@ def load_text_encoder() -> NativeTextEncoder:
 # Vector cache
 # ---------------------------------------------------------------------------
 
+VECTOR_CACHE_PATH = os.path.join("data", "checkpoints", "concept_vector_cache.pt")
+
+
 class VectorCache:
-    """Cache encoded vectors so each concept name is encoded only once."""
+    """Cache encoded vectors so each concept name is encoded only once.
+    Persists to disk so re-runs skip the expensive encoding step."""
 
     def __init__(self, encoder: NativeTextEncoder):
         self._encoder = encoder
         self._cache: dict[str, torch.Tensor] = {}
+        self._dirty = False
+        # Load from disk if available
+        if os.path.exists(VECTOR_CACHE_PATH):
+            try:
+                self._cache = torch.load(VECTOR_CACHE_PATH, weights_only=False)
+                print(f"[vector_cache] loaded {len(self._cache)} cached vectors from disk")
+            except Exception:
+                self._cache = {}
 
     def get(self, concept_name: str) -> torch.Tensor:
         if concept_name not in self._cache:
             with torch.no_grad():
                 self._cache[concept_name] = self._encoder.encode(concept_name)
+            self._dirty = True
         return self._cache[concept_name]
+
+    def save(self):
+        """Persist cache to disk for fast restarts."""
+        if self._dirty:
+            torch.save(self._cache, VECTOR_CACHE_PATH)
+            print(f"[vector_cache] saved {len(self._cache)} vectors to {VECTOR_CACHE_PATH}")
+            self._dirty = False
 
     @property
     def size(self) -> int:
@@ -270,24 +290,39 @@ def migrate() -> None:
             print(f"  encoded {i + 1:,}/{len(concept_list):,} concepts")
 
     print(f"Vector cache size: {vector_cache.size:,}")
+    vector_cache.save()  # persist to disk for fast restarts
 
-    # Step 4: Write to graph.
-    print("\n=== Step 4: Writing to concept graph ===")
+    # Step 4: Write to graph (batched — deduplicate names per batch, minimize matmuls).
+    print("\n=== Step 4: Writing to concept graph (batched) ===")
     graph = ConceptGraph()
 
-    for i, result in enumerate(results):
-        # Build triple tuples: (subject, relation, object).
-        triples = [(t.subject, t.relation, t.object) for t in result.triples]
+    BATCH_SIZE = 1000
+    for batch_start in range(0, len(results), BATCH_SIZE):
+        batch = results[batch_start:batch_start + BATCH_SIZE]
 
-        # Build vector dict for concepts in this result.
-        vectors: dict[str, torch.Tensor] = {}
-        for concept_name in result.concepts:
-            vectors[concept_name] = vector_cache.get(concept_name)
+        # Collect ALL unique concept names in this batch.
+        batch_concepts: set[str] = set()
+        for result in batch:
+            batch_concepts.update(result.concepts)
 
-        graph.write(triples, vectors, result.modality)
+        # Pre-resolve: find_or_create for each unique name ONCE per batch.
+        resolved: dict[str, str] = {}  # name → node_id
+        for name in batch_concepts:
+            vec = vector_cache.get(name)
+            node, _ = graph.find_or_create(name, vec, "text")
+            resolved[name] = node.id
 
-        if (i + 1) % 10_000 == 0 or (i + 1) == len(results):
-            print(f"  written {i + 1:,}/{len(results):,} items  "
+        # Now add all edges (fast — just dict lookups, no matmul).
+        for result in batch:
+            for t in result.triples:
+                src_id = resolved.get(t.subject)
+                tgt_id = resolved.get(t.object)
+                if src_id and tgt_id:
+                    graph.add_edge(src_id, tgt_id, t.relation)
+
+        written = min(batch_start + BATCH_SIZE, len(results))
+        if written % 10_000 < BATCH_SIZE or written == len(results):
+            print(f"  written {written:,}/{len(results):,} items  "
                   f"(nodes: {graph.node_count:,}, edges: {graph.edge_count:,})")
 
     # Step 5: Attach COCO image vectors.

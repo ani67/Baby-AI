@@ -82,7 +82,7 @@ class ConceptGraph:
                 for nid in candidates:
                     node = self._nodes[nid]
                     sim = self._cosine(node.vector, vector)
-                    if sim >= self._match_threshold and sim > best_sim:
+                    if sim >= 0.85 and sim > best_sim:
                         best_sim = sim
                         best_node = node
 
@@ -91,7 +91,7 @@ class ConceptGraph:
             sims = self._cosine_batch(vector)
             if sims.numel() > 0:
                 max_sim, max_idx = sims.max(dim=0)
-                if max_sim.item() >= self._match_threshold:
+                if max_sim.item() >= 0.85:
                     best_sim = max_sim.item()
                     best_node = self._nodes[self._vector_id_map[max_idx.item()]]
 

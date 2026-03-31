@@ -117,6 +117,18 @@ class ConceptParser:
 
     # -- normalization -----------------------------------------------------
 
+    def _is_valid_concept(self, name: str) -> bool:
+        """Filter out garbage concept names."""
+        if not name or len(name) < 2:
+            return False
+        if len(name) > 40:
+            return False  # phrases, not concepts
+        if not any(c.isalpha() for c in name):
+            return False  # pure dashes, numbers, symbols
+        if name.startswith("-") or name.startswith("_"):
+            return False
+        return True
+
     def _normalize(self, word: str) -> str:
         """Lowercase, strip punctuation, simple depluralize."""
         w = word.lower().strip()
@@ -327,10 +339,12 @@ class ConceptParser:
 
         for clause in clauses:
             triples = self._parse_clause(clause, raw)
-            all_triples.extend(triples)
             for t in triples:
-                concepts_set.add(t.subject)
-                concepts_set.add(t.object)
+                # Filter out garbage concepts
+                if self._is_valid_concept(t.subject) and self._is_valid_concept(t.object):
+                    all_triples.append(t)
+                    concepts_set.add(t.subject)
+                    concepts_set.add(t.object)
 
         return ParseResult(
             triples=all_triples,
@@ -340,29 +354,38 @@ class ConceptParser:
             raw_text=raw,
         )
 
+    def _filter_result(self, result: ParseResult) -> ParseResult:
+        """Remove triples with invalid concept names."""
+        clean = [t for t in result.triples
+                 if self._is_valid_concept(t.subject) and self._is_valid_concept(t.object)]
+        concepts = sorted({t.subject for t in clean} | {t.object for t in clean})
+        return ParseResult(triples=clean, concepts=concepts,
+                           modality=result.modality, item_type=result.item_type,
+                           raw_text=result.raw_text)
+
     def parse_item(self, item: dict) -> ParseResult:
         """Auto-detect dataset format from keys, dispatch to specialized parser."""
         keys = set(item.keys())
 
         # Math: question + answer + final_answer (gsm8k style)
         if {"question", "answer", "final_answer"} <= keys:
-            return self._parse_math(item)
+            return self._filter_result(self._parse_math(item))
 
         # Coding: instruction + output
         if {"instruction", "output"} <= keys:
-            return self._parse_coding(item)
+            return self._filter_result(self._parse_coding(item))
 
         # Passage QA: passage + question (boolq style)
         if {"passage", "question"} <= keys:
-            return self._parse_passage_qa(item)
+            return self._filter_result(self._parse_passage_qa(item))
 
         # Multiple choice: question + choices
         if "question" in keys and "choices" in keys:
-            return self._parse_multiple_choice(item)
+            return self._filter_result(self._parse_multiple_choice(item))
 
         # Pronoun resolution: sentence + option1
         if "sentence" in keys and "option1" in keys:
-            return self._parse_pronoun(item)
+            return self._filter_result(self._parse_pronoun(item))
 
         # Plain text
         if "text" in keys and len(keys) == 1:
