@@ -115,6 +115,9 @@ class BrainV2:
         # Step counter (global)
         self._step_count = 0
 
+        # Training mode: controls whether new edges are created during reflect
+        self.training_mode = True
+
         # Initialize neurons
         for i in range(initial_size):
             self.add_neuron(
@@ -314,6 +317,49 @@ class BrainV2:
             0.9 * self._neuron_error_buffer[:n] + 0.1 * neuron_errors
         )
 
+        # Backward-wave edge strengthening: edges where both endpoints have error > 0.05
+        if self._edge_strengths and edge_mat._nnz() > 0:
+            edge_indices = edge_mat.indices()  # (2, E)
+            src_err = neuron_errors[edge_indices[0]]
+            dst_err = neuron_errors[edge_indices[1]]
+            both_err = (src_err > 0.05) & (dst_err > 0.05)
+            if both_err.any():
+                be_idx = both_err.nonzero().squeeze(1)
+                strengthening = 0.001 * (src_err[be_idx] + dst_err[be_idx]) / 2.0
+                be_src = edge_indices[0][be_idx].cpu().tolist()
+                be_dst = edge_indices[1][be_idx].cpu().tolist()
+                str_vals = strengthening.cpu().tolist()
+                for si, di, sv in zip(be_src, be_dst, str_vals):
+                    k = (si, di)
+                    self._edge_strengths[k] = min(self._edge_strengths.get(k, 0.0) + sv, 1.0)
+                self._invalidate_edge_cache()
+
+        # New edge creation: high-error neurons -> high-activation neurons (training only)
+        if self.training_mode and self._last_scores is not None and n >= 2:
+            # Top 5% by error
+            err_k = max(1, n // 20)
+            _, top_err_idx = neuron_errors.topk(min(err_k, n))
+            # Top 5% by activation from last forward
+            _, top_act_idx = self._last_scores[:n].topk(min(err_k, n))
+
+            # Find pairs with no existing edge, cap at 10
+            new_count = 0
+            step = self._step_count
+            for ei in top_err_idx.cpu().tolist():
+                if new_count >= 10:
+                    break
+                for ai in top_act_idx.cpu().tolist():
+                    if new_count >= 10:
+                        break
+                    if ei == ai:
+                        continue
+                    if (ei, ai) not in self._edge_strengths:
+                        self._edge_strengths[(ei, ai)] = 0.05
+                        self._edge_last_used[(ei, ai)] = step
+                        new_count += 1
+            if new_count > 0:
+                self._invalidate_edge_cache()
+
         return neuron_errors
 
     # ── Forward Pass ──
@@ -415,15 +461,16 @@ class BrainV2:
                 )
                 scores = new_scores
 
-            # Mark traversed edges as used (via sparse tensor indices)
+            # Mark traversed edges as used + forward-wave strengthening
             fired_set_t = fired.nonzero().squeeze(1)
             if len(fired_set_t) > 0 and edge_mat._nnz() > 0:
                 edge_indices = edge_mat.indices()  # (2, E)
-                # Check if either endpoint is fired
                 fired_lookup = torch.zeros(n, dtype=torch.bool, device=self.device)
                 fired_lookup[fired_set_t] = True
                 src_fired = fired_lookup[edge_indices[0]]
                 dst_fired = fired_lookup[edge_indices[1]]
+
+                # Update last_used for edges where either endpoint fired
                 touched = src_fired | dst_fired
                 touched_idx = touched.nonzero().squeeze(1)
                 if len(touched_idx) > 0:
@@ -432,6 +479,21 @@ class BrainV2:
                     dst_list = edge_indices[1][touched_idx].cpu().tolist()
                     for si, di in zip(src_list, dst_list):
                         self._edge_last_used[(si, di)] = step
+
+                # Strengthen edges where BOTH endpoints fired
+                both_fired = src_fired & dst_fired
+                if both_fired.any():
+                    bf_idx = both_fired.nonzero().squeeze(1)
+                    src_scores = scores[edge_indices[0][bf_idx]]
+                    dst_scores = scores[edge_indices[1][bf_idx]]
+                    strengthening = 0.001 * torch.min(src_scores, dst_scores)
+                    bf_src = edge_indices[0][bf_idx].cpu().tolist()
+                    bf_dst = edge_indices[1][bf_idx].cpu().tolist()
+                    str_vals = strengthening.cpu().tolist()
+                    for si, di, sv in zip(bf_src, bf_dst, str_vals):
+                        k = (si, di)
+                        self._edge_strengths[k] = min(self._edge_strengths.get(k, 0.0) + sv, 1.0)
+                    self._invalidate_edge_cache()
 
         # 4. OUTPUT — confidence-weighted aggregate
         fired_idx = fired.nonzero().squeeze(1)

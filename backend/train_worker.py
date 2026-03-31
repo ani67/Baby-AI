@@ -72,13 +72,25 @@ def handle_chat(loop):
             pred, _ = loop.model.brain.forward(input_vec)
             response = loop.decoder.decode(pred, max_words=8, model_step=loop.model.step)
         else:
-            # Chat: encode input, forward, decode response
-            input_vec = loop.text_encoder.encode(message)
-            output_vec, _ = loop.model.brain.forward(input_vec)
-            response = loop.decoder.generate(
-                output_vec, brain=loop.model.brain,
-                max_tokens=6, model_step=loop.model.step,
-            )
+            # Chat: wave generation — forward+reflect interleaving builds
+            # richer context than a single forward pass
+            brain = loop.model.brain
+            buf_save = brain.activation_buffer.clone()
+            try:
+                response = loop.decoder.generate_wave(
+                    message, brain,
+                    text_encoder=loop.text_encoder,
+                    max_tokens=6,
+                )
+            except Exception:
+                # Fall back to old decode path
+                brain.activation_buffer = buf_save.clone()
+                input_vec = loop.text_encoder.encode(message)
+                output_vec, _ = brain.forward(input_vec)
+                response = loop.decoder.decode_from_brain(brain, max_words=6)
+            finally:
+                # Restore buffer so chat doesn't corrupt training state
+                brain.activation_buffer = buf_save
 
         os.makedirs(os.path.dirname(CHAT_RESPONSE_FILE), exist_ok=True)
         with open(CHAT_RESPONSE_FILE, "w") as f:
@@ -1472,14 +1484,40 @@ def run(loop):
             _t["decoder"] = time.perf_counter() - _t0
 
             # 8b. Generation probe (every 50 batches)
+            # Alternate between wave generation and standard generation
             if batch_count % 50 == 0:
                 try:
-                    response = loop.decoder.generate(prediction, brain=loop.model.brain, max_tokens=6, model_step=loop.model.step)
+                    brain = loop.model.brain
+                    buf_save = brain.activation_buffer.clone()
+                    teacher_desc = items[-1].description or ""
+
+                    # Wave generation on even probes, standard on odd
+                    if batch_count % 100 == 0 and teacher_desc:
+                        try:
+                            response = loop.decoder.generate_wave(
+                                teacher_desc, brain,
+                                text_encoder=loop.text_encoder,
+                                max_tokens=6,
+                            )
+                        except Exception:
+                            brain.activation_buffer = buf_save.clone()
+                            response = loop.decoder.generate(
+                                prediction, brain=brain,
+                                max_tokens=6, model_step=loop.model.step,
+                            )
+                        finally:
+                            brain.activation_buffer = buf_save
+                    else:
+                        response = loop.decoder.generate(
+                            prediction, brain=brain,
+                            max_tokens=6, model_step=loop.model.step,
+                        )
+
                     if items[-1].expected_vector is not None:
                         relevance = float(torch.dot(prediction, F.normalize(items[-1].expected_vector, dim=0)).item())
                     else:
                         relevance = 0.0
-                    loop.metrics.record_generation(items[-1].description or "", response, relevance)
+                    loop.metrics.record_generation(teacher_desc, response, relevance)
                 except Exception as e:
                     print(f"[gen-probe] error: {e}", flush=True)
 

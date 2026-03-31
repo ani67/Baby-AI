@@ -69,6 +69,11 @@ class GroundedDecoder:
         self.bigrams = BigramTable()
         self._train_call_count = 0
 
+        # Brain-native decode cache: neuron_idx -> [(word, similarity), ...] top-3
+        self._neuron_word_cache: dict[int, list[tuple[str, float]]] = {}
+        self._neuron_word_cache_call_count = 0
+        self._neuron_word_cache_version = -1  # forces rebuild on first call
+
         # Bootstrap word embeddings from images (better separated) + CLIP text fallback
         n_words = len(self.vocab.word_to_id)
         self.word_embeddings = torch.zeros(n_words, 512)
@@ -210,6 +215,159 @@ class GroundedDecoder:
             selected.append(self.vocab.id_to_word[top_ids[0].item()])
         return " ".join(selected)
 
+    def _rebuild_neuron_word_cache(self, brain) -> None:
+        """Precompute top-3 closest words for each active neuron."""
+        n = brain.n
+        if n == 0:
+            self._neuron_word_cache = {}
+            return
+
+        # Normalize word embeddings once (skip specials and zero vectors)
+        we = self.word_embeddings[_NUM_SPECIAL:]
+        norms = we.norm(dim=1, keepdim=True).clamp(min=1e-8)
+        we_norm = we / norms
+        valid_mask = norms.squeeze(1) > 1e-6
+
+        cache: dict[int, list[tuple[str, float]]] = {}
+        # Process neurons in batches of 256 for efficiency
+        active_mask = ~brain.dormant[:n]
+        active_idx = active_mask.nonzero().squeeze(1)
+        if len(active_idx) == 0:
+            self._neuron_word_cache = cache
+            return
+
+        for batch_start in range(0, len(active_idx), 256):
+            batch_idx = active_idx[batch_start:batch_start + 256]
+            batch_weights = F.normalize(brain.weights[batch_idx], dim=1)
+            # (batch, vocab) cosine similarity
+            sims = batch_weights @ we_norm.T  # works because both are normalized
+            # Mask invalid word embeddings
+            sims[:, ~valid_mask] = -1.0
+            top_sims, top_ids = sims.topk(3, dim=1)
+
+            for i, neuron_idx in enumerate(batch_idx.tolist()):
+                entries = []
+                for j in range(3):
+                    sim_val = top_sims[i, j].item()
+                    if sim_val < 0.05:
+                        break
+                    word_idx = top_ids[i, j].item() + _NUM_SPECIAL
+                    word = self.vocab.id_to_word.get(word_idx, "")
+                    if word:
+                        entries.append((word, sim_val))
+                if entries:
+                    cache[neuron_idx] = entries
+
+        self._neuron_word_cache = cache
+
+    def decode_from_brain(self, brain, max_words: int = 4) -> str:
+        """
+        Brain-native word selection: use fired neurons and edge structure
+        to pick words, instead of dictionary cosine-similarity lookup.
+
+        Algorithm:
+        1. Get fired neurons and their activation scores
+        2. For each fired neuron, find closest words (cached)
+        3. Follow edges from top-fired neurons to connected neurons
+        4. Score candidates: neuron_activation * edge_strength * word_similarity
+        5. Deduplicate, sort, return top words
+        """
+        if brain._last_fired is None or brain._last_scores is None:
+            return ""
+
+        n = brain.n
+        fired = brain._last_fired[:n]
+        scores = brain._last_scores[:n]
+        fired_idx = fired.nonzero().squeeze(1)
+
+        if len(fired_idx) == 0:
+            return ""
+
+        # Rebuild cache every 1000 calls or when neuron count changes
+        self._neuron_word_cache_call_count += 1
+        if (self._neuron_word_cache_call_count - self._neuron_word_cache_version >= 1000
+                or not self._neuron_word_cache):
+            self._rebuild_neuron_word_cache(brain)
+            self._neuron_word_cache_version = self._neuron_word_cache_call_count
+
+        cache = self._neuron_word_cache
+
+        # Candidate scores: word -> max score
+        candidates: dict[str, float] = {}
+
+        # Sort fired neurons by score, take top-10 for edge traversal
+        fired_scores = scores[fired_idx]
+        if len(fired_idx) > 10:
+            top_k_vals, top_k_local = fired_scores.topk(10)
+            top_fired = fired_idx[top_k_local]
+            top_scores = top_k_vals
+        else:
+            top_fired = fired_idx
+            top_scores = fired_scores
+
+        # Score words from directly-fired neurons (edge_strength = 1.0)
+        for i, nidx in enumerate(top_fired.tolist()):
+            activation = top_scores[i].item()
+            if nidx in cache:
+                for word, sim in cache[nidx]:
+                    score = activation * sim  # edge_strength=1.0 for self
+                    if word not in candidates or score > candidates[word]:
+                        candidates[word] = score
+
+        # Follow edges from top-fired neurons to connected neurons
+        edge_strengths = brain._edge_strengths
+        if edge_strengths:
+            top_set = set(top_fired.tolist())
+            # Collect connected neurons and their edge strengths
+            connected: dict[int, float] = {}  # neighbor_idx -> max(activation * edge_str)
+            for (src, dst), estr in edge_strengths.items():
+                if src in top_set and dst < n and not fired[dst]:
+                    src_act = scores[src].item()
+                    combined = src_act * estr
+                    if dst not in connected or combined > connected[dst]:
+                        connected[dst] = combined
+                elif dst in top_set and src < n and not fired[src]:
+                    dst_act = scores[dst].item()
+                    combined = dst_act * estr
+                    if src not in connected or combined > connected[src]:
+                        connected[src] = combined
+
+            # Score words from edge-connected neurons
+            for nidx, edge_score in connected.items():
+                if nidx in cache:
+                    for word, sim in cache[nidx]:
+                        score = edge_score * sim
+                        if word not in candidates or score > candidates[word]:
+                            candidates[word] = score
+
+        if not candidates:
+            return ""
+
+        # Sort by score descending, return top max_words
+        sorted_words = sorted(candidates.items(), key=lambda x: x[1], reverse=True)
+
+        # Deduplicate near-synonyms using embedding similarity
+        selected = []
+        selected_vecs = []
+        for word, _ in sorted_words:
+            if len(selected) >= max_words:
+                break
+            idx = self.vocab.word_to_id.get(word)
+            if idx is None:
+                continue
+            emb = self.word_embeddings[idx]
+            too_similar = False
+            for prev_vec in selected_vecs:
+                if torch.dot(emb, prev_vec).item() > 0.85:
+                    too_similar = True
+                    break
+            if too_similar:
+                continue
+            selected.append(word)
+            selected_vecs.append(emb)
+
+        return " ".join(selected)
+
     def encode_sequence(
         self,
         text: str,
@@ -285,6 +443,7 @@ class GroundedDecoder:
         max_tokens: int = 12,
         model_step: int = 0,
         temperature: float = 0.7,
+        use_brain_native: bool = False,
     ) -> str:
         """
         Autoregressive generation: predict one word at a time, feed it back
@@ -292,11 +451,26 @@ class GroundedDecoder:
         context forward — each generated word primes the next.
 
         Uses temperature sampling + bigram rescoring for diversity and coherence.
+        When use_brain_native=True, the first word is selected via brain neuron/edge
+        structure instead of CLIP cosine similarity.
         """
         tokens = []
         hidden = initial_vector
         seen = set()  # suppress repeats
         prev_word = None
+
+        # Brain-native first word: use neuron firing + edge structure
+        if use_brain_native:
+            first = self.decode_from_brain(brain, max_words=1)
+            if first:
+                word = first.split()[0]
+                tokens.append(word)
+                seen.add(word)
+                prev_word = word
+                idx = self.vocab.word_to_id.get(word)
+                if idx is not None:
+                    word_emb = self.word_embeddings[idx]
+                    hidden, _ = brain.forward(word_emb)
 
         for _ in range(max_tokens):
             # Decode from current brain state — project into CLIP space first
@@ -332,6 +506,115 @@ class GroundedDecoder:
             hidden, _ = brain.forward(word_emb)
 
         return " ".join(tokens) if tokens else self.decode(initial_vector, max_words=1, model_step=model_step)
+
+    def generate_wave(
+        self,
+        input_text: str,
+        brain,
+        text_encoder=None,
+        max_tokens: int = 6,
+    ) -> str:
+        """
+        Superimposed wave generation: interleave forward and reflect passes.
+
+        Phase 1 (input wave): process each input word through forward + reflect,
+        building context and strengthening edges simultaneously.
+
+        Phase 2 (output wave): generate words from accumulated brain state,
+        feeding each chosen word back through forward + reflect to build
+        output context incrementally.
+
+        The reflect pass propagates prediction error backward through edges,
+        so the brain refines its internal representation at each step rather
+        than relying on a single forward pass.
+        """
+        has_reflect = hasattr(brain, "reflect") and callable(brain.reflect)
+
+        # Phase 1: Input wave — process each word with forward + reflect
+        words = input_text.lower().split()
+        prediction = torch.zeros(512)
+        for word in words:
+            clean = word.strip(".,!?;:\"'()-[]{}").lower()
+            if not clean:
+                continue
+            # Look up grounded embedding first, fall back to CLIP
+            idx = self.vocab.word_to_id.get(clean)
+            if idx is not None and idx >= _NUM_SPECIAL:
+                emb = self.word_embeddings[idx]
+                if emb.norm() > 1e-6:
+                    vec = emb
+                elif text_encoder is not None:
+                    vec = text_encoder.encode(clean)
+                else:
+                    continue
+            elif text_encoder is not None:
+                vec = text_encoder.encode(clean)
+            else:
+                continue
+
+            pred, _ = brain.forward(vec)
+            prediction = pred
+            if has_reflect:
+                error = vec - pred
+                brain.reflect(error)
+
+        # Phase 2: Output wave — generate words using accumulated brain state
+        output_words = []
+        seen = set()
+
+        for _ in range(max_tokens):
+            # Use brain's last prediction (reflects full input + generated context)
+            pred = getattr(brain, "_last_prediction", prediction)
+            if pred is None or pred.norm() < 1e-8:
+                break
+
+            # Project into CLIP space and find nearest words
+            projected = self.projection(pred.detach())
+            v = F.normalize(projected, dim=-1)
+            sims = v @ self.word_embeddings.T
+            sims[:_NUM_SPECIAL] = -1.0
+
+            # Suppress already-generated words
+            for w in seen:
+                w_idx = self.vocab.word_to_id.get(w)
+                if w_idx is not None:
+                    sims[w_idx] = -1.0
+
+            # Top-K filtering (only consider top 20 words)
+            k = min(20, len(sims) - _NUM_SPECIAL)
+            topk_vals, topk_idx = sims.topk(k)
+
+            if topk_vals[0].item() < 0.05:
+                break  # nothing relevant, stop
+
+            # Pick best unseen word
+            chosen_word = None
+            chosen_idx = None
+            for i in range(len(topk_idx)):
+                w = self.vocab.id_to_word.get(topk_idx[i].item())
+                if w and w not in seen:
+                    chosen_word = w
+                    chosen_idx = topk_idx[i].item()
+                    break
+
+            if chosen_word is None:
+                break
+
+            output_words.append(chosen_word)
+            seen.add(chosen_word)
+
+            # Feed the chosen word back through forward + reflect
+            word_emb = self.word_embeddings[chosen_idx]
+            pred, _ = brain.forward(word_emb)
+            prediction = pred
+            if has_reflect:
+                error = word_emb - pred
+                brain.reflect(error)
+
+        if not output_words:
+            return self.decode(prediction, max_words=1, model_step=0)
+
+        return " ".join(output_words)
 
     def generate_beam(
         self,
