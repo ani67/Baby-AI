@@ -236,11 +236,13 @@ class GroundedDecoder:
             self._neuron_word_cache = cache
             return
 
+        we_norm = we_norm.to(brain.device)
+        valid_mask = valid_mask.to(brain.device)
         for batch_start in range(0, len(active_idx), 256):
             batch_idx = active_idx[batch_start:batch_start + 256]
             batch_weights = F.normalize(brain.weights[batch_idx], dim=1)
-            # (batch, vocab) cosine similarity
-            sims = batch_weights @ we_norm.T  # works because both are normalized
+            # (batch, vocab) cosine similarity — both on brain's device
+            sims = batch_weights @ we_norm.T
             # Mask invalid word embeddings
             sims[:, ~valid_mask] = -1.0
             top_sims, top_ids = sims.topk(3, dim=1)
@@ -532,7 +534,8 @@ class GroundedDecoder:
 
         # Phase 1: Input wave — process each word with forward + reflect
         words = input_text.lower().split()
-        prediction = torch.zeros(512)
+        _dev = brain.device if hasattr(brain, 'device') else 'cpu'
+        prediction = torch.zeros(512, device=_dev)
         for word in words:
             clean = word.strip(".,!?;:\"'()-[]{}").lower()
             if not clean:
@@ -542,20 +545,20 @@ class GroundedDecoder:
             if idx is not None and idx >= _NUM_SPECIAL:
                 emb = self.word_embeddings[idx]
                 if emb.norm() > 1e-6:
-                    vec = emb
+                    vec = emb.to(_dev)
                 elif text_encoder is not None:
-                    vec = text_encoder.encode(clean)
+                    vec = text_encoder.encode(clean).to(_dev)
                 else:
                     continue
             elif text_encoder is not None:
-                vec = text_encoder.encode(clean)
+                vec = text_encoder.encode(clean).to(_dev)
             else:
                 continue
 
             pred, _ = brain.forward(vec)
             prediction = pred
             if has_reflect:
-                error = vec - pred
+                error = vec - pred.to(_dev)
                 brain.reflect(error)
 
         # Phase 2: Output wave — generate words using accumulated brain state
@@ -568,8 +571,8 @@ class GroundedDecoder:
             if pred is None or pred.norm() < 1e-8:
                 break
 
-            # Project into CLIP space and find nearest words
-            projected = self.projection(pred.detach())
+            # Project into CLIP space and find nearest words (ensure CPU for word lookup)
+            projected = self.projection(pred.detach().cpu())
             v = F.normalize(projected, dim=-1)
             sims = v @ self.word_embeddings.T
             sims[:_NUM_SPECIAL] = -1.0
@@ -604,7 +607,7 @@ class GroundedDecoder:
             seen.add(chosen_word)
 
             # Feed the chosen word back through forward + reflect
-            word_emb = self.word_embeddings[chosen_idx]
+            word_emb = self.word_embeddings[chosen_idx].to(_dev)
             pred, _ = brain.forward(word_emb)
             prediction = pred
             if has_reflect:
