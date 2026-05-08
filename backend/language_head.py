@@ -206,3 +206,230 @@ def load_checkpoint(path: str = DEFAULT_WEIGHTS_PATH, device: str = "cpu") -> La
 
 def is_available() -> bool:
     return os.path.exists(DEFAULT_WEIGHTS_PATH) and os.path.exists(DEFAULT_VOCAB_PATH)
+
+
+# ============================================================
+# Phase 7: GPT-2 small as a conditioned decoder
+# ============================================================
+#
+# The Phase 5 LSTM language head learned grammar from the mind's
+# surprised-sentence corpus, but with only ~5M params and ~few-thousand
+# training examples it produced word-soup. GPT-2 small (117M params)
+# already speaks fluent English; we just need to steer it.
+#
+# Steering mechanism: project the mind's conditioning vector
+# (12-d affect + 5×256-d top concept embeddings = 1292 dims) into GPT-2's
+# hidden dimension (768) and inject it as a virtual prefix token's
+# embedding. GPT-2's attention sees it as the first token of context.
+#
+# Fine-tuning surface: only condition_proj and the top 4 transformer
+# blocks (layers 8-11). The bottom 8 + token embeddings + lm_head stay
+# frozen. This preserves GPT-2's English while letting the top of the
+# stack learn to use the soft prefix.
+
+CONDITIONED_DECODER_FILENAME = "language_head_gpt2.pt"
+GPT2_HIDDEN_DIM = 768
+GPT2_NUM_LAYERS = 12
+GPT2_FROZEN_BOTTOM = 8                 # layers 0-7 frozen; 8-11 fine-tune
+GPT2_BASE_MODEL = "gpt2"
+
+
+def _try_import_transformers():
+    """Attempt the imports lazily — keeps Expression's silent-fallback
+    contract clean when the dependency isn't installed."""
+    try:
+        from transformers import GPT2LMHeadModel, GPT2Tokenizer
+        return GPT2LMHeadModel, GPT2Tokenizer
+    except Exception:
+        return None, None
+
+
+class ConditionedDecoder(nn.Module):
+    """GPT-2 small steered by a soft prefix derived from the mind's
+    composite affect + top-K active-concept embeddings.
+
+    At inference: concept_proj(cond) → tanh → unsqueeze to (1, 1, 768)
+    → fed as `inputs_embeds` to GPT-2 transformer → past_key_values
+    capture the prefix → autoregressive sampling continues from there.
+
+    At training: prefix prepended to the surprised sentence's token
+    embeddings; standard causal-LM cross-entropy on the sentence's tokens
+    (the prefix position is masked out via labels=-100). Optimizer only
+    touches `condition_proj` + the top 4 GPT-2 layers.
+    """
+
+    def __init__(self, base_model_name: str = GPT2_BASE_MODEL) -> None:
+        super().__init__()
+        GPT2LMHeadModel, GPT2Tokenizer = _try_import_transformers()
+        if GPT2LMHeadModel is None:
+            raise RuntimeError("transformers is not installed")
+        self.tokenizer = GPT2Tokenizer.from_pretrained(base_model_name)
+        # GPT-2 has no pad token by default; reuse EOS for safety.
+        if self.tokenizer.pad_token_id is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.base_model = GPT2LMHeadModel.from_pretrained(base_model_name)
+        self.base_model.config.pad_token_id = self.tokenizer.pad_token_id
+
+        self.condition_proj = nn.Linear(COND_DIM, GPT2_HIDDEN_DIM)
+
+        self._freeze_partial()
+
+    def _freeze_partial(self) -> None:
+        """Freeze token embeddings, position embeddings, and the bottom
+        GPT2_FROZEN_BOTTOM (=8) transformer layers. Leave the top 4
+        layers + final LayerNorm + lm_head trainable, plus condition_proj."""
+        # Token + position embeddings frozen.
+        for p in self.base_model.transformer.wte.parameters():
+            p.requires_grad = False
+        for p in self.base_model.transformer.wpe.parameters():
+            p.requires_grad = False
+        # Bottom 8 layers frozen, top 4 trainable.
+        n_layers = len(self.base_model.transformer.h)
+        for i in range(n_layers):
+            trainable = (i >= GPT2_FROZEN_BOTTOM)
+            for p in self.base_model.transformer.h[i].parameters():
+                p.requires_grad = trainable
+        # Final LayerNorm + lm_head left trainable (default).
+        # condition_proj is trainable by default.
+
+    # ---- training helper: forward pass with prefix ----
+
+    def forward_with_prefix(
+        self,
+        cond: torch.Tensor,            # (B, COND_DIM)
+        token_ids: torch.Tensor,       # (B, T)  the sentence to learn
+        attention_mask: torch.Tensor,  # (B, T)
+    ) -> torch.Tensor:
+        """Forward pass with the soft prefix prepended. Returns the loss
+        (causal-LM CE; labels masked at the prefix position)."""
+        B, T = token_ids.shape
+        # Embed the conditioning into GPT-2 hidden space.
+        prefix = torch.tanh(self.condition_proj(cond)).unsqueeze(1)  # (B, 1, H)
+        # Embed the sentence tokens.
+        token_embeds = self.base_model.transformer.wte(token_ids)    # (B, T, H)
+        inputs_embeds = torch.cat([prefix, token_embeds], dim=1)     # (B, T+1, H)
+        # Attention mask + 1 for the prefix position.
+        prefix_mask = torch.ones((B, 1), dtype=attention_mask.dtype, device=attention_mask.device)
+        full_mask = torch.cat([prefix_mask, attention_mask], dim=1)  # (B, T+1)
+        # Labels: -100 for prefix, token_ids for the rest. The model
+        # shifts internally for CE so labels[i] is predicted from i-1.
+        prefix_labels = torch.full((B, 1), -100, dtype=token_ids.dtype, device=token_ids.device)
+        labels = torch.cat([prefix_labels, token_ids], dim=1)
+        # Mask out pad positions in labels too.
+        labels = labels.masked_fill(full_mask == 0, -100)
+
+        out = self.base_model(
+            inputs_embeds=inputs_embeds,
+            attention_mask=full_mask,
+            labels=labels,
+        )
+        return out.loss
+
+    # ---- inference: generate from cond ----
+
+    @torch.no_grad()
+    def generate(
+        self,
+        cond: torch.Tensor,                 # (1, COND_DIM)
+        max_tokens: int = 30,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        repetition_penalty: float = 1.3,
+    ) -> str:
+        """Sample autoregressively from the conditioned prefix. Stops at
+        the first sentence-ending punctuation, EOS, or `max_tokens`."""
+        self.eval()
+        device = next(self.parameters()).device
+        cond = cond.to(device)
+
+        prefix = torch.tanh(self.condition_proj(cond)).unsqueeze(1)  # (1, 1, H)
+        out = self.base_model(inputs_embeds=prefix, use_cache=True)
+        past = out.past_key_values
+        logits = out.logits[:, -1, :]                                # (1, V)
+
+        eos_id = self.tokenizer.eos_token_id
+        generated: list[int] = []
+
+        for _ in range(max_tokens):
+            scaled = logits.clone() / max(temperature, 1e-6)
+
+            # Repetition penalty applied to already-emitted tokens.
+            if repetition_penalty and repetition_penalty != 1.0:
+                for tok in set(generated):
+                    v = scaled[0, tok]
+                    scaled[0, tok] = v / repetition_penalty if v > 0 else v * repetition_penalty
+
+            probs = torch.softmax(scaled, dim=-1)
+
+            # Top-p (nucleus) sampling.
+            sorted_probs, sorted_idx = torch.sort(probs, descending=True)
+            cumulative = torch.cumsum(sorted_probs, dim=-1)
+            mask = cumulative > top_p
+            mask[..., 0] = False                                     # always keep at least the top
+            sorted_probs = sorted_probs.masked_fill(mask, 0.0)
+            sorted_probs = sorted_probs / sorted_probs.sum(dim=-1, keepdim=True).clamp_min(1e-9)
+            sample_pos = torch.multinomial(sorted_probs[0], num_samples=1).item()
+            token_id = int(sorted_idx[0, sample_pos].item())
+
+            if token_id == eos_id:
+                break
+            generated.append(token_id)
+
+            # Sentence boundary stop.
+            text_so_far = self.tokenizer.decode(generated, skip_special_tokens=True)
+            if text_so_far and text_so_far.rstrip()[-1:] in ".!?":
+                break
+
+            next_input = torch.tensor([[token_id]], device=device, dtype=torch.long)
+            out = self.base_model(input_ids=next_input, past_key_values=past, use_cache=True)
+            past = out.past_key_values
+            logits = out.logits[:, -1, :]
+
+        return self.tokenizer.decode(generated, skip_special_tokens=True).strip()
+
+    # ---- save / load: only the trainable (delta) parameters ----
+
+    def save_delta(self, path: str) -> None:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        delta: dict[str, torch.Tensor] = {}
+        # condition_proj
+        for k, v in self.condition_proj.state_dict().items():
+            delta[f"condition_proj.{k}"] = v.cpu()
+        # top 4 transformer layers
+        n_layers = len(self.base_model.transformer.h)
+        for i in range(GPT2_FROZEN_BOTTOM, n_layers):
+            for k, v in self.base_model.transformer.h[i].state_dict().items():
+                delta[f"transformer.h.{i}.{k}"] = v.cpu()
+        # final LayerNorm
+        for k, v in self.base_model.transformer.ln_f.state_dict().items():
+            delta[f"transformer.ln_f.{k}"] = v.cpu()
+        # lm_head (often tied to wte; saving anyway for safety on swap)
+        for k, v in self.base_model.lm_head.state_dict().items():
+            delta[f"lm_head.{k}"] = v.cpu()
+        torch.save({"delta": delta, "base_model_name": GPT2_BASE_MODEL}, path)
+
+    def load_delta(self, path: str) -> None:
+        obj = torch.load(path, map_location="cpu", weights_only=True)
+        delta = obj["delta"]
+        full_state = self.state_dict()
+        for k, v in delta.items():
+            # Map our flat keys back to model state_dict keys.
+            if k.startswith("condition_proj."):
+                full_state[k] = v
+            elif k.startswith("transformer.h."):
+                full_state[f"base_model.{k}"] = v
+            elif k.startswith("transformer.ln_f."):
+                full_state[f"base_model.{k}"] = v
+            elif k.startswith("lm_head."):
+                full_state[f"base_model.{k}"] = v
+        # strict=False because the frozen-base parameters aren't in `delta`
+        self.load_state_dict(full_state, strict=False)
+
+
+def is_conditioned_decoder_available(weights_path: str) -> bool:
+    """Both the saved delta on disk AND the transformers package must
+    be importable for ConditionedDecoder to be usable."""
+    if not os.path.exists(weights_path):
+        return False
+    GPT2LMHeadModel, _ = _try_import_transformers()
+    return GPT2LMHeadModel is not None

@@ -227,6 +227,186 @@ def train(
 # Entry point
 # ============================================================
 
+# ============================================================
+# Phase 7: GPT-2 conditioned-decoder fine-tuner
+# ============================================================
+
+CD_BATCH_SIZE   = 8
+# Spec said 1e-4 but at this scale GPT-2 fine-tuning is unstable — loss
+# climbs after ~2 epochs. 2e-5 with warmup keeps training stable while
+# still letting condition_proj absorb the corpus over 10 epochs.
+CD_LR           = 2e-5
+CD_WD           = 0.01
+CD_EPOCHS       = 10
+CD_MAX_TOKENS   = 64
+CD_WARMUP_FRAC  = 0.10           # fraction of total steps for linear warmup
+
+
+def build_cd_examples(
+    surprised_path: str,
+    db_path: str,
+    tokenizer,
+):
+    """For each surprised-sentence record, produce (token_ids,
+    attention_mask, cond_vec). Tokenization uses GPT-2's tokenizer; we
+    add a trailing EOS so the model learns to stop at sentence boundary."""
+    if not os.path.exists(surprised_path):
+        raise FileNotFoundError(surprised_path)
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(db_path)
+
+    print(f"[cd-train] loading mind from {db_path} for top-{TOP_K_CONCEPTS} concept lookups…")
+    loop = MindPersistence.load(db_path)
+    g = loop.graph
+    g._rebuild_matrix()
+
+    examples: list[tuple[list[int], np.ndarray]] = []
+    with open(surprised_path, "r", encoding="utf-8") as f:
+        for raw in f:
+            if not raw.strip():
+                continue
+            rec = json.loads(raw)
+            sentence = rec.get("sentence", "").strip()
+            if not sentence:
+                continue
+            cid = rec.get("concept_id")
+            affect = np.asarray(rec.get("affect", []), dtype=np.float32)
+            if affect.shape != (12,):
+                affect = np.zeros(12, dtype=np.float32)
+
+            # Top-K nearest concept embeddings from the current mind.
+            top_embs: list[np.ndarray] = []
+            if cid is not None and cid in g.nodes:
+                base_emb = g.nodes[cid].embedding
+                sims = g._cosine_to_all(base_emb)
+                order = np.argsort(-sims)
+                for idx in order:
+                    peer_id = g._matrix_ids[int(idx)]
+                    if peer_id == cid:
+                        continue
+                    peer = g.nodes.get(peer_id)
+                    if peer is None:
+                        continue
+                    top_embs.append(peer.embedding)
+                    if len(top_embs) >= TOP_K_CONCEPTS:
+                        break
+            cond = build_conditioning_vector(affect, top_embs)
+
+            # GPT-2 tokenization. Append EOS so the model has a stop signal.
+            ids = tokenizer.encode(
+                sentence + tokenizer.eos_token,
+                add_special_tokens=False,
+            )[:CD_MAX_TOKENS]
+            if len(ids) < 2:
+                continue
+            examples.append((ids, cond))
+
+    return examples, loop  # return loop too so caller can keep it alive (avoids re-loading)
+
+
+def collate_cd(batch, pad_token_id: int):
+    """Pad token_ids to max length. Returns tokens, attention_mask, cond."""
+    max_len = max(len(t) for t, _ in batch)
+    tokens = torch.full((len(batch), max_len), pad_token_id, dtype=torch.long)
+    mask = torch.zeros((len(batch), max_len), dtype=torch.long)
+    cond = torch.stack([torch.tensor(c, dtype=torch.float32) for _, c in batch])
+    for i, (ids, _) in enumerate(batch):
+        tokens[i, : len(ids)] = torch.tensor(ids, dtype=torch.long)
+        mask[i, : len(ids)] = 1
+    return tokens, mask, cond
+
+
+def run_training_cd(
+    paths: MindPaths,
+    epochs: int = CD_EPOCHS,
+    device: str | None = None,
+    batch_size: int = CD_BATCH_SIZE,
+) -> None:
+    """Fine-tune the GPT-2 conditioned decoder on this mind's surprise corpus."""
+    from backend.language_head import (        # noqa: E402
+        CONDITIONED_DECODER_FILENAME,
+        ConditionedDecoder,
+    )
+
+    device = device or ("mps" if torch.backends.mps.is_available() else "cpu")
+    print(f"[cd-train] mind={paths.mind_name}  device={device}")
+
+    print("[cd-train] constructing ConditionedDecoder (loads GPT-2 small) …")
+    model = ConditionedDecoder()                      # imports transformers; downloads weights
+    model.to(device)
+
+    tokenizer = model.tokenizer
+    examples, _loop = build_cd_examples(paths.surprised_log, paths.db, tokenizer)
+    if not examples:
+        raise RuntimeError("no training examples — has the curriculum been run yet?")
+    print(f"[cd-train] {len(examples):,} training examples")
+
+    # Trainable params: condition_proj + unfrozen GPT-2 layers + ln_f + lm_head
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    n_train = sum(p.numel() for p in trainable)
+    n_total = sum(p.numel() for p in model.parameters())
+    print(f"[cd-train] trainable: {n_train / 1e6:.1f}M / {n_total / 1e6:.1f}M params")
+
+    # Build a simple iterable from examples; we use plain shuffling
+    # because the dataset is small and DataLoader's overhead isn't worth
+    # it for ~1000 examples.
+    pad_id = tokenizer.pad_token_id
+
+    optim_obj = torch.optim.AdamW(trainable, lr=CD_LR, weight_decay=CD_WD)
+
+    # Linear warmup over the first 10% of steps then constant. This is
+    # what kept training stable after the initial 1e-4 / no-warmup run
+    # destabilized within 2 epochs.
+    n_batches_per_epoch = max(1, len(examples) // batch_size + (1 if len(examples) % batch_size else 0))
+    total_steps = epochs * n_batches_per_epoch
+    warmup_steps = max(1, int(total_steps * CD_WARMUP_FRAC))
+
+    def lr_at_step(step: int) -> float:
+        if step < warmup_steps:
+            return CD_LR * (step + 1) / warmup_steps
+        return CD_LR
+
+    import random
+    step = 0
+    best_loss = float("inf")
+    saved_path = os.path.join(paths.root, CONDITIONED_DECODER_FILENAME)
+    for epoch in range(1, epochs + 1):
+        model.train()
+        random.shuffle(examples)
+        t0 = time.perf_counter()
+        total_loss = 0.0
+        n_seen = 0
+        for bi in range(0, len(examples), batch_size):
+            for pg in optim_obj.param_groups:
+                pg["lr"] = lr_at_step(step)
+            batch = examples[bi: bi + batch_size]
+            tokens, mask, cond = collate_cd(batch, pad_id)
+            tokens = tokens.to(device); mask = mask.to(device); cond = cond.to(device)
+            loss = model.forward_with_prefix(cond, tokens, mask)
+            optim_obj.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(trainable, max_norm=1.0)
+            optim_obj.step()
+            total_loss += float(loss.item())
+            n_seen += 1
+            step += 1
+        avg = total_loss / max(1, n_seen)
+        # Save best-loss checkpoint so a destabilizing late epoch doesn't
+        # wipe out a good earlier model.
+        if avg < best_loss:
+            best_loss = avg
+            model.save_delta(saved_path)
+            best_marker = " ← best, saved"
+        else:
+            best_marker = ""
+        print(f"  epoch {epoch}/{epochs}  loss={avg:.4f}  lr={lr_at_step(step):.2e}  ({time.perf_counter() - t0:.1f}s){best_marker}")
+
+    # Best-loss delta is already on disk (saved per-epoch above).
+    if os.path.exists(saved_path):
+        size_mb = os.path.getsize(saved_path) / 1024 / 1024
+        print(f"[cd-train] best-loss delta at {saved_path}  ({size_mb:.1f} MB, loss={best_loss:.4f})")
+
+
 def run_training(
     paths: MindPaths,
     epochs: int,
@@ -257,20 +437,35 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mind", default="default",
                     help="mind name (paths under data/{mind}/)")
-    ap.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
+    ap.add_argument("--epochs", type=int, default=None,
+                    help="default: 5 for LSTM, 10 for GPT-2 conditioned decoder")
     ap.add_argument("--device", default=None,
                     help="cpu | mps | cuda — default mps if available")
     ap.add_argument("--vocab-limit", type=int, default=VOCAB_LIMIT)
+    ap.add_argument("--gpt2", action="store_true",
+                    help="train the GPT-2 conditioned decoder instead of the "
+                         "Phase-5 LSTM head (Phase 7).")
+    ap.add_argument("--batch-size", type=int, default=CD_BATCH_SIZE,
+                    help="batch size for --gpt2 mode")
     args = ap.parse_args()
 
     paths = MindPaths(args.mind)
     paths.ensure_dirs()
-    run_training(
-        paths=paths,
-        epochs=args.epochs,
-        device=args.device,
-        vocab_limit=args.vocab_limit,
-    )
+
+    if args.gpt2:
+        run_training_cd(
+            paths=paths,
+            epochs=args.epochs or CD_EPOCHS,
+            device=args.device,
+            batch_size=args.batch_size,
+        )
+    else:
+        run_training(
+            paths=paths,
+            epochs=args.epochs or DEFAULT_EPOCHS,
+            device=args.device,
+            vocab_limit=args.vocab_limit,
+        )
     return 0
 
 

@@ -1128,6 +1128,34 @@ These are not fully resolved by this synthesis. Each needs a follow-up design pa
 
 ---
 
+## PHASE 7 OPEN ITEMS — CONDITIONING SIGNAL
+
+The GPT-2 conditioned decoder produces fluent English but the soft
+prefix is currently too weak to make the curriculum vocabulary
+dominate GPT-2's web-text priors. Three fixes in priority order:
+
+1. **Lower `MIN_THRESHOLD` 1.5 → 1.0 during ingestion.** Surprise rate
+   today is ~5% — full curriculum yields ~1K surprised sentences per
+   mind. At threshold 1.0, ~15% cross — corpus triples to ~3K examples.
+   This alone may carry the conditioning past GPT-2's base priors.
+
+2. **Multi-token soft prefix (5-10 virtual tokens from concept set).**
+   Today the conditioning is one virtual token's embedding. Projecting
+   each of the top-5 active concepts to its own virtual position gives
+   GPT-2's attention five contextual cues to lean on, not one.
+
+3. **50+ epochs fine-tune at lr 1e-5 after corpus grows.** The current
+   regime (10 epochs at 2e-5 on ~1K examples) plateaus at perplexity
+   ~150. With 3K+ examples and a longer schedule, expect convergence
+   to perplexity ~30-50 — strong enough that the curriculum surfaces
+   when the mind is asked about anything in its training domains.
+
+Target: curriculum vocabulary dominates GPT-2 base priors. The
+self-examination dialogue should answer with words from the books the
+mind actually read, not generic web-text drift.
+
+---
+
 ## PHASE 5 ROADMAP — THE PROCESSING PHASE
 
 **Problem:** mind echoes input because seed concept dominates active set

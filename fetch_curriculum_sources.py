@@ -34,18 +34,37 @@ GUTENBERG_URL_TEMPLATE = "https://www.gutenberg.org/cache/epub/{id}/pg{id}.txt"
 WIKI_API_URL = "https://en.wikipedia.org/w/api.php"
 
 DEFAULT_WIKI_LIMIT = 100
-WIKI_REQUEST_DELAY_S = 0.15           # be polite to the API
+WIKI_REQUEST_DELAY_S = 1.0           # base delay (Wikipedia rate-limits aggressively)
+WIKI_MAX_RETRIES = 5
 
 
 # ============================================================
-# Generic HTTP fetch with a sane User-Agent
+# Generic HTTP fetch with a sane User-Agent + 429 backoff
 # ============================================================
 
 def _http_get(url: str, timeout: float = 60.0) -> bytes:
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "the-mind/0.3 (curriculum fetcher)"},
-    )
+    """Fetch with exponential-backoff retries on HTTP 429 (rate limit).
+    The Wikipedia REST API gives 429 freely under burst load — sleeping
+    1, 2, 4, 8, 16 s between attempts is sufficient on a single client.
+    """
+    delay = 2.0
+    for attempt in range(WIKI_MAX_RETRIES):
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "the-mind/0.3 (curriculum fetcher)"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < WIKI_MAX_RETRIES - 1:
+                print(f"    [429 rate-limit, sleeping {delay:.0f}s, retry {attempt + 1}]")
+                time.sleep(delay)
+                delay *= 2
+                continue
+            raise
+    # Final attempt without retry catch.
+    req = urllib.request.Request(url, headers={"User-Agent": "the-mind/0.3 (curriculum fetcher)"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read()
 

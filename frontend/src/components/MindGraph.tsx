@@ -66,9 +66,11 @@ export function MindGraph({ graph, lastCycle, consolidationActive }: Props) {
       .nodeResolution(16)
       .linkOpacity(0.32)
       .linkWidth((l: LinkDatum) => Math.max(0.25, l.weight * 1.4))
-      .linkDirectionalParticles((l: LinkDatum) => Math.min(4, l.activation_count))
+      // Particles only on edges that earned them (activation_count > 0)
+      // and capped at 2. With 7K edges, even one particle each is heavy.
+      .linkDirectionalParticles((l: LinkDatum) => l.activation_count > 0 ? Math.min(2, l.activation_count) : 0)
       .linkDirectionalParticleSpeed(0.006)
-      .linkDirectionalParticleWidth(1.2)
+      .linkDirectionalParticleWidth(1.0)
       .linkColor((l: LinkDatum) => EDGE_COLOR_BY_TYPE[l.type] ?? "#94a3b8")
       .nodeLabel((d: Datum) => {
         const valence = d.alignment >= 0 ? "+" : "−";
@@ -83,30 +85,36 @@ export function MindGraph({ graph, lastCycle, consolidationActive }: Props) {
         const baseSize = 2 + Math.log1p(d.activation_count) * 1.6 + (isAbs ? 1.2 : 0);
         const group = new THREE.Group();
 
-        // Inner core (slightly emissive sphere for crispness)
+        // Inner core. Geometry detail scaled down so the 1000-node scene
+        // doesn't fall behind: 10×8 is ~70 tris per sphere (was 18×18 = 324),
+        // ~80% fewer triangles for negligible visual loss at typical zoom.
         const coreMat = new THREE.MeshStandardMaterial({
           color: nodeColor(d, 0, isAbs),
           emissive: new THREE.Color(nodeColor(d, 0, isAbs)).multiplyScalar(0.4),
           roughness: 0.3,
           metalness: 0.1,
         });
-        const core = new THREE.Mesh(new THREE.SphereGeometry(baseSize, 18, 18), coreMat);
+        const core = new THREE.Mesh(new THREE.SphereGeometry(baseSize, 10, 8), coreMat);
         group.add(core);
 
-        // Outer translucent halo for "alive" glow
-        const haloMat = new THREE.MeshBasicMaterial({
-          color: nodeColor(d, 0, isAbs),
-          transparent: true,
-          opacity: 0.18,
-          side: THREE.BackSide,
-          depthWrite: false,
-        });
-        const halo = new THREE.Mesh(new THREE.SphereGeometry(baseSize * 1.55, 16, 16), haloMat);
-        group.add(halo);
+        // Outer halo only for nodes that earn it: pinned, abstractions,
+        // or recently-active. Plain nodes drop the second mesh entirely.
+        const wantHalo = d.is_pinned || isAbs || d.activation_count > 2;
+        if (wantHalo) {
+          const haloMat = new THREE.MeshBasicMaterial({
+            color: nodeColor(d, 0, isAbs),
+            transparent: true,
+            opacity: 0.18,
+            side: THREE.BackSide,
+            depthWrite: false,
+          });
+          const halo = new THREE.Mesh(new THREE.SphereGeometry(baseSize * 1.55, 8, 6), haloMat);
+          group.add(halo);
+        }
 
         if (d.is_pinned) {
-          // Subtle gold ring around pinned concepts
-          const ringGeom = new THREE.RingGeometry(baseSize * 1.7, baseSize * 1.85, 32);
+          // Subtle gold ring around pinned concepts. Lower segment count.
+          const ringGeom = new THREE.RingGeometry(baseSize * 1.7, baseSize * 1.85, 16);
           const ringMat = new THREE.MeshBasicMaterial({
             color: 0xfacc15,
             transparent: true,
@@ -137,18 +145,34 @@ export function MindGraph({ graph, lastCycle, consolidationActive }: Props) {
     // Continuous render-time animations: breathing on active nodes,
     // pulse ring lifecycle, halo opacity tied to recent activity.
     let raf = 0;
+    let lastBreathAt = 0;
+    const BREATH_INTERVAL_MS = 50;          // ~20 Hz, plenty for a 1000-node graph
+    const BREATH_RECENCY_S = 30;            // beyond this, the node just sits at scale 1
     const animate = () => {
-      const tNow = performance.now() / 1000;
-      // Breathing on every node, scaled by recent activity
-      indexRef.current.forEach((d) => {
-        const obj = d.__obj;
-        if (!obj) return;
-        const sinceAct = d.last_activated > 0 ? Math.max(0, (Date.now() / 1000) - d.last_activated) : 999;
-        const recencyBoost = Math.exp(-sinceAct / 6);   // ~6s decay
-        const phase = ((d.id * 0.31) + tNow * (0.6 + 0.6 * recencyBoost)) % (Math.PI * 2);
-        const breathe = 1 + 0.05 * Math.sin(phase) + 0.18 * recencyBoost;
-        obj.scale.set(breathe, breathe, breathe);
-      });
+      // Throttle the breathing loop. RAF runs at ~60Hz; we only need to
+      // update scales every ~50ms to avoid stalls when N=1000+.
+      const nowMs = performance.now();
+      if (nowMs - lastBreathAt >= BREATH_INTERVAL_MS) {
+        lastBreathAt = nowMs;
+        const tNow = nowMs / 1000;
+        const nowS = Date.now() / 1000;
+        indexRef.current.forEach((d) => {
+          const obj = d.__obj;
+          if (!obj) return;
+          const sinceAct = d.last_activated > 0 ? nowS - d.last_activated : 1e9;
+          // Past BREATH_RECENCY_S seconds, freeze the scale at 1.0 — no
+          // per-frame math for dormant nodes. Only currently-relevant
+          // nodes do trig + assignment.
+          if (sinceAct > BREATH_RECENCY_S) {
+            if (obj.scale.x !== 1) obj.scale.set(1, 1, 1);
+            return;
+          }
+          const recencyBoost = Math.exp(-sinceAct / 6);
+          const phase = ((d.id * 0.31) + tNow * (0.6 + 0.6 * recencyBoost)) % (Math.PI * 2);
+          const breathe = 1 + 0.05 * Math.sin(phase) + 0.18 * recencyBoost;
+          obj.scale.set(breathe, breathe, breathe);
+        });
+      }
 
       // Pulse rings: fade out and remove finished
       const pg = pulseGroupRef.current;

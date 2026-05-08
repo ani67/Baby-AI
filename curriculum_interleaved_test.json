@@ -1,0 +1,12 @@
+{
+  "mind_name": "interleaved_test",
+  "mode": "interleaved",
+  "sleep_every_n_sentences": 8000,
+  "idle_every_n_sentences": 200,
+  "train_lm_every_n_surprises": 99999,
+  "sources": [
+    {"name": "grammar",     "source": "data/books/grammar_book.txt",  "domain": "language",   "weight": 0.5},
+    {"name": "alice",       "source": "data/books/alice.txt",         "domain": "narrative",  "weight": 0.8},
+    {"name": "meditations", "source": "data/books/meditations.txt",   "domain": "philosophy", "weight": 1.0}
+  ]
+}

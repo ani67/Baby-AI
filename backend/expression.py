@@ -71,20 +71,24 @@ from backend.predict import PredictionEngine
 try:
     import torch
     from backend.language_head import (
+        CONDITIONED_DECODER_FILENAME,
+        ConditionedDecoder,
         DEFAULT_VOCAB_PATH,
         DEFAULT_WEIGHTS_PATH,
         LanguageHead,
         Vocab,
         build_conditioning_vector,
         is_available as language_head_available,
+        is_conditioned_decoder_available,
         load_checkpoint,
         render_tokens,
     )
     _TORCH_OK = True
 except Exception:
     _TORCH_OK = False
-    LanguageHead = None  # type: ignore
-    Vocab = None         # type: ignore
+    LanguageHead = None         # type: ignore
+    ConditionedDecoder = None   # type: ignore
+    Vocab = None                # type: ignore
 
 
 # Phase 3 minimal G constants. Synthesis symbol table values.
@@ -188,13 +192,24 @@ class Expression:
         # keep working unchanged.
         self._lm_weights_path = lm_weights_path or DEFAULT_WEIGHTS_PATH if _TORCH_OK else None
         self._lm_vocab_path   = lm_vocab_path   or DEFAULT_VOCAB_PATH   if _TORCH_OK else None
+        # Phase 7: GPT-2 conditioned decoder lives next to the LSTM head
+        # in each mind's dir. Tried first; falls back silently to LSTM,
+        # which falls back silently to templates.
+        self._cd_weights_path: str | None = None
+        if lm_weights_path:
+            self._cd_weights_path = os.path.join(
+                os.path.dirname(lm_weights_path) or ".",
+                CONDITIONED_DECODER_FILENAME,
+            )
         self._language_head: "LanguageHead | None" = None
+        self._conditioned_decoder: "ConditionedDecoder | None" = None
         self._lm_vocab: "Vocab | None" = None
         self._lm_device: str = (
             "mps" if (_TORCH_OK and torch.backends.mps.is_available())
             else "cpu"
         )
         self._lm_load_attempted: bool = False
+        self._cd_load_attempted: bool = False
 
         if not skip_boot:
             self._load_seed_templates()
@@ -226,11 +241,44 @@ class Expression:
             self._lm_vocab = None
             return False
 
+    def _try_load_conditioned_decoder(self) -> bool:
+        """Phase 7: try loading GPT-2 conditioned decoder. Idempotent.
+        Silent failure if transformers isn't installed or the delta
+        weights file is missing — Expression falls back to the LSTM head."""
+        if self._conditioned_decoder is not None:
+            return True
+        if self._cd_load_attempted:
+            return False
+        self._cd_load_attempted = True
+        if not _TORCH_OK:
+            return False
+        if not (self._cd_weights_path and is_conditioned_decoder_available(self._cd_weights_path)):
+            return False
+        try:
+            print(f"[expression] loading conditioned decoder from {self._cd_weights_path} …")
+            cd = ConditionedDecoder()
+            cd.load_delta(self._cd_weights_path)
+            cd.to(self._lm_device)
+            cd.eval()
+            self._conditioned_decoder = cd
+            print(f"[expression] conditioned decoder ready (device={self._lm_device})")
+            return True
+        except Exception as exc:
+            print(f"[expression] conditioned decoder load failed: {exc}")
+            self._conditioned_decoder = None
+            return False
+
     def reload_language_head(self) -> bool:
-        """Force a reload — useful when training finishes mid-session."""
+        """Force a reload — useful when training finishes mid-session.
+        Tries the conditioned decoder first; if that's missing, the
+        LSTM head; if that too, returns False (template fallback only)."""
         self._language_head = None
+        self._conditioned_decoder = None
         self._lm_vocab = None
         self._lm_load_attempted = False
+        self._cd_load_attempted = False
+        if self._try_load_conditioned_decoder():
+            return True
         return self._try_load_language_head()
 
     # ---- template inventory ----
@@ -319,6 +367,14 @@ class Expression:
         if not intent.active_concepts:
             return []
 
+        # Phase 7: prefer the GPT-2 conditioned decoder when available.
+        if self._try_load_conditioned_decoder():
+            cd_candidates = self._generate_cd_candidates(intent)
+            if cd_candidates:
+                return cd_candidates
+            # Fall through to LSTM head if the conditioned decoder
+            # produced nothing (network blip, all-empty, etc.)
+
         if self._try_load_language_head():
             lm_candidates = self._generate_lm_candidates(intent)
             if lm_candidates:
@@ -369,6 +425,53 @@ class Expression:
                     surface_text=surface_text,
                     modality="text",
                 ))
+            if len(candidates) >= N_CANDIDATES_DEFAULT:
+                break
+        return candidates
+
+    def _generate_cd_candidates(
+        self,
+        intent: ExpressionIntent,
+    ) -> list[CandidateExpression]:
+        """Generate via the GPT-2 conditioned decoder. Same conditioning
+        contract as the LSTM head: composite affect + top-5 active concept
+        embeddings. N samples at temperature 0.7, top-p 0.9."""
+        if self._conditioned_decoder is None:
+            return []
+
+        composite = self.affect.composite(intent.now)
+        ranked = sorted(intent.active_concepts.items(), key=lambda kv: -kv[1])
+        embeddings: list[np.ndarray] = []
+        for cid, _ in ranked:
+            if cid in self._templates:
+                continue
+            node = self.graph.nodes.get(cid)
+            if node is None:
+                continue
+            embeddings.append(node.embedding.astype(np.float32, copy=False))
+            if len(embeddings) >= 5:
+                break
+
+        cond_np = build_conditioning_vector(composite, embeddings)
+        cond_t = torch.tensor(cond_np, dtype=torch.float32).unsqueeze(0)
+
+        candidates: list[CandidateExpression] = []
+        seen: set[str] = set()
+        attempts = max(N_CANDIDATES_DEFAULT, 6)
+        for _ in range(attempts):
+            text = self._conditioned_decoder.generate(cond_t).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            surface_repr = encode_text(text, dim=D_REP)
+            candidates.append(CandidateExpression(
+                candidate_id=uuid.uuid4().hex,
+                intent_id=intent.intent_id,
+                internal_repr=intent.internal_repr.astype(np.float32, copy=True),
+                surface_repr=surface_repr,
+                surface_text=text,
+                modality="text",
+            ))
             if len(candidates) >= N_CANDIDATES_DEFAULT:
                 break
         return candidates

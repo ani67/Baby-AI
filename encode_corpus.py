@@ -52,8 +52,11 @@ def parse_source_arg(arg: str) -> tuple[str, str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("sources", nargs="+",
-                    help="One or more `path:domain` pairs.")
+    ap.add_argument("sources", nargs="*",
+                    help="`path:domain` pairs. If omitted, reads --curriculum and "
+                         "encodes every book step listed there.")
+    ap.add_argument("--curriculum", default="curriculum.json",
+                    help="Used when `sources` is empty.")
     ap.add_argument("--db", default=DB_PATH)
     ap.add_argument("--workers", type=int, default=None,
                     help="Default: min(N_SOURCES, cpu_count())")
@@ -61,7 +64,20 @@ def main() -> int:
 
     init_db(args.db)
 
-    requested = [parse_source_arg(s) for s in args.sources]
+    if args.sources:
+        requested = [parse_source_arg(s) for s in args.sources]
+    else:
+        # Auto-discover from curriculum.json — every step with type=="book"
+        # gets encoded under its declared domain.
+        import json as _json
+        with open(args.curriculum, "r", encoding="utf-8") as f:
+            curr = _json.load(f)
+        requested = [
+            (s["source"], s.get("domain", "unknown"))
+            for s in curr.get("sequence", [])
+            if s.get("type") == "book"
+        ]
+        print(f"  curriculum {args.curriculum}: {len(requested)} book sources")
 
     pending: list[tuple[str, str, str]] = []
     for src, domain in requested:

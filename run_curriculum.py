@@ -56,6 +56,10 @@ from backend.preencoder import (                         # noqa: E402
     fetch_encoded,
     is_source_encoded,
 )
+from backend.interleaved_reader import (                  # noqa: E402
+    InterleavedReader,
+    SourceSpec,
+)
 from backend.simulation import SimulationReplay          # noqa: E402
 
 
@@ -295,6 +299,203 @@ def run_train_lm_step(paths: MindPaths, step: dict) -> dict:
     return {"name": step["name"], "ok": True, "epochs": epochs, "duration_s": duration}
 
 
+def run_interleaved(
+    paths: MindPaths,
+    curriculum_path: str,
+    max_sentences: int | None = None,
+    birth_seed: int | None = None,
+) -> dict:
+    """Phase 7 — interleaved curriculum mode.
+
+    Reads `sources` from curriculum JSON, builds an InterleavedReader,
+    pulls sentences in weighted random rotation, fires loop.cycle with
+    skip_simulation=True for each. Sleep / idle / train_lm are triggered
+    by total-volume counters, not per-source completion.
+
+    On completion: runs the self_examination dialogue with the LM that
+    was trained during the run (if any).
+    """
+    with open(curriculum_path, "r", encoding="utf-8") as f:
+        curr = json.load(f)
+
+    sleep_every  = int(curr.get("sleep_every_n_sentences", 8000))
+    idle_every   = int(curr.get("idle_every_n_sentences",  2000))
+    train_after  = int(curr.get("train_lm_every_n_surprises", 500))
+
+    sources = [
+        SourceSpec(
+            name=s["name"], source_file=s["source"],
+            domain=s.get("domain", "unknown"),
+            weight=float(s.get("weight", 1.0)),
+        )
+        for s in curr["sources"]
+    ]
+    print(f"[interleaved] {len(sources)} source(s) declared in {curriculum_path}")
+
+    reader = InterleavedReader(sources)
+    print(f"[interleaved] {reader.active_sources} encoded sources, "
+          f"{reader.total_sentences:,} total sentences available")
+    if reader.active_sources == 0:
+        raise RuntimeError("no encoded sources — run encode_corpus.py first")
+
+    seed = birth_seed if birth_seed is not None else _seed_for_mind_name(paths.mind_name)
+    loop = load_or_construct(paths, birth_seed=seed)
+    print(f"[interleaved] mind: {paths.mind_name} (birth_seed={seed})")
+    print(f"[interleaved]   loaded: {loop.graph.node_count} nodes,"
+          f" {loop.graph.edge_count} edges, cycle_count={loop.cycle_count}")
+
+    h = loop.input_pipeline
+    persist = MindPersistence(paths.db)
+
+    # Surprised-sentence training corpus — same JSONL the LSTM/GPT2 trainers
+    # consume. Append; this run extends whatever was logged before.
+    os.makedirs(os.path.dirname(paths.surprised_log) or ".", exist_ok=True)
+    train_log = open(paths.surprised_log, "a", encoding="utf-8")
+
+    # Source-name agents so refers_to chains anchor cleanly. One per source.
+    name_to_agent_id: dict[str, int] = {}
+    for spec in sources:
+        name_to_agent_id[spec.name] = h.register_agent(spec.name, now=time.time())
+
+    nodes_before     = loop.graph.node_count
+    edges_before     = loop.graph.edge_count
+    surprises_before = loop.predict_engine.surprise_count
+
+    surprises_since_train = 0
+    n_pulled = 0
+    n_done = 0
+    t0 = time.perf_counter()
+    pending_train = False
+
+    domain_distribution: dict[str, int] = {}
+
+    # Stream the kept-sentence list to paths.book_text_log for vocab-builds.
+    bt_log = open(paths.book_text_log, "a", encoding="utf-8")
+
+    try:
+        for sent in reader:
+            if max_sentences is not None and n_pulled >= max_sentences:
+                break
+
+            now = time.time()
+            agent_id = name_to_agent_id[sent.source_name]
+            ingest = h.ingest_text(
+                sent.sentence, now=now, agent_id=agent_id,
+                representation=sent.representation,
+            )
+            loop.cycle(ingest, now=now + 1e-3, force_respond=False, skip_simulation=True)
+
+            domain_distribution[sent.domain] = domain_distribution.get(sent.domain, 0) + 1
+            bt_log.write(sent.sentence + "\n")
+
+            if ingest.gap.is_surprise:
+                composite = loop.affect.composite(now)
+                train_log.write(json.dumps({
+                    "sentence":       sent.sentence,
+                    "affect":         [float(x) for x in composite],
+                    "surprise_score": float(ingest.gap.surprise_score),
+                    "concept_id":     ingest.gap.concept_id,
+                    "t":              float(now),
+                    "domain":         sent.domain,
+                    "source":         sent.source_name,
+                }) + "\n")
+                surprises_since_train += 1
+                if surprises_since_train >= train_after:
+                    pending_train = True
+
+            n_pulled += 1
+            n_done += 1
+
+            if n_done % 500 == 0:
+                train_log.flush(); bt_log.flush()
+                rate = n_pulled / max(time.perf_counter() - t0, 1e-6)
+                arousal = loop.affect.current_arousal(time.time())
+                print(f"  [{n_pulled:>6,d}]  nodes={loop.graph.node_count:>5d}  "
+                      f"edges={loop.graph.edge_count:>5d}  arousal={arousal:.3f}  "
+                      f"({rate:,.0f}/s)")
+
+            if n_done % idle_every == 0:
+                replayed = loop.idle(now=time.time(), max_replays=3)
+                print(f"    [idle @ {n_pulled:,}]  replayed={replayed.replayed_count}")
+
+            if n_done % sleep_every == 0 or pending_train:
+                slept = loop.sleep(now=time.time(), duration_seconds=20.0)
+                print(f"    [sleep @ {n_pulled:,}]  replays={slept.replays_fired}  "
+                      f"abstractions={slept.abstractions_formed}  "
+                      f"actual={slept.duration_actual:.2f}s")
+                # Save before triggering the LM training subprocess —
+                # train_language_head loads the mind from disk.
+                train_log.close(); train_log = None
+                bt_log.close(); bt_log = None
+                persist.save(loop, now=time.time())
+                if pending_train:
+                    print(f"    [train_lm @ {n_pulled:,}]  "
+                          f"surprises_since_last={surprises_since_train}")
+                    _train_lm_subprocess(paths, epochs=10)
+                    loop.expression.reload_language_head()
+                    surprises_since_train = 0
+                    pending_train = False
+                # Re-open the logs after the subprocess completes.
+                train_log = open(paths.surprised_log, "a", encoding="utf-8")
+                bt_log = open(paths.book_text_log, "a", encoding="utf-8")
+    except KeyboardInterrupt:
+        print("\n[interleaved] interrupted; saving …")
+
+    if train_log is not None:
+        train_log.close()
+    if bt_log is not None:
+        bt_log.close()
+
+    persist.save(loop, now=time.time())
+    duration = time.perf_counter() - t0
+
+    summary = {
+        "n_pulled":            n_pulled,
+        "duration_s":          duration,
+        "throughput":          n_pulled / max(duration, 1e-6),
+        "domain_distribution": domain_distribution,
+        "per_source_pulls":    reader.per_source_pulls(),
+        "nodes_added":         loop.graph.node_count - nodes_before,
+        "edges_added":         loop.graph.edge_count - edges_before,
+        "surprises_added":     loop.predict_engine.surprise_count - surprises_before,
+        "final_node_count":    loop.graph.node_count,
+        "final_edge_count":    loop.graph.edge_count,
+    }
+    print()
+    print(f"[interleaved] pulled {n_pulled:,} sentences in {duration:.1f}s "
+          f"({summary['throughput']:,.0f}/s)")
+    print(f"[interleaved] graph: +{summary['nodes_added']} nodes,  "
+          f"+{summary['edges_added']} edges,  "
+          f"+{summary['surprises_added']} surprises")
+    print(f"[interleaved] domain distribution:")
+    for d, n in sorted(domain_distribution.items(), key=lambda kv: -kv[1]):
+        print(f"    {d:14s}  {n:>5,d}  ({100*n/max(n_pulled,1):5.1f}%)")
+
+    return summary
+
+
+def _train_lm_subprocess(paths: MindPaths, epochs: int) -> dict:
+    """Helper: invoke training in a subprocess so the GPT-2 base + GloVe
+    binary can load fresh and don't leak memory across many train
+    cycles inside the long-running interleaved runner."""
+    cmd = [
+        sys.executable, "scripts/train_language_head.py",
+        "--mind", paths.mind_name,
+        "--gpt2", "--epochs", str(epochs),
+    ]
+    t0 = time.perf_counter()
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    duration = time.perf_counter() - t0
+    if proc.returncode != 0:
+        print("    [train_lm] FAILED:")
+        print(proc.stdout[-1500:])
+        print(proc.stderr[-1500:])
+        return {"ok": False, "duration_s": duration}
+    for line in proc.stdout.strip().splitlines()[-4:]:
+        print(f"    {line}")
+    return {"ok": True, "duration_s": duration}
+
+
 def run_dialogue_step(loop: MainLoop, paths: MindPaths, step: dict) -> dict:
     prompts = step.get("prompts", [])
     print(f"  [dialogue] {step['name']}  prompts={len(prompts)}")
@@ -345,6 +546,12 @@ def main() -> int:
     ap.add_argument("--birth-seed", type=int, default=None,
                     help="explicit birth seed; default = sha1(mind_name)[:4] so "
                          "different mind_names produce structurally different minds")
+    ap.add_argument("--interleave", action="store_true",
+                    help="Phase 7 interleaved mode — read curriculum's `sources` array "
+                         "and pull sentences in weighted random rotation across all "
+                         "sources simultaneously, instead of exhausting one before the next.")
+    ap.add_argument("--max-sentences", type=int, default=None,
+                    help="cap total sentences pulled (interleave mode only)")
     args = ap.parse_args()
 
     birth_seed = args.birth_seed if args.birth_seed is not None else _seed_for_mind_name(args.mind)
@@ -358,6 +565,16 @@ def main() -> int:
             shutil.rmtree(paths.root)
             print(f"removed {paths.root}")
         paths.ensure_dirs()
+
+    # ---- Phase 7: interleaved mode short-circuits the sequential path ----
+    if args.interleave:
+        run_interleaved(
+            paths=paths,
+            curriculum_path=args.curriculum,
+            max_sentences=args.max_sentences,
+            birth_seed=birth_seed,
+        )
+        return 0
 
     with open(args.curriculum, "r", encoding="utf-8") as f:
         curriculum = json.load(f)
