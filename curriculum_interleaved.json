@@ -3,36 +3,786 @@
   "mode": "interleaved",
   "sleep_every_n_sentences": 8000,
   "idle_every_n_sentences": 2000,
-  "train_lm_every_n_surprises": 500,
+  "train_lm_every_n_surprises": 2000,
   "sources": [
-    {"name": "grammar",                "source": "data/books/grammar_book.txt",     "domain": "language",     "weight": 0.5,
-     "notes": "already small — half weight so it doesn't get drowned"},
-    {"name": "alice",                  "source": "data/books/alice.txt",            "domain": "narrative",    "weight": 0.8},
-    {"name": "aesop",                  "source": "data/books/aesop.txt",            "domain": "narrative",    "weight": 0.8},
-    {"name": "grimm",                  "source": "data/books/grimm.txt",            "domain": "narrative",    "weight": 0.8},
-    {"name": "meditations",            "source": "data/books/meditations.txt",      "domain": "philosophy",   "weight": 1.0},
-    {"name": "plato",                  "source": "data/books/plato.txt",            "domain": "philosophy",   "weight": 1.0},
-    {"name": "aristotle_ethics",       "source": "data/books/aristotle_ethics.txt", "domain": "philosophy",   "weight": 1.0},
-    {"name": "wiki_philosophy_of_mind","source": "data/wiki/philosophy_of_mind.txt","domain": "philosophy",   "weight": 1.0},
-    {"name": "wiki_epistemology",      "source": "data/wiki/epistemology.txt",      "domain": "philosophy",   "weight": 1.0},
-    {"name": "wiki_ethics",            "source": "data/wiki/ethics.txt",            "domain": "philosophy",   "weight": 1.0},
-    {"name": "herodotus",              "source": "data/books/herodotus.txt",        "domain": "history",      "weight": 1.0},
-    {"name": "plutarch",               "source": "data/books/plutarch.txt",         "domain": "history",      "weight": 1.0},
-    {"name": "wiki_ancient_history",   "source": "data/wiki/ancient_history.txt",   "domain": "history",      "weight": 1.0},
-    {"name": "wiki_world_history",     "source": "data/wiki/world_history.txt",     "domain": "history",      "weight": 1.0},
-    {"name": "wiki_science_history",   "source": "data/wiki/science_history.txt",   "domain": "history",      "weight": 1.0},
-    {"name": "wiki_art_history",       "source": "data/wiki/art_history.txt",       "domain": "art_culture",  "weight": 1.0},
-    {"name": "wiki_music",             "source": "data/wiki/music.txt",             "domain": "art_culture",  "weight": 1.0},
-    {"name": "wiki_architecture",      "source": "data/wiki/architecture.txt",      "domain": "art_culture",  "weight": 1.0},
-    {"name": "wiki_design",            "source": "data/wiki/design.txt",            "domain": "art_culture",  "weight": 1.0},
-    {"name": "wiki_literature",        "source": "data/wiki/literature.txt",        "domain": "art_culture",  "weight": 1.0},
-    {"name": "wiki_culture",           "source": "data/wiki/culture.txt",           "domain": "art_culture",  "weight": 1.0},
-    {"name": "wiki_science",           "source": "data/wiki/science.txt",           "domain": "encyclopedia", "weight": 1.2},
-    {"name": "wiki_mathematics",       "source": "data/wiki/mathematics.txt",       "domain": "encyclopedia", "weight": 1.2},
-    {"name": "wiki_nature",            "source": "data/wiki/nature.txt",            "domain": "encyclopedia", "weight": 1.2},
-    {"name": "wiki_society",           "source": "data/wiki/society.txt",           "domain": "encyclopedia", "weight": 1.2},
-    {"name": "wiki_technology",        "source": "data/wiki/technology.txt",        "domain": "encyclopedia", "weight": 1.2},
-    {"name": "wiki_geography",         "source": "data/wiki/geography.txt",         "domain": "encyclopedia", "weight": 1.2}
+    {
+      "name": "grammar",
+      "source": "data/books/grammar_book.txt",
+      "domain": "language",
+      "weight": 0.5,
+      "notes": "already small \u2014 half weight so it doesn't get drowned"
+    },
+    {
+      "name": "alice",
+      "source": "data/books/alice.txt",
+      "domain": "narrative",
+      "weight": 0.8
+    },
+    {
+      "name": "aesop",
+      "source": "data/books/aesop.txt",
+      "domain": "narrative",
+      "weight": 0.8
+    },
+    {
+      "name": "grimm",
+      "source": "data/books/grimm.txt",
+      "domain": "narrative",
+      "weight": 0.8
+    },
+    {
+      "name": "meditations",
+      "source": "data/books/meditations.txt",
+      "domain": "philosophy",
+      "weight": 1.0
+    },
+    {
+      "name": "plato",
+      "source": "data/books/plato.txt",
+      "domain": "philosophy",
+      "weight": 1.0
+    },
+    {
+      "name": "aristotle_ethics",
+      "source": "data/books/aristotle_ethics.txt",
+      "domain": "philosophy",
+      "weight": 1.0
+    },
+    {
+      "name": "wiki_philosophy_of_mind",
+      "source": "data/wiki/philosophy_of_mind.txt",
+      "domain": "philosophy",
+      "weight": 1.0
+    },
+    {
+      "name": "wiki_epistemology",
+      "source": "data/wiki/epistemology.txt",
+      "domain": "philosophy",
+      "weight": 1.0
+    },
+    {
+      "name": "wiki_ethics",
+      "source": "data/wiki/ethics.txt",
+      "domain": "philosophy",
+      "weight": 1.0
+    },
+    {
+      "name": "herodotus",
+      "source": "data/books/herodotus.txt",
+      "domain": "history",
+      "weight": 1.0
+    },
+    {
+      "name": "plutarch",
+      "source": "data/books/plutarch.txt",
+      "domain": "history",
+      "weight": 1.0
+    },
+    {
+      "name": "wiki_ancient_history",
+      "source": "data/wiki/ancient_history.txt",
+      "domain": "history",
+      "weight": 1.0
+    },
+    {
+      "name": "wiki_world_history",
+      "source": "data/wiki/world_history.txt",
+      "domain": "history",
+      "weight": 1.0
+    },
+    {
+      "name": "wiki_science_history",
+      "source": "data/wiki/science_history.txt",
+      "domain": "history",
+      "weight": 1.0
+    },
+    {
+      "name": "wiki_art_history",
+      "source": "data/wiki/art_history.txt",
+      "domain": "art_culture",
+      "weight": 1.0
+    },
+    {
+      "name": "wiki_music",
+      "source": "data/wiki/music.txt",
+      "domain": "art_culture",
+      "weight": 1.0
+    },
+    {
+      "name": "wiki_architecture",
+      "source": "data/wiki/architecture.txt",
+      "domain": "art_culture",
+      "weight": 1.0
+    },
+    {
+      "name": "wiki_design",
+      "source": "data/wiki/design.txt",
+      "domain": "art_culture",
+      "weight": 1.0
+    },
+    {
+      "name": "wiki_literature",
+      "source": "data/wiki/literature.txt",
+      "domain": "art_culture",
+      "weight": 1.0
+    },
+    {
+      "name": "wiki_culture",
+      "source": "data/wiki/culture.txt",
+      "domain": "art_culture",
+      "weight": 1.0
+    },
+    {
+      "name": "wiki_science",
+      "source": "data/wiki/science.txt",
+      "domain": "encyclopedia",
+      "weight": 1.2
+    },
+    {
+      "name": "wiki_mathematics",
+      "source": "data/wiki/mathematics.txt",
+      "domain": "encyclopedia",
+      "weight": 1.2
+    },
+    {
+      "name": "wiki_nature",
+      "source": "data/wiki/nature.txt",
+      "domain": "encyclopedia",
+      "weight": 1.2
+    },
+    {
+      "name": "wiki_society",
+      "source": "data/wiki/society.txt",
+      "domain": "encyclopedia",
+      "weight": 1.2
+    },
+    {
+      "name": "wiki_technology",
+      "source": "data/wiki/technology.txt",
+      "domain": "encyclopedia",
+      "weight": 1.2
+    },
+    {
+      "name": "wiki_geography",
+      "source": "data/wiki/geography.txt",
+      "domain": "encyclopedia",
+      "weight": 1.2
+    },
+    {
+      "name": "plato_republic",
+      "source": "data/books/plato_republic.txt",
+      "domain": "philosophy",
+      "weight": 1.2,
+      "notes": "justice, the ideal state, the allegory of the cave"
+    },
+    {
+      "name": "plato_symposium",
+      "source": "data/books/plato_symposium.txt",
+      "domain": "philosophy",
+      "weight": 1.2,
+      "notes": "love, beauty, the nature of eros"
+    },
+    {
+      "name": "plato_phaedo",
+      "source": "data/books/plato_phaedo.txt",
+      "domain": "philosophy",
+      "weight": 1.2,
+      "notes": "the soul, death, immortality"
+    },
+    {
+      "name": "aristotle_poetics",
+      "source": "data/books/aristotle_poetics.txt",
+      "domain": "philosophy",
+      "weight": 1.2,
+      "notes": "art, tragedy, catharsis, mimesis"
+    },
+    {
+      "name": "aristotle_politics",
+      "source": "data/books/aristotle_politics.txt",
+      "domain": "philosophy",
+      "weight": 1.2,
+      "notes": "the state, citizenship, justice in practice"
+    },
+    {
+      "name": "epictetus_enchiridion",
+      "source": "data/books/epictetus_enchiridion.txt",
+      "domain": "philosophy",
+      "weight": 1.2,
+      "notes": "stoic practice, what is in our control, freedom through acceptance"
+    },
+    {
+      "name": "lucretius_nature_of_things",
+      "source": "data/books/lucretius_nature_of_things.txt",
+      "domain": "philosophy",
+      "weight": 1.2,
+      "notes": "atoms, void, death, nature without gods"
+    },
+    {
+      "name": "cicero_on_duties",
+      "source": "data/books/cicero_on_duties.txt",
+      "domain": "philosophy",
+      "weight": 1.2,
+      "notes": "moral obligation, virtue in public life"
+    },
+    {
+      "name": "augustine_confessions",
+      "source": "data/books/augustine_confessions.txt",
+      "domain": "philosophy",
+      "weight": 1.2,
+      "notes": "self-examination, time, memory, God \u2014 first great autobiography"
+    },
+    {
+      "name": "descartes_meditations",
+      "source": "data/books/descartes_meditations.txt",
+      "domain": "philosophy",
+      "weight": 1.2,
+      "notes": "doubt, the cogito, mind and body"
+    },
+    {
+      "name": "spinoza_ethics",
+      "source": "data/books/spinoza_ethics.txt",
+      "domain": "philosophy",
+      "weight": 1.2,
+      "notes": "God as nature, determinism, human freedom"
+    },
+    {
+      "name": "hume_enquiry_understanding",
+      "source": "data/books/hume_enquiry_understanding.txt",
+      "domain": "philosophy",
+      "weight": 1.2,
+      "notes": "causation, empiricism, limits of reason"
+    },
+    {
+      "name": "kant_prolegomena",
+      "source": "data/books/kant_prolegomena.txt",
+      "domain": "philosophy",
+      "weight": 1.2,
+      "notes": "what can we know, synthetic a priori, the limits of metaphysics"
+    },
+    {
+      "name": "nietzsche_thus_spoke_zarathustra",
+      "source": "data/books/nietzsche_thus_spoke_zarathustra.txt",
+      "domain": "philosophy",
+      "weight": 1.2,
+      "notes": "will to power, eternal recurrence, the overman \u2014 philosophy as literature"
+    },
+    {
+      "name": "nietzsche_beyond_good_evil",
+      "source": "data/books/nietzsche_beyond_good_evil.txt",
+      "domain": "philosophy",
+      "weight": 1.2,
+      "notes": "morality as construction, master and slave values"
+    },
+    {
+      "name": "schopenhauer_world_as_will",
+      "source": "data/books/schopenhauer_world_as_will.txt",
+      "domain": "philosophy",
+      "weight": 1.2,
+      "notes": "will as fundamental reality, suffering, art as escape"
+    },
+    {
+      "name": "mill_utilitarianism",
+      "source": "data/books/mill_utilitarianism.txt",
+      "domain": "philosophy",
+      "weight": 1.2,
+      "notes": "greatest happiness, consequentialism"
+    },
+    {
+      "name": "mill_on_liberty",
+      "source": "data/books/mill_on_liberty.txt",
+      "domain": "philosophy",
+      "weight": 1.2,
+      "notes": "individual freedom, tyranny of majority"
+    },
+    {
+      "name": "rousseau_social_contract",
+      "source": "data/books/rousseau_social_contract.txt",
+      "domain": "philosophy",
+      "weight": 1.2,
+      "notes": "general will, legitimacy of government"
+    },
+    {
+      "name": "wiki_continental_philosophy",
+      "source": "data/wiki/continental_philosophy.txt",
+      "domain": "philosophy",
+      "weight": 1.2
+    },
+    {
+      "name": "wiki_analytic_philosophy",
+      "source": "data/wiki/analytic_philosophy.txt",
+      "domain": "philosophy",
+      "weight": 1.2
+    },
+    {
+      "name": "wiki_existentialism",
+      "source": "data/wiki/existentialism.txt",
+      "domain": "philosophy",
+      "weight": 1.2
+    },
+    {
+      "name": "wiki_eastern_philosophy",
+      "source": "data/wiki/eastern_philosophy.txt",
+      "domain": "philosophy",
+      "weight": 1.2
+    },
+    {
+      "name": "thucydides_peloponnesian_war",
+      "source": "data/books/thucydides_peloponnesian_war.txt",
+      "domain": "history",
+      "weight": 1.0,
+      "notes": "war, power, human nature \u2014 the first political realist"
+    },
+    {
+      "name": "suetonius_twelve_caesars",
+      "source": "data/books/suetonius_twelve_caesars.txt",
+      "domain": "history",
+      "weight": 1.0,
+      "notes": "power corrupts, personality shapes empire"
+    },
+    {
+      "name": "tacitus_annals",
+      "source": "data/books/tacitus_annals.txt",
+      "domain": "history",
+      "weight": 1.0,
+      "notes": "tyranny, resistance, the cost of empire"
+    },
+    {
+      "name": "gibbon_decline_fall_vol1",
+      "source": "data/books/gibbon_decline_fall_vol1.txt",
+      "domain": "history",
+      "weight": 1.0,
+      "notes": "how civilizations collapse \u2014 the most important history book"
+    },
+    {
+      "name": "machiavelli_prince",
+      "source": "data/books/machiavelli_prince.txt",
+      "domain": "history",
+      "weight": 1.0,
+      "notes": "power, realism, the gap between how men live and how they ought"
+    },
+    {
+      "name": "tocqueville_democracy_america",
+      "source": "data/books/tocqueville_democracy_america.txt",
+      "domain": "history",
+      "weight": 1.0,
+      "notes": "democracy, equality, tyranny of the majority in practice"
+    },
+    {
+      "name": "paine_rights_of_man",
+      "source": "data/books/paine_rights_of_man.txt",
+      "domain": "history",
+      "weight": 1.0,
+      "notes": "revolution, human rights, the legitimacy of government"
+    },
+    {
+      "name": "wiki_byzantine_empire",
+      "source": "data/wiki/byzantine_empire.txt",
+      "domain": "history",
+      "weight": 1.0
+    },
+    {
+      "name": "wiki_islamic_golden_age",
+      "source": "data/wiki/islamic_golden_age.txt",
+      "domain": "history",
+      "weight": 1.0
+    },
+    {
+      "name": "wiki_renaissance",
+      "source": "data/wiki/renaissance.txt",
+      "domain": "history",
+      "weight": 1.0
+    },
+    {
+      "name": "wiki_enlightenment",
+      "source": "data/wiki/enlightenment.txt",
+      "domain": "history",
+      "weight": 1.0
+    },
+    {
+      "name": "wiki_industrial_revolution",
+      "source": "data/wiki/industrial_revolution.txt",
+      "domain": "history",
+      "weight": 1.0
+    },
+    {
+      "name": "wiki_colonialism",
+      "source": "data/wiki/colonialism.txt",
+      "domain": "history",
+      "weight": 1.0
+    },
+    {
+      "name": "wiki_20th_century",
+      "source": "data/wiki/20th_century.txt",
+      "domain": "history",
+      "weight": 1.0
+    },
+    {
+      "name": "shakespeare_sonnets",
+      "source": "data/books/shakespeare_sonnets.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "love, time, mortality, beauty \u2014 compressed emotional language"
+    },
+    {
+      "name": "shakespeare_hamlet",
+      "source": "data/books/shakespeare_hamlet.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "doubt, action, mortality, the mind turned on itself"
+    },
+    {
+      "name": "shakespeare_king_lear",
+      "source": "data/books/shakespeare_king_lear.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "power, madness, love, the destruction of the self"
+    },
+    {
+      "name": "dante_inferno",
+      "source": "data/books/dante_inferno.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "sin, consequence, the moral architecture of the universe"
+    },
+    {
+      "name": "homer_iliad",
+      "source": "data/books/homer_iliad.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "war, glory, grief, the cost of pride \u2014 the first great story"
+    },
+    {
+      "name": "homer_odyssey",
+      "source": "data/books/homer_odyssey.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "home, wandering, identity across time"
+    },
+    {
+      "name": "virgil_aeneid",
+      "source": "data/books/virgil_aeneid.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "duty, fate, the founding of civilization"
+    },
+    {
+      "name": "ovid_metamorphoses",
+      "source": "data/books/ovid_metamorphoses.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "transformation, desire, the instability of form"
+    },
+    {
+      "name": "dostoevsky_brothers_karamazov",
+      "source": "data/books/dostoevsky_brothers_karamazov.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "faith, doubt, free will, the problem of evil \u2014 the greatest novel"
+    },
+    {
+      "name": "tolstoy_anna_karenina",
+      "source": "data/books/tolstoy_anna_karenina.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "love, society, moral consequence, the inner life"
+    },
+    {
+      "name": "tolstoy_death_of_ivan_ilyich",
+      "source": "data/books/tolstoy_death_of_ivan_ilyich.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "mortality, authenticity, the examined life \u2014 short and devastating"
+    },
+    {
+      "name": "chekhov_short_stories",
+      "source": "data/books/chekhov_short_stories.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "human smallness, compassion, irony, the unspoken"
+    },
+    {
+      "name": "kafka_metamorphosis",
+      "source": "data/books/kafka_metamorphosis.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "alienation, identity, the absurd"
+    },
+    {
+      "name": "melville_moby_dick",
+      "source": "data/books/melville_moby_dick.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "obsession, nature, meaning in the void"
+    },
+    {
+      "name": "austen_pride_prejudice",
+      "source": "data/books/austen_pride_prejudice.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "social observation, irony, the comedy of human self-deception"
+    },
+    {
+      "name": "dickens_great_expectations",
+      "source": "data/books/dickens_great_expectations.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "class, identity, the illusion of self-improvement"
+    },
+    {
+      "name": "hardy_tess",
+      "source": "data/books/hardy_tess.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "fate, injustice, the cruelty of social structure"
+    },
+    {
+      "name": "whitman_leaves_of_grass",
+      "source": "data/books/whitman_leaves_of_grass.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "the self, democracy, the body, American voice \u2014 expansive"
+    },
+    {
+      "name": "keats_poems",
+      "source": "data/books/keats_poems.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "beauty, mortality, negative capability \u2014 the richest poetic vocabulary"
+    },
+    {
+      "name": "blake_poems",
+      "source": "data/books/blake_poems.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "innocence and experience, vision, the tiger"
+    },
+    {
+      "name": "rumi_masnavi",
+      "source": "data/books/rumi_masnavi.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "love, longing, the divine \u2014 compressed spiritual register"
+    },
+    {
+      "name": "tao_te_ching",
+      "source": "data/books/tao_te_ching.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "paradox, emptiness, the unnamed \u2014 81 verses of compressed wisdom"
+    },
+    {
+      "name": "bhagavad_gita",
+      "source": "data/books/bhagavad_gita.txt",
+      "domain": "literature",
+      "weight": 1.2,
+      "notes": "duty, action without attachment, the self"
+    },
+    {
+      "name": "wiki_modernist_literature",
+      "source": "data/wiki/modernist_literature.txt",
+      "domain": "literature",
+      "weight": 1.2
+    },
+    {
+      "name": "wiki_poetry",
+      "source": "data/wiki/poetry.txt",
+      "domain": "literature",
+      "weight": 1.2
+    },
+    {
+      "name": "montaigne_essays",
+      "source": "data/books/montaigne_essays.txt",
+      "domain": "essays",
+      "weight": 1.5,
+      "notes": "the first essayist \u2014 self-examination, uncertainty as virtue, the examined life"
+    },
+    {
+      "name": "bacon_essays",
+      "source": "data/books/bacon_essays.txt",
+      "domain": "essays",
+      "weight": 1.5,
+      "notes": "truth, death, adversity, beauty \u2014 dense aphoristic wisdom"
+    },
+    {
+      "name": "emerson_essays_first_series",
+      "source": "data/books/emerson_essays_first_series.txt",
+      "domain": "essays",
+      "weight": 1.5,
+      "notes": "self-reliance, the over-soul, nature \u2014 American transcendentalism"
+    },
+    {
+      "name": "emerson_essays_second_series",
+      "source": "data/books/emerson_essays_second_series.txt",
+      "domain": "essays",
+      "weight": 1.5,
+      "notes": "experience, politics, character"
+    },
+    {
+      "name": "thoreau_walden",
+      "source": "data/books/thoreau_walden.txt",
+      "domain": "essays",
+      "weight": 1.5,
+      "notes": "simplicity, nature, deliberate living \u2014 the examined life in practice"
+    },
+    {
+      "name": "virginia_woolf_room",
+      "source": "data/books/virginia_woolf_room.txt",
+      "domain": "essays",
+      "weight": 1.5,
+      "notes": "women, fiction, freedom of mind \u2014 essayistic and intimate"
+    },
+    {
+      "name": "orwell_essays",
+      "source": "data/books/orwell_essays.txt",
+      "domain": "essays",
+      "weight": 1.5,
+      "notes": "clarity, politics, the corruption of language \u2014 the most important modern essayist"
+    },
+    {
+      "name": "letters_keats",
+      "source": "data/books/letters_keats.txt",
+      "domain": "essays",
+      "weight": 1.5,
+      "notes": "negative capability, beauty, the poetic life \u2014 intimate first person"
+    },
+    {
+      "name": "letters_seneca_lucilius",
+      "source": "data/books/letters_seneca_lucilius.txt",
+      "domain": "essays",
+      "weight": 1.5,
+      "notes": "how to live, time, friendship \u2014 the most intimate ancient voice"
+    },
+    {
+      "name": "wiki_essay",
+      "source": "data/wiki/essay.txt",
+      "domain": "essays",
+      "weight": 1.5
+    },
+    {
+      "name": "darwin_origin_species",
+      "source": "data/books/darwin_origin_species.txt",
+      "domain": "science",
+      "weight": 0.8,
+      "notes": "natural selection, the tree of life \u2014 the most important scientific idea"
+    },
+    {
+      "name": "darwin_descent_of_man",
+      "source": "data/books/darwin_descent_of_man.txt",
+      "domain": "science",
+      "weight": 0.8,
+      "notes": "human evolution, morality as evolved"
+    },
+    {
+      "name": "faraday_forces_of_matter",
+      "source": "data/books/faraday_forces_of_matter.txt",
+      "domain": "science",
+      "weight": 0.8,
+      "notes": "wonder at physical forces \u2014 science as revelation"
+    },
+    {
+      "name": "huxley_mans_place_in_nature",
+      "source": "data/books/huxley_mans_place_in_nature.txt",
+      "domain": "science",
+      "weight": 0.8,
+      "notes": "humanity in the natural order"
+    },
+    {
+      "name": "wiki_consciousness",
+      "source": "data/wiki/consciousness.txt",
+      "domain": "science",
+      "weight": 0.8,
+      "notes": "the hard problem \u2014 connects to what the mind itself is"
+    },
+    {
+      "name": "wiki_cognitive_science",
+      "source": "data/wiki/cognitive_science.txt",
+      "domain": "science",
+      "weight": 0.8
+    },
+    {
+      "name": "wiki_evolutionary_biology",
+      "source": "data/wiki/evolutionary_biology.txt",
+      "domain": "science",
+      "weight": 0.8
+    },
+    {
+      "name": "wiki_physics",
+      "source": "data/wiki/physics.txt",
+      "domain": "science",
+      "weight": 0.8
+    },
+    {
+      "name": "wiki_cosmology",
+      "source": "data/wiki/cosmology.txt",
+      "domain": "science",
+      "weight": 0.8,
+      "notes": "the scale and nature of the universe"
+    },
+    {
+      "name": "confucian_analects",
+      "source": "data/books/confucian_analects.txt",
+      "domain": "eastern",
+      "weight": 1.0,
+      "notes": "virtue, social harmony, the superior person"
+    },
+    {
+      "name": "zhuangzi",
+      "source": "data/books/zhuangzi.txt",
+      "domain": "eastern",
+      "weight": 1.0,
+      "notes": "Taoist philosophy, transformation, the relativity of all things"
+    },
+    {
+      "name": "wiki_buddhist_philosophy",
+      "source": "data/wiki/buddhist_philosophy.txt",
+      "domain": "eastern",
+      "weight": 1.0
+    },
+    {
+      "name": "wiki_hindu_philosophy",
+      "source": "data/wiki/hindu_philosophy.txt",
+      "domain": "eastern",
+      "weight": 1.0
+    },
+    {
+      "name": "wiki_confucianism",
+      "source": "data/wiki/confucianism.txt",
+      "domain": "eastern",
+      "weight": 1.0
+    },
+    {
+      "name": "bullfinch_mythology",
+      "source": "data/books/bullfinch_mythology.txt",
+      "domain": "mythology",
+      "weight": 0.8,
+      "notes": "greek and roman myths retold \u2014 the stories underneath western thought"
+    },
+    {
+      "name": "egyptian_book_of_dead",
+      "source": "data/books/egyptian_book_of_dead.txt",
+      "domain": "mythology",
+      "weight": 0.8,
+      "notes": "death, the afterlife, judgment \u2014 oldest sacred text"
+    },
+    {
+      "name": "upanishads",
+      "source": "data/books/upanishads.txt",
+      "domain": "mythology",
+      "weight": 0.8,
+      "notes": "brahman, atman, the self as universal \u2014 oldest philosophy"
+    },
+    {
+      "name": "wiki_comparative_mythology",
+      "source": "data/wiki/comparative_mythology.txt",
+      "domain": "mythology",
+      "weight": 0.8
+    },
+    {
+      "name": "wiki_religion",
+      "source": "data/wiki/religion.txt",
+      "domain": "mythology",
+      "weight": 0.8
+    }
   ],
   "self_examination": [
     "what do you know",

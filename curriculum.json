@@ -2,22 +2,19 @@
   "mind_name": "first",
   "encoding_parallelism": 4,
   "sequence": [
-
     {
       "name": "grammar_complete",
       "source": "data/books/grammar_book.txt",
       "domain": "language",
       "type": "book",
-      "notes": "already ingested — mark complete on resume"
+      "notes": "already ingested \u2014 mark complete on resume"
     },
-
     {
       "name": "rest_language",
       "type": "sleep",
       "duration_seconds": 120,
       "notes": "consolidate language structure"
     },
-
     {
       "name": "alice_in_wonderland",
       "source": "data/books/alice.txt",
@@ -26,7 +23,6 @@
       "gutenberg_id": 11,
       "notes": "narrative, character, consequence, emotion"
     },
-
     {
       "name": "aesops_fables",
       "source": "data/books/aesop.txt",
@@ -35,7 +31,6 @@
       "gutenberg_id": 11339,
       "notes": "moral structure, action leads to consequence"
     },
-
     {
       "name": "grimms_fairy_tales",
       "source": "data/books/grimm.txt",
@@ -44,21 +39,18 @@
       "gutenberg_id": 2591,
       "notes": "transformation, danger, reward, human nature"
     },
-
     {
       "name": "rest_narrative",
       "type": "sleep",
       "duration_seconds": 180,
-      "notes": "consolidate narrative — abstractions should form across story types"
+      "notes": "consolidate narrative \u2014 abstractions should form across story types"
     },
-
     {
       "name": "train_language_v1",
       "type": "train_lm",
       "epochs": 50,
-      "notes": "language head v1 — language structure + narrative"
+      "notes": "language head v1 \u2014 language structure + narrative"
     },
-
     {
       "name": "meditations",
       "source": "data/books/meditations.txt",
@@ -67,7 +59,6 @@
       "gutenberg_id": 2680,
       "notes": "self-reflection, what matters, how to act, interiority"
     },
-
     {
       "name": "plato_dialogues",
       "source": "data/books/plato.txt",
@@ -76,7 +67,6 @@
       "gutenberg_id": 1656,
       "notes": "what is knowledge, what is virtue, how to reason"
     },
-
     {
       "name": "nicomachean_ethics",
       "source": "data/books/aristotle_ethics.txt",
@@ -85,16 +75,14 @@
       "gutenberg_id": 8438,
       "notes": "what is good, what is happiness, how to live"
     },
-
     {
       "name": "wiki_philosophy_of_mind",
       "source": "data/wiki/philosophy_of_mind.txt",
       "domain": "philosophy",
       "type": "book",
       "wiki_category": "philosophy_of_mind",
-      "notes": "consciousness, perception, belief, desire — vocabulary of minds"
+      "notes": "consciousness, perception, belief, desire \u2014 vocabulary of minds"
     },
-
     {
       "name": "wiki_epistemology",
       "source": "data/wiki/epistemology.txt",
@@ -103,7 +91,6 @@
       "wiki_category": "epistemology",
       "notes": "how we know what we know"
     },
-
     {
       "name": "wiki_ethics",
       "source": "data/wiki/ethics.txt",
@@ -112,30 +99,26 @@
       "wiki_category": "ethics",
       "notes": "right and wrong, value, moral reasoning"
     },
-
     {
       "name": "rest_philosophy",
       "type": "sleep",
       "duration_seconds": 240,
-      "notes": "deep consolidation — philosophy abstractions should span narrative and language"
+      "notes": "deep consolidation \u2014 philosophy abstractions should span narrative and language"
     },
-
     {
       "name": "train_language_v2",
       "type": "train_lm",
       "epochs": 100,
-      "notes": "language head v2 — language + narrative + philosophy"
+      "notes": "language head v2 \u2014 language + narrative + philosophy"
     },
-
     {
       "name": "herodotus_histories",
       "source": "data/books/herodotus.txt",
       "domain": "history",
       "type": "book",
       "gutenberg_id": 2707,
-      "notes": "first history — civilizations, war, cause and effect at scale"
+      "notes": "first history \u2014 civilizations, war, cause and effect at scale"
     },
-
     {
       "name": "plutarch_lives",
       "source": "data/books/plutarch.txt",
@@ -144,25 +127,22 @@
       "gutenberg_id": 674,
       "notes": "great individuals, character shapes history, moral biography"
     },
-
     {
       "name": "wiki_ancient_history",
       "source": "data/wiki/ancient_history.txt",
       "domain": "history",
       "type": "book",
       "wiki_category": "ancient_history",
-      "notes": "egypt, greece, rome, mesopotamia, china — civilizational foundations"
+      "notes": "egypt, greece, rome, mesopotamia, china \u2014 civilizational foundations"
     },
-
     {
       "name": "wiki_world_history",
       "source": "data/wiki/world_history.txt",
       "domain": "history",
       "type": "book",
       "wiki_category": "world_history",
-      "notes": "medieval, renaissance, industrial, modern — full arc"
+      "notes": "medieval, renaissance, industrial, modern \u2014 full arc"
     },
-
     {
       "name": "wiki_science_history",
       "source": "data/wiki/science_history.txt",
@@ -171,23 +151,20 @@
       "wiki_category": "history_of_science",
       "notes": "how humans learned to understand the world"
     },
-
     {
       "name": "rest_history",
       "type": "sleep",
       "duration_seconds": 240,
-      "notes": "history consolidation — temporal abstractions, cause-effect chains should deepen"
+      "notes": "history consolidation \u2014 temporal abstractions, cause-effect chains should deepen"
     },
-
     {
       "name": "wiki_art_history",
       "source": "data/wiki/art_history.txt",
       "domain": "art_culture",
       "type": "book",
       "wiki_category": "art_history",
-      "notes": "how visual expression evolved — movements, periods, meaning in form"
+      "notes": "how visual expression evolved \u2014 movements, periods, meaning in form"
     },
-
     {
       "name": "wiki_music",
       "source": "data/wiki/music.txt",
@@ -196,7 +173,6 @@
       "wiki_category": "music",
       "notes": "sound as meaning, structure, emotion, culture"
     },
-
     {
       "name": "wiki_architecture",
       "source": "data/wiki/architecture.txt",
@@ -205,7 +181,6 @@
       "wiki_category": "architecture",
       "notes": "space, form, function, beauty in built things"
     },
-
     {
       "name": "wiki_design",
       "source": "data/wiki/design.txt",
@@ -214,7 +189,6 @@
       "wiki_category": "design",
       "notes": "intention in form, problem solving as aesthetic act"
     },
-
     {
       "name": "wiki_literature",
       "source": "data/wiki/literature.txt",
@@ -223,7 +197,6 @@
       "wiki_category": "literature",
       "notes": "what writing does, forms, movements, meaning"
     },
-
     {
       "name": "wiki_culture",
       "source": "data/wiki/culture.txt",
@@ -232,21 +205,18 @@
       "wiki_category": "culture",
       "notes": "how humans organize meaning collectively"
     },
-
     {
       "name": "rest_art_culture",
       "type": "sleep",
       "duration_seconds": 300,
-      "notes": "longest consolidation so far — art/culture should connect to philosophy, history, narrative"
+      "notes": "longest consolidation so far \u2014 art/culture should connect to philosophy, history, narrative"
     },
-
     {
       "name": "train_language_v3",
       "type": "train_lm",
       "epochs": 100,
-      "notes": "language head v3 — full four domains"
+      "notes": "language head v3 \u2014 full four domains"
     },
-
     {
       "name": "wiki_science",
       "source": "data/wiki/science.txt",
@@ -255,7 +225,6 @@
       "wiki_category": "science",
       "notes": "how the physical world works"
     },
-
     {
       "name": "wiki_mathematics",
       "source": "data/wiki/mathematics.txt",
@@ -264,7 +233,6 @@
       "wiki_category": "mathematics",
       "notes": "abstract structure, pattern, proof"
     },
-
     {
       "name": "wiki_nature",
       "source": "data/wiki/nature.txt",
@@ -273,7 +241,6 @@
       "wiki_category": "nature",
       "notes": "living world, ecosystems, evolution"
     },
-
     {
       "name": "wiki_society",
       "source": "data/wiki/society.txt",
@@ -282,7 +249,6 @@
       "wiki_category": "society",
       "notes": "how humans organize collectively"
     },
-
     {
       "name": "wiki_technology",
       "source": "data/wiki/technology.txt",
@@ -291,7 +257,6 @@
       "wiki_category": "technology",
       "notes": "tools, systems, how things are made"
     },
-
     {
       "name": "wiki_geography",
       "source": "data/wiki/geography.txt",
@@ -300,21 +265,724 @@
       "wiki_category": "geography",
       "notes": "the physical and human world in space"
     },
-
     {
       "name": "rest_encyclopedia",
       "type": "sleep",
       "duration_seconds": 360,
       "notes": "full consolidation across all domains"
     },
-
     {
       "name": "train_language_final",
       "type": "train_lm",
       "epochs": 150,
-      "notes": "final language head — entire curriculum"
+      "notes": "final language head \u2014 entire curriculum"
     },
-
+    {
+      "name": "plato_republic",
+      "source": "data/books/plato_republic.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 1497,
+      "notes": "justice, the ideal state, the allegory of the cave"
+    },
+    {
+      "name": "plato_symposium",
+      "source": "data/books/plato_symposium.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 1600,
+      "notes": "love, beauty, the nature of eros"
+    },
+    {
+      "name": "plato_phaedo",
+      "source": "data/books/plato_phaedo.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 1658,
+      "notes": "the soul, death, immortality"
+    },
+    {
+      "name": "aristotle_poetics",
+      "source": "data/books/aristotle_poetics.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 1974,
+      "notes": "art, tragedy, catharsis, mimesis"
+    },
+    {
+      "name": "aristotle_politics",
+      "source": "data/books/aristotle_politics.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 6762,
+      "notes": "the state, citizenship, justice in practice"
+    },
+    {
+      "name": "epictetus_enchiridion",
+      "source": "data/books/epictetus_enchiridion.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 45109,
+      "notes": "stoic practice, what is in our control, freedom through acceptance"
+    },
+    {
+      "name": "lucretius_nature_of_things",
+      "source": "data/books/lucretius_nature_of_things.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 785,
+      "notes": "atoms, void, death, nature without gods"
+    },
+    {
+      "name": "cicero_on_duties",
+      "source": "data/books/cicero_on_duties.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 47001,
+      "notes": "moral obligation, virtue in public life"
+    },
+    {
+      "name": "augustine_confessions",
+      "source": "data/books/augustine_confessions.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 3296,
+      "notes": "self-examination, time, memory, God \u2014 first great autobiography"
+    },
+    {
+      "name": "descartes_meditations",
+      "source": "data/books/descartes_meditations.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 59,
+      "notes": "doubt, the cogito, mind and body"
+    },
+    {
+      "name": "spinoza_ethics",
+      "source": "data/books/spinoza_ethics.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 3800,
+      "notes": "God as nature, determinism, human freedom"
+    },
+    {
+      "name": "hume_enquiry_understanding",
+      "source": "data/books/hume_enquiry_understanding.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 9662,
+      "notes": "causation, empiricism, limits of reason"
+    },
+    {
+      "name": "kant_prolegomena",
+      "source": "data/books/kant_prolegomena.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 52821,
+      "notes": "what can we know, synthetic a priori, the limits of metaphysics"
+    },
+    {
+      "name": "nietzsche_thus_spoke_zarathustra",
+      "source": "data/books/nietzsche_thus_spoke_zarathustra.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 1998,
+      "notes": "will to power, eternal recurrence, the overman \u2014 philosophy as literature"
+    },
+    {
+      "name": "nietzsche_beyond_good_evil",
+      "source": "data/books/nietzsche_beyond_good_evil.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 4363,
+      "notes": "morality as construction, master and slave values"
+    },
+    {
+      "name": "schopenhauer_world_as_will",
+      "source": "data/books/schopenhauer_world_as_will.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 38427,
+      "notes": "will as fundamental reality, suffering, art as escape"
+    },
+    {
+      "name": "mill_utilitarianism",
+      "source": "data/books/mill_utilitarianism.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 11224,
+      "notes": "greatest happiness, consequentialism"
+    },
+    {
+      "name": "mill_on_liberty",
+      "source": "data/books/mill_on_liberty.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 34901,
+      "notes": "individual freedom, tyranny of majority"
+    },
+    {
+      "name": "rousseau_social_contract",
+      "source": "data/books/rousseau_social_contract.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 46333,
+      "notes": "general will, legitimacy of government"
+    },
+    {
+      "name": "wiki_continental_philosophy",
+      "source": "data/wiki/continental_philosophy.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "wiki_category": "Continental_philosophy"
+    },
+    {
+      "name": "wiki_analytic_philosophy",
+      "source": "data/wiki/analytic_philosophy.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "wiki_category": "Analytic_philosophy"
+    },
+    {
+      "name": "wiki_existentialism",
+      "source": "data/wiki/existentialism.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "wiki_category": "Existentialism"
+    },
+    {
+      "name": "wiki_eastern_philosophy",
+      "source": "data/wiki/eastern_philosophy.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "wiki_category": "Eastern_philosophy"
+    },
+    {
+      "name": "thucydides_peloponnesian_war",
+      "source": "data/books/thucydides_peloponnesian_war.txt",
+      "domain": "history",
+      "type": "book",
+      "gutenberg_id": 7142,
+      "notes": "war, power, human nature \u2014 the first political realist"
+    },
+    {
+      "name": "suetonius_twelve_caesars",
+      "source": "data/books/suetonius_twelve_caesars.txt",
+      "domain": "history",
+      "type": "book",
+      "gutenberg_id": 6400,
+      "notes": "power corrupts, personality shapes empire"
+    },
+    {
+      "name": "tacitus_annals",
+      "source": "data/books/tacitus_annals.txt",
+      "domain": "history",
+      "type": "book",
+      "gutenberg_id": 2364,
+      "notes": "tyranny, resistance, the cost of empire"
+    },
+    {
+      "name": "gibbon_decline_fall_vol1",
+      "source": "data/books/gibbon_decline_fall_vol1.txt",
+      "domain": "history",
+      "type": "book",
+      "gutenberg_id": 890,
+      "notes": "how civilizations collapse \u2014 the most important history book"
+    },
+    {
+      "name": "machiavelli_prince",
+      "source": "data/books/machiavelli_prince.txt",
+      "domain": "history",
+      "type": "book",
+      "gutenberg_id": 1232,
+      "notes": "power, realism, the gap between how men live and how they ought"
+    },
+    {
+      "name": "tocqueville_democracy_america",
+      "source": "data/books/tocqueville_democracy_america.txt",
+      "domain": "history",
+      "type": "book",
+      "gutenberg_id": 816,
+      "notes": "democracy, equality, tyranny of the majority in practice"
+    },
+    {
+      "name": "paine_rights_of_man",
+      "source": "data/books/paine_rights_of_man.txt",
+      "domain": "history",
+      "type": "book",
+      "gutenberg_id": 1120,
+      "notes": "revolution, human rights, the legitimacy of government"
+    },
+    {
+      "name": "wiki_byzantine_empire",
+      "source": "data/wiki/byzantine_empire.txt",
+      "domain": "history",
+      "type": "book",
+      "wiki_category": "Byzantine_Empire"
+    },
+    {
+      "name": "wiki_islamic_golden_age",
+      "source": "data/wiki/islamic_golden_age.txt",
+      "domain": "history",
+      "type": "book",
+      "wiki_category": "Islamic_Golden_Age"
+    },
+    {
+      "name": "wiki_renaissance",
+      "source": "data/wiki/renaissance.txt",
+      "domain": "history",
+      "type": "book",
+      "wiki_category": "Renaissance"
+    },
+    {
+      "name": "wiki_enlightenment",
+      "source": "data/wiki/enlightenment.txt",
+      "domain": "history",
+      "type": "book",
+      "wiki_category": "Age_of_Enlightenment"
+    },
+    {
+      "name": "wiki_industrial_revolution",
+      "source": "data/wiki/industrial_revolution.txt",
+      "domain": "history",
+      "type": "book",
+      "wiki_category": "Industrial_Revolution"
+    },
+    {
+      "name": "wiki_colonialism",
+      "source": "data/wiki/colonialism.txt",
+      "domain": "history",
+      "type": "book",
+      "wiki_category": "Colonialism"
+    },
+    {
+      "name": "wiki_20th_century",
+      "source": "data/wiki/20th_century.txt",
+      "domain": "history",
+      "type": "book",
+      "wiki_category": "20th_century"
+    },
+    {
+      "name": "shakespeare_sonnets",
+      "source": "data/books/shakespeare_sonnets.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 1041,
+      "notes": "love, time, mortality, beauty \u2014 compressed emotional language"
+    },
+    {
+      "name": "shakespeare_hamlet",
+      "source": "data/books/shakespeare_hamlet.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 1524,
+      "notes": "doubt, action, mortality, the mind turned on itself"
+    },
+    {
+      "name": "shakespeare_king_lear",
+      "source": "data/books/shakespeare_king_lear.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 1532,
+      "notes": "power, madness, love, the destruction of the self"
+    },
+    {
+      "name": "dante_inferno",
+      "source": "data/books/dante_inferno.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 8800,
+      "notes": "sin, consequence, the moral architecture of the universe"
+    },
+    {
+      "name": "homer_iliad",
+      "source": "data/books/homer_iliad.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 2199,
+      "notes": "war, glory, grief, the cost of pride \u2014 the first great story"
+    },
+    {
+      "name": "homer_odyssey",
+      "source": "data/books/homer_odyssey.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 1727,
+      "notes": "home, wandering, identity across time"
+    },
+    {
+      "name": "virgil_aeneid",
+      "source": "data/books/virgil_aeneid.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 227,
+      "notes": "duty, fate, the founding of civilization"
+    },
+    {
+      "name": "ovid_metamorphoses",
+      "source": "data/books/ovid_metamorphoses.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 21765,
+      "notes": "transformation, desire, the instability of form"
+    },
+    {
+      "name": "dostoevsky_brothers_karamazov",
+      "source": "data/books/dostoevsky_brothers_karamazov.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 28054,
+      "notes": "faith, doubt, free will, the problem of evil \u2014 the greatest novel"
+    },
+    {
+      "name": "tolstoy_anna_karenina",
+      "source": "data/books/tolstoy_anna_karenina.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 1399,
+      "notes": "love, society, moral consequence, the inner life"
+    },
+    {
+      "name": "tolstoy_death_of_ivan_ilyich",
+      "source": "data/books/tolstoy_death_of_ivan_ilyich.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 600,
+      "notes": "mortality, authenticity, the examined life \u2014 short and devastating"
+    },
+    {
+      "name": "chekhov_short_stories",
+      "source": "data/books/chekhov_short_stories.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 7986,
+      "notes": "human smallness, compassion, irony, the unspoken"
+    },
+    {
+      "name": "kafka_metamorphosis",
+      "source": "data/books/kafka_metamorphosis.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 5200,
+      "notes": "alienation, identity, the absurd"
+    },
+    {
+      "name": "melville_moby_dick",
+      "source": "data/books/melville_moby_dick.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 2701,
+      "notes": "obsession, nature, meaning in the void"
+    },
+    {
+      "name": "austen_pride_prejudice",
+      "source": "data/books/austen_pride_prejudice.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 1342,
+      "notes": "social observation, irony, the comedy of human self-deception"
+    },
+    {
+      "name": "dickens_great_expectations",
+      "source": "data/books/dickens_great_expectations.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 1400,
+      "notes": "class, identity, the illusion of self-improvement"
+    },
+    {
+      "name": "hardy_tess",
+      "source": "data/books/hardy_tess.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 110,
+      "notes": "fate, injustice, the cruelty of social structure"
+    },
+    {
+      "name": "whitman_leaves_of_grass",
+      "source": "data/books/whitman_leaves_of_grass.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 1322,
+      "notes": "the self, democracy, the body, American voice \u2014 expansive"
+    },
+    {
+      "name": "keats_poems",
+      "source": "data/books/keats_poems.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 23684,
+      "notes": "beauty, mortality, negative capability \u2014 the richest poetic vocabulary"
+    },
+    {
+      "name": "blake_poems",
+      "source": "data/books/blake_poems.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 574,
+      "notes": "innocence and experience, vision, the tiger"
+    },
+    {
+      "name": "rumi_masnavi",
+      "source": "data/books/rumi_masnavi.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 51662,
+      "notes": "love, longing, the divine \u2014 compressed spiritual register"
+    },
+    {
+      "name": "tao_te_ching",
+      "source": "data/books/tao_te_ching.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 216,
+      "notes": "paradox, emptiness, the unnamed \u2014 81 verses of compressed wisdom"
+    },
+    {
+      "name": "bhagavad_gita",
+      "source": "data/books/bhagavad_gita.txt",
+      "domain": "literature",
+      "type": "book",
+      "gutenberg_id": 2388,
+      "notes": "duty, action without attachment, the self"
+    },
+    {
+      "name": "wiki_modernist_literature",
+      "source": "data/wiki/modernist_literature.txt",
+      "domain": "literature",
+      "type": "book",
+      "wiki_category": "Modernist_literature"
+    },
+    {
+      "name": "wiki_poetry",
+      "source": "data/wiki/poetry.txt",
+      "domain": "literature",
+      "type": "book",
+      "wiki_category": "Poetry"
+    },
+    {
+      "name": "montaigne_essays",
+      "source": "data/books/montaigne_essays.txt",
+      "domain": "essays",
+      "type": "book",
+      "gutenberg_id": 3600,
+      "notes": "the first essayist \u2014 self-examination, uncertainty as virtue, the examined life"
+    },
+    {
+      "name": "bacon_essays",
+      "source": "data/books/bacon_essays.txt",
+      "domain": "essays",
+      "type": "book",
+      "gutenberg_id": 575,
+      "notes": "truth, death, adversity, beauty \u2014 dense aphoristic wisdom"
+    },
+    {
+      "name": "emerson_essays_first_series",
+      "source": "data/books/emerson_essays_first_series.txt",
+      "domain": "essays",
+      "type": "book",
+      "gutenberg_id": 2944,
+      "notes": "self-reliance, the over-soul, nature \u2014 American transcendentalism"
+    },
+    {
+      "name": "emerson_essays_second_series",
+      "source": "data/books/emerson_essays_second_series.txt",
+      "domain": "essays",
+      "type": "book",
+      "gutenberg_id": 2945,
+      "notes": "experience, politics, character"
+    },
+    {
+      "name": "thoreau_walden",
+      "source": "data/books/thoreau_walden.txt",
+      "domain": "essays",
+      "type": "book",
+      "gutenberg_id": 205,
+      "notes": "simplicity, nature, deliberate living \u2014 the examined life in practice"
+    },
+    {
+      "name": "virginia_woolf_room",
+      "source": "data/books/virginia_woolf_room.txt",
+      "domain": "essays",
+      "type": "book",
+      "gutenberg_id": 5786,
+      "notes": "women, fiction, freedom of mind \u2014 essayistic and intimate"
+    },
+    {
+      "name": "orwell_essays",
+      "source": "data/books/orwell_essays.txt",
+      "domain": "essays",
+      "type": "book",
+      "gutenberg_id": 34409,
+      "notes": "clarity, politics, the corruption of language \u2014 the most important modern essayist"
+    },
+    {
+      "name": "letters_keats",
+      "source": "data/books/letters_keats.txt",
+      "domain": "essays",
+      "type": "book",
+      "gutenberg_id": 35688,
+      "notes": "negative capability, beauty, the poetic life \u2014 intimate first person"
+    },
+    {
+      "name": "letters_seneca_lucilius",
+      "source": "data/books/letters_seneca_lucilius.txt",
+      "domain": "essays",
+      "type": "book",
+      "gutenberg_id": 19942,
+      "notes": "how to live, time, friendship \u2014 the most intimate ancient voice"
+    },
+    {
+      "name": "wiki_essay",
+      "source": "data/wiki/essay.txt",
+      "domain": "essays",
+      "type": "book",
+      "wiki_category": "Essays"
+    },
+    {
+      "name": "darwin_origin_species",
+      "source": "data/books/darwin_origin_species.txt",
+      "domain": "science",
+      "type": "book",
+      "gutenberg_id": 1228,
+      "notes": "natural selection, the tree of life \u2014 the most important scientific idea"
+    },
+    {
+      "name": "darwin_descent_of_man",
+      "source": "data/books/darwin_descent_of_man.txt",
+      "domain": "science",
+      "type": "book",
+      "gutenberg_id": 2300,
+      "notes": "human evolution, morality as evolved"
+    },
+    {
+      "name": "faraday_forces_of_matter",
+      "source": "data/books/faraday_forces_of_matter.txt",
+      "domain": "science",
+      "type": "book",
+      "gutenberg_id": 14472,
+      "notes": "wonder at physical forces \u2014 science as revelation"
+    },
+    {
+      "name": "huxley_mans_place_in_nature",
+      "source": "data/books/huxley_mans_place_in_nature.txt",
+      "domain": "science",
+      "type": "book",
+      "gutenberg_id": 2931,
+      "notes": "humanity in the natural order"
+    },
+    {
+      "name": "wiki_consciousness",
+      "source": "data/wiki/consciousness.txt",
+      "domain": "science",
+      "type": "book",
+      "wiki_category": "Consciousness",
+      "notes": "the hard problem \u2014 connects to what the mind itself is"
+    },
+    {
+      "name": "wiki_cognitive_science",
+      "source": "data/wiki/cognitive_science.txt",
+      "domain": "science",
+      "type": "book",
+      "wiki_category": "Cognitive_science"
+    },
+    {
+      "name": "wiki_evolutionary_biology",
+      "source": "data/wiki/evolutionary_biology.txt",
+      "domain": "science",
+      "type": "book",
+      "wiki_category": "Evolutionary_biology"
+    },
+    {
+      "name": "wiki_physics",
+      "source": "data/wiki/physics.txt",
+      "domain": "science",
+      "type": "book",
+      "wiki_category": "Physics"
+    },
+    {
+      "name": "wiki_cosmology",
+      "source": "data/wiki/cosmology.txt",
+      "domain": "science",
+      "type": "book",
+      "wiki_category": "Physical_cosmology",
+      "notes": "the scale and nature of the universe"
+    },
+    {
+      "name": "confucian_analects",
+      "source": "data/books/confucian_analects.txt",
+      "domain": "eastern",
+      "type": "book",
+      "gutenberg_id": 4094,
+      "notes": "virtue, social harmony, the superior person"
+    },
+    {
+      "name": "zhuangzi",
+      "source": "data/books/zhuangzi.txt",
+      "domain": "eastern",
+      "type": "book",
+      "gutenberg_id": 56956,
+      "notes": "Taoist philosophy, transformation, the relativity of all things"
+    },
+    {
+      "name": "wiki_buddhist_philosophy",
+      "source": "data/wiki/buddhist_philosophy.txt",
+      "domain": "eastern",
+      "type": "book",
+      "wiki_category": "Buddhist_philosophy"
+    },
+    {
+      "name": "wiki_hindu_philosophy",
+      "source": "data/wiki/hindu_philosophy.txt",
+      "domain": "eastern",
+      "type": "book",
+      "wiki_category": "Hindu_philosophy"
+    },
+    {
+      "name": "wiki_confucianism",
+      "source": "data/wiki/confucianism.txt",
+      "domain": "eastern",
+      "type": "book",
+      "wiki_category": "Confucianism"
+    },
+    {
+      "name": "bullfinch_mythology",
+      "source": "data/books/bullfinch_mythology.txt",
+      "domain": "mythology",
+      "type": "book",
+      "gutenberg_id": 4928,
+      "notes": "greek and roman myths retold \u2014 the stories underneath western thought"
+    },
+    {
+      "name": "egyptian_book_of_dead",
+      "source": "data/books/egyptian_book_of_dead.txt",
+      "domain": "mythology",
+      "type": "book",
+      "gutenberg_id": 7145,
+      "notes": "death, the afterlife, judgment \u2014 oldest sacred text"
+    },
+    {
+      "name": "upanishads",
+      "source": "data/books/upanishads.txt",
+      "domain": "mythology",
+      "type": "book",
+      "gutenberg_id": 37016,
+      "notes": "brahman, atman, the self as universal \u2014 oldest philosophy"
+    },
+    {
+      "name": "wiki_comparative_mythology",
+      "source": "data/wiki/comparative_mythology.txt",
+      "domain": "mythology",
+      "type": "book",
+      "wiki_category": "Comparative_mythology"
+    },
+    {
+      "name": "wiki_religion",
+      "source": "data/wiki/religion.txt",
+      "domain": "mythology",
+      "type": "book",
+      "wiki_category": "Religion"
+    },
     {
       "name": "self_examination",
       "type": "dialogue",
@@ -336,6 +1004,5 @@
       ],
       "notes": "first self-examination. log everything. these answers are the first record of what it became."
     }
-
   ]
 }
