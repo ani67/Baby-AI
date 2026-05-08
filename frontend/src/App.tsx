@@ -8,8 +8,8 @@ import type {
   StateSnapshot,
 } from "./lib/types";
 import { AffectBars } from "./components/AffectBars";
+import { ConversationEntry, ConversationLog, entryFromCycle } from "./components/ConversationLog";
 import { Controls } from "./components/Controls";
-import { EmissionLog } from "./components/EmissionLog";
 import { InputPanel } from "./components/InputPanel";
 import { MindGraph } from "./components/MindGraph";
 import { StatsPanel } from "./components/StatsPanel";
@@ -22,7 +22,7 @@ export function App() {
   const [state, setState] = useState<StateSnapshot | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [lastCycle, setLastCycle] = useState<CycleEvent | null>(null);
-  const [emissions, setEmissions] = useState<{ id: number; t: number; surface: string }[]>([]);
+  const [conversation, setConversation] = useState<ConversationEntry[]>([]);
   const lastInteractionRef = useRef<number>(Date.now());
 
   // Initial fetch of state + graph.
@@ -43,12 +43,11 @@ export function App() {
         setLastCycle(ev);
         setStats(ev.stats);
         lastInteractionRef.current = Date.now();
-        if (ev.emitted_surface) {
-          setEmissions((prev) => [
-            ...prev.slice(-19),
-            { id: ev.stimulus_id, t: ev.now, surface: ev.emitted_surface! },
-          ]);
-        }
+        // Note: we no longer write to a separate emissions list here.
+        // The user-initiated path captures (prompt, cycle) via the
+        // InputPanel's onResponse callback below — that's what populates
+        // the conversation log. Auto-idle cycles pass through here too
+        // but they have no prompt, so they don't end up in the log.
         return;
       }
       if (ev.type === "idle" || ev.type === "sleep") {
@@ -117,12 +116,17 @@ export function App() {
 
       {/* Bottom-center: input + last action/expression */}
       <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10">
-        <InputPanel lastCycle={lastCycle} />
+        <InputPanel
+          lastCycle={lastCycle}
+          onResponse={(prompt, cycle) => {
+            setConversation((prev) => [...prev, entryFromCycle(prompt, cycle)]);
+          }}
+        />
       </div>
 
-      {/* Bottom-right: recent expressions log */}
+      {/* Bottom-right: full conversation log (every question, every outcome) */}
       <div className="absolute bottom-4 right-4 z-10">
-        <EmissionLog emissions={emissions} />
+        <ConversationLog entries={conversation} />
       </div>
     </div>
   );

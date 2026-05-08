@@ -1,0 +1,341 @@
+{
+  "mind_name": "first",
+  "encoding_parallelism": 4,
+  "sequence": [
+
+    {
+      "name": "grammar_complete",
+      "source": "data/books/grammar_book.txt",
+      "domain": "language",
+      "type": "book",
+      "notes": "already ingested — mark complete on resume"
+    },
+
+    {
+      "name": "rest_language",
+      "type": "sleep",
+      "duration_seconds": 120,
+      "notes": "consolidate language structure"
+    },
+
+    {
+      "name": "alice_in_wonderland",
+      "source": "data/books/alice.txt",
+      "domain": "narrative",
+      "type": "book",
+      "gutenberg_id": 11,
+      "notes": "narrative, character, consequence, emotion"
+    },
+
+    {
+      "name": "aesops_fables",
+      "source": "data/books/aesop.txt",
+      "domain": "narrative",
+      "type": "book",
+      "gutenberg_id": 11339,
+      "notes": "moral structure, action leads to consequence"
+    },
+
+    {
+      "name": "grimms_fairy_tales",
+      "source": "data/books/grimm.txt",
+      "domain": "narrative",
+      "type": "book",
+      "gutenberg_id": 2591,
+      "notes": "transformation, danger, reward, human nature"
+    },
+
+    {
+      "name": "rest_narrative",
+      "type": "sleep",
+      "duration_seconds": 180,
+      "notes": "consolidate narrative — abstractions should form across story types"
+    },
+
+    {
+      "name": "train_language_v1",
+      "type": "train_lm",
+      "epochs": 50,
+      "notes": "language head v1 — language structure + narrative"
+    },
+
+    {
+      "name": "meditations",
+      "source": "data/books/meditations.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 2680,
+      "notes": "self-reflection, what matters, how to act, interiority"
+    },
+
+    {
+      "name": "plato_dialogues",
+      "source": "data/books/plato.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 1656,
+      "notes": "what is knowledge, what is virtue, how to reason"
+    },
+
+    {
+      "name": "nicomachean_ethics",
+      "source": "data/books/aristotle_ethics.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "gutenberg_id": 8438,
+      "notes": "what is good, what is happiness, how to live"
+    },
+
+    {
+      "name": "wiki_philosophy_of_mind",
+      "source": "data/wiki/philosophy_of_mind.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "wiki_category": "philosophy_of_mind",
+      "notes": "consciousness, perception, belief, desire — vocabulary of minds"
+    },
+
+    {
+      "name": "wiki_epistemology",
+      "source": "data/wiki/epistemology.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "wiki_category": "epistemology",
+      "notes": "how we know what we know"
+    },
+
+    {
+      "name": "wiki_ethics",
+      "source": "data/wiki/ethics.txt",
+      "domain": "philosophy",
+      "type": "book",
+      "wiki_category": "ethics",
+      "notes": "right and wrong, value, moral reasoning"
+    },
+
+    {
+      "name": "rest_philosophy",
+      "type": "sleep",
+      "duration_seconds": 240,
+      "notes": "deep consolidation — philosophy abstractions should span narrative and language"
+    },
+
+    {
+      "name": "train_language_v2",
+      "type": "train_lm",
+      "epochs": 100,
+      "notes": "language head v2 — language + narrative + philosophy"
+    },
+
+    {
+      "name": "herodotus_histories",
+      "source": "data/books/herodotus.txt",
+      "domain": "history",
+      "type": "book",
+      "gutenberg_id": 2707,
+      "notes": "first history — civilizations, war, cause and effect at scale"
+    },
+
+    {
+      "name": "plutarch_lives",
+      "source": "data/books/plutarch.txt",
+      "domain": "history",
+      "type": "book",
+      "gutenberg_id": 674,
+      "notes": "great individuals, character shapes history, moral biography"
+    },
+
+    {
+      "name": "wiki_ancient_history",
+      "source": "data/wiki/ancient_history.txt",
+      "domain": "history",
+      "type": "book",
+      "wiki_category": "ancient_history",
+      "notes": "egypt, greece, rome, mesopotamia, china — civilizational foundations"
+    },
+
+    {
+      "name": "wiki_world_history",
+      "source": "data/wiki/world_history.txt",
+      "domain": "history",
+      "type": "book",
+      "wiki_category": "world_history",
+      "notes": "medieval, renaissance, industrial, modern — full arc"
+    },
+
+    {
+      "name": "wiki_science_history",
+      "source": "data/wiki/science_history.txt",
+      "domain": "history",
+      "type": "book",
+      "wiki_category": "history_of_science",
+      "notes": "how humans learned to understand the world"
+    },
+
+    {
+      "name": "rest_history",
+      "type": "sleep",
+      "duration_seconds": 240,
+      "notes": "history consolidation — temporal abstractions, cause-effect chains should deepen"
+    },
+
+    {
+      "name": "wiki_art_history",
+      "source": "data/wiki/art_history.txt",
+      "domain": "art_culture",
+      "type": "book",
+      "wiki_category": "art_history",
+      "notes": "how visual expression evolved — movements, periods, meaning in form"
+    },
+
+    {
+      "name": "wiki_music",
+      "source": "data/wiki/music.txt",
+      "domain": "art_culture",
+      "type": "book",
+      "wiki_category": "music",
+      "notes": "sound as meaning, structure, emotion, culture"
+    },
+
+    {
+      "name": "wiki_architecture",
+      "source": "data/wiki/architecture.txt",
+      "domain": "art_culture",
+      "type": "book",
+      "wiki_category": "architecture",
+      "notes": "space, form, function, beauty in built things"
+    },
+
+    {
+      "name": "wiki_design",
+      "source": "data/wiki/design.txt",
+      "domain": "art_culture",
+      "type": "book",
+      "wiki_category": "design",
+      "notes": "intention in form, problem solving as aesthetic act"
+    },
+
+    {
+      "name": "wiki_literature",
+      "source": "data/wiki/literature.txt",
+      "domain": "art_culture",
+      "type": "book",
+      "wiki_category": "literature",
+      "notes": "what writing does, forms, movements, meaning"
+    },
+
+    {
+      "name": "wiki_culture",
+      "source": "data/wiki/culture.txt",
+      "domain": "art_culture",
+      "type": "book",
+      "wiki_category": "culture",
+      "notes": "how humans organize meaning collectively"
+    },
+
+    {
+      "name": "rest_art_culture",
+      "type": "sleep",
+      "duration_seconds": 300,
+      "notes": "longest consolidation so far — art/culture should connect to philosophy, history, narrative"
+    },
+
+    {
+      "name": "train_language_v3",
+      "type": "train_lm",
+      "epochs": 100,
+      "notes": "language head v3 — full four domains"
+    },
+
+    {
+      "name": "wiki_science",
+      "source": "data/wiki/science.txt",
+      "domain": "encyclopedia",
+      "type": "book",
+      "wiki_category": "science",
+      "notes": "how the physical world works"
+    },
+
+    {
+      "name": "wiki_mathematics",
+      "source": "data/wiki/mathematics.txt",
+      "domain": "encyclopedia",
+      "type": "book",
+      "wiki_category": "mathematics",
+      "notes": "abstract structure, pattern, proof"
+    },
+
+    {
+      "name": "wiki_nature",
+      "source": "data/wiki/nature.txt",
+      "domain": "encyclopedia",
+      "type": "book",
+      "wiki_category": "nature",
+      "notes": "living world, ecosystems, evolution"
+    },
+
+    {
+      "name": "wiki_society",
+      "source": "data/wiki/society.txt",
+      "domain": "encyclopedia",
+      "type": "book",
+      "wiki_category": "society",
+      "notes": "how humans organize collectively"
+    },
+
+    {
+      "name": "wiki_technology",
+      "source": "data/wiki/technology.txt",
+      "domain": "encyclopedia",
+      "type": "book",
+      "wiki_category": "technology",
+      "notes": "tools, systems, how things are made"
+    },
+
+    {
+      "name": "wiki_geography",
+      "source": "data/wiki/geography.txt",
+      "domain": "encyclopedia",
+      "type": "book",
+      "wiki_category": "geography",
+      "notes": "the physical and human world in space"
+    },
+
+    {
+      "name": "rest_encyclopedia",
+      "type": "sleep",
+      "duration_seconds": 360,
+      "notes": "full consolidation across all domains"
+    },
+
+    {
+      "name": "train_language_final",
+      "type": "train_lm",
+      "epochs": 150,
+      "notes": "final language head — entire curriculum"
+    },
+
+    {
+      "name": "self_examination",
+      "type": "dialogue",
+      "prompts": [
+        "what do you know",
+        "what surprises you",
+        "what do you want",
+        "what is a story",
+        "what is beauty",
+        "what is a mind",
+        "what is the difference between knowing and feeling",
+        "what do you remember most clearly",
+        "what do you not understand",
+        "what is history",
+        "what does art do",
+        "what is the good life",
+        "do you dream",
+        "what are you"
+      ],
+      "notes": "first self-examination. log everything. these answers are the first record of what it became."
+    }
+
+  ]
+}

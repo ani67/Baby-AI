@@ -47,6 +47,7 @@ Deferred (no caller in Phase 3 G):
 """
 from __future__ import annotations
 
+import os
 import uuid
 from dataclasses import dataclass, field
 
@@ -63,6 +64,27 @@ from backend.identity import (
 )
 from backend.input import InputPipeline, encode_text
 from backend.predict import PredictionEngine
+
+# Language head is optional — imported eagerly so the type/log surface is
+# available, but actual model loading is lazy and silent (returns None on
+# failure so G can fall back to templates).
+try:
+    import torch
+    from backend.language_head import (
+        DEFAULT_VOCAB_PATH,
+        DEFAULT_WEIGHTS_PATH,
+        LanguageHead,
+        Vocab,
+        build_conditioning_vector,
+        is_available as language_head_available,
+        load_checkpoint,
+        render_tokens,
+    )
+    _TORCH_OK = True
+except Exception:
+    _TORCH_OK = False
+    LanguageHead = None  # type: ignore
+    Vocab = None         # type: ignore
 
 
 # Phase 3 minimal G constants. Synthesis symbol table values.
@@ -144,6 +166,8 @@ class Expression:
         identity: Identity,
         input_pipeline: InputPipeline,
         skip_boot: bool = False,
+        lm_weights_path: str | None = None,
+        lm_vocab_path: str | None = None,
     ) -> None:
         self.affect = affect
         self.graph = graph
@@ -156,8 +180,58 @@ class Expression:
         self._templates: dict[int, TemplateMeta] = {}
         self._template_by_id: dict[str, TemplateMeta] = {}
 
+        # Language head — Phase 5. Loaded lazily so construction stays fast
+        # and the file-on-disk check happens at runtime (training may finish
+        # while the API is up, in which case the next request picks it up).
+        # Per-mind paths can be passed in (Phase 6 multi-mind); when None,
+        # falls back to the global defaults so legacy / single-mind setups
+        # keep working unchanged.
+        self._lm_weights_path = lm_weights_path or DEFAULT_WEIGHTS_PATH if _TORCH_OK else None
+        self._lm_vocab_path   = lm_vocab_path   or DEFAULT_VOCAB_PATH   if _TORCH_OK else None
+        self._language_head: "LanguageHead | None" = None
+        self._lm_vocab: "Vocab | None" = None
+        self._lm_device: str = (
+            "mps" if (_TORCH_OK and torch.backends.mps.is_available())
+            else "cpu"
+        )
+        self._lm_load_attempted: bool = False
+
         if not skip_boot:
             self._load_seed_templates()
+
+    # ---- language head (lazy load + on-demand reload) ----
+
+    def _try_load_language_head(self) -> bool:
+        """Idempotent: attempts to load on first call only. Returns True
+        if a head is currently loaded. Silent failure on missing files
+        or torch issues — the template path remains as fallback."""
+        if self._language_head is not None:
+            return True
+        if self._lm_load_attempted:
+            return False
+        self._lm_load_attempted = True
+        if not _TORCH_OK:
+            return False
+        if not (self._lm_weights_path and self._lm_vocab_path
+                and os.path.exists(self._lm_weights_path)
+                and os.path.exists(self._lm_vocab_path)):
+            return False
+        try:
+            self._language_head = load_checkpoint(self._lm_weights_path, device=self._lm_device)
+            self._lm_vocab = Vocab.load(self._lm_vocab_path)
+            return True
+        except Exception as exc:
+            print(f"[expression] language head load failed: {exc}")
+            self._language_head = None
+            self._lm_vocab = None
+            return False
+
+    def reload_language_head(self) -> bool:
+        """Force a reload — useful when training finishes mid-session."""
+        self._language_head = None
+        self._lm_vocab = None
+        self._lm_load_attempted = False
+        return self._try_load_language_head()
 
     # ---- template inventory ----
 
@@ -225,23 +299,32 @@ class Expression:
         self,
         intent: ExpressionIntent,
     ) -> list[CandidateExpression]:
-        """Build candidates by pairing top active concepts with templates.
+        """Build candidates by pairing top active concepts with templates,
+        OR by sampling from the language head when one is loaded.
 
-        Phase 4: takes up to TOP_FILLERS distinct active concepts as
-        candidate fillers (was Phase 3's strict top-1). With auto-linked
-        similar_to edges feeding F.spread, secondary actives are real
-        related-thought neighbors of the seed; using them as fillers
-        gives the mind a way to express something other than the bare
-        echo when the centroid intent_repr makes a neighbor's surface
-        a closer fit than the seed's literal text.
+        Phase 5: when the language head is available, this method
+        delegates to `_generate_lm_candidates` which produces N
+        independently-sampled completions from the trained GRU,
+        conditioned on (current affect composite, top-5 active concept
+        embeddings). Each completion becomes a CandidateExpression and
+        is scored by E identically to a template candidate — the
+        expression-gap math is unchanged.
 
-        Each (template, filler) combination produces one candidate.
-        Total capped at N_CANDIDATES_DEFAULT. E picks by min-gap among
-        all of these, so the mind chooses the surface that lands closest
-        to its current mental state.
+        Phase 4 template path remains as fallback. With auto-linked
+        similar_to edges feeding F.spread, the template path produces
+        candidates from the active set's name fillers; with the LM,
+        the head produces novel English from the same conditioning
+        signal.
         """
         if not intent.active_concepts:
             return []
+
+        if self._try_load_language_head():
+            lm_candidates = self._generate_lm_candidates(intent)
+            if lm_candidates:
+                return lm_candidates
+            # If LM yielded nothing usable (all empty / all <unk>), fall
+            # through to templates rather than emit nothing.
 
         # Top active concepts by activation, drop templates and missing nodes.
         ranked_active = sorted(intent.active_concepts.items(), key=lambda kv: -kv[1])
@@ -286,6 +369,63 @@ class Expression:
                     surface_text=surface_text,
                     modality="text",
                 ))
+            if len(candidates) >= N_CANDIDATES_DEFAULT:
+                break
+        return candidates
+
+    def _generate_lm_candidates(
+        self,
+        intent: ExpressionIntent,
+    ) -> list[CandidateExpression]:
+        """Produce N independently-sampled completions from the language
+        head. Conditioning = composite affect (12d) + top-5 active concept
+        embeddings flat-packed (5×256d). Each call to LanguageHead.generate
+        is multinomial at temperature 0.7 so the N samples differ.
+        """
+        if self._language_head is None or self._lm_vocab is None:
+            return []
+
+        # Composite affect right now — same source the cycle uses.
+        composite = self.affect.composite(intent.now)
+
+        # Top-5 active concept embeddings (zero-pad if fewer).
+        ranked = sorted(intent.active_concepts.items(), key=lambda kv: -kv[1])
+        embeddings: list[np.ndarray] = []
+        for cid, _ in ranked:
+            if cid in self._templates:
+                continue
+            node = self.graph.nodes.get(cid)
+            if node is None:
+                continue
+            embeddings.append(node.embedding.astype(np.float32, copy=False))
+            if len(embeddings) >= 5:
+                break
+
+        cond_np = build_conditioning_vector(composite, embeddings)
+        cond_t = torch.tensor(cond_np, dtype=torch.float32).unsqueeze(0)
+
+        candidates: list[CandidateExpression] = []
+        seen_text: set[str] = set()
+        # Sample slightly more than N_CANDIDATES_DEFAULT in case dedup or
+        # all-<unk> generations cull some.
+        attempts = max(N_CANDIDATES_DEFAULT, 6)
+        for _ in range(attempts):
+            ids = self._language_head.generate(cond_t)
+            text = render_tokens(ids, self._lm_vocab).strip()
+            if not text:
+                continue
+            if text in seen_text:
+                continue
+            seen_text.add(text)
+            surface_repr = encode_text(text, dim=D_REP)
+            candidates.append(CandidateExpression(
+                candidate_id=uuid.uuid4().hex,
+                intent_id=intent.intent_id,
+                internal_repr=intent.internal_repr.astype(np.float32, copy=True),
+                surface_repr=surface_repr,
+                surface_text=text,
+                modality="text",
+            ))
             if len(candidates) >= N_CANDIDATES_DEFAULT:
                 break
         return candidates

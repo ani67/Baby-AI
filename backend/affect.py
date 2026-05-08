@@ -41,10 +41,22 @@ from backend.config import (
     INJECTION_GAIN_INPUT,
     INJECTION_GAIN_OUTPUT,
     INJECTION_GAIN_PROCESSING,
+    MAX_LAYER_NORM,
     N_AFF,
     NUDGE_GAINS,
     NUDGE_THRESHOLDS,
 )
+
+
+def _clamp_norm(v: np.ndarray, ceiling: float = MAX_LAYER_NORM) -> np.ndarray:
+    """Cap an affect vector's L2 norm at `ceiling`, preserving direction.
+    Used after every layer mutation so no layer can accumulate without bound
+    under a high-arousal regime (e.g., dense book ingestion at 700+ cycles/sec
+    where inter-cycle decay is effectively zero for slow-half-life layers)."""
+    n = float(np.linalg.norm(v))
+    if n <= ceiling:
+        return v
+    return (v * (ceiling / n)).astype(np.float32)
 
 
 # Hebbian learning rate for W. Small enough that any single observation moves W
@@ -359,7 +371,7 @@ class AffectStack:
         delta = (g * squashed) * gap_signal.astype(np.float32)
 
         decayed = _decayed(self.reaction, now)
-        new_reaction = decayed + delta
+        new_reaction = _clamp_norm(decayed + delta)
         self.reaction.vector = new_reaction
         self.reaction.t = now
 
@@ -392,11 +404,17 @@ class AffectStack:
             if mag < threshold:
                 continue
 
+            # Saturate the push magnitude through tanh so a runaway lower
+            # layer can't drive the upper layer linearly. Combined with the
+            # layer-norm ceiling below, this bounds the entire chain under
+            # any input regime.
+            raw_push_mag = (mag - threshold) * gain
+            push_mag = float(np.tanh(raw_push_mag))
             direction = lower_value / max(mag, 1e-12)
-            push = direction * ((mag - threshold) * gain)
+            push = direction * push_mag
 
             upper_value = _decayed(upper, now)
-            upper.vector = upper_value + push
+            upper.vector = _clamp_norm(upper_value + push)
             upper.t = now
 
 

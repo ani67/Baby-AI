@@ -4,19 +4,24 @@ import type { CycleEvent } from "../lib/types";
 
 type Props = {
   lastCycle: CycleEvent | null;
+  /** Called with (prompt, cycle) after each successful user-initiated
+   *  ingest, so App.tsx can append to the conversation log. */
+  onResponse?: (prompt: string, cycle: CycleEvent) => void;
 };
 
-export function InputPanel({ lastCycle }: Props) {
+export function InputPanel({ lastCycle, onResponse }: Props) {
   const [text, setText] = useState("");
   const [agent, setAgent] = useState("alice");
   const [sending, setSending] = useState(false);
 
   async function send(e: React.FormEvent) {
     e.preventDefault();
-    if (!text.trim() || sending) return;
+    const prompt = text.trim();
+    if (!prompt || sending) return;
     setSending(true);
     try {
-      await ingest(text.trim(), agent.trim() || undefined);
+      const result = (await ingest(prompt, agent.trim() || undefined)) as CycleEvent;
+      onResponse?.(prompt, result);
       setText("");
     } catch (err) {
       console.error("ingest failed:", err);

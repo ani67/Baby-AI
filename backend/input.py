@@ -97,33 +97,36 @@ def source_for(modality: Modality) -> Source:
 
 
 # ============================================================
-# Encoders — real, no pretrained weights, deterministic
+# Encoders — text encoders live in backend/encoders.py to keep this
+# file focused on the H runtime; image and audio encoders are inlined
+# below since they're small and have no large dependencies.
 # ============================================================
 
-ENCODER_TEXT_ID  = "text:char-trigram-bow-v1"
+from backend.encoders import (
+    ENCODER_TEXT_CHAR_TRIGRAM,
+    ENCODER_TEXT_GLOVE,
+    encode_text_char_trigram,
+    encode_text_glove,
+    glove_is_available,
+)
+
+# Phase-5 active text encoder is GloVe when available, else fall back to
+# the Phase 1 char-trigram encoder. Both stay in the registry; only the
+# active one is used for new ingests.
+ENCODER_TEXT_ID  = ENCODER_TEXT_GLOVE if glove_is_available() else ENCODER_TEXT_CHAR_TRIGRAM
 ENCODER_IMAGE_ID = "image:patch-stats-v1"
 ENCODER_AUDIO_ID = "audio:fft-stats-v1"
 
 
 def encode_text(text: str, dim: int = D_REP) -> np.ndarray:
-    """Char-trigram BoW with signed hashing → unit vector in `dim` dims.
-
-    Deterministic across runs (md5-based, not Python's randomized hash).
-    Empty / whitespace-only input returns a zero vector — C's find_or_match
-    refuses to bind it against anything (cosine vs zero is zero).
+    """Active text encoder. Phase 5: GloVe-meanpool-PCA256 if its binary
+    is on disk; Phase 1 char-trigram BoW otherwise. Both produce a
+    deterministic L2-normalized float32[D_REP] (or zero vector for empty
+    / all-unknown input).
     """
-    s = text.lower().strip()
-    if not s:
-        return np.zeros(dim, dtype=np.float32)
-    padded = f"  {s}  "
-    vec = np.zeros(dim, dtype=np.float32)
-    for i in range(len(padded) - 2):
-        digest = hashlib.md5(padded[i:i + 3].encode("utf-8")).digest()
-        idx = int.from_bytes(digest[:4], "little") % dim
-        sign = 1.0 if (digest[4] & 1) else -1.0
-        vec[idx] += sign
-    norm = float(np.linalg.norm(vec))
-    return vec / norm if norm >= 1e-12 else vec
+    if ENCODER_TEXT_ID == ENCODER_TEXT_GLOVE:
+        return encode_text_glove(text, dim=dim)
+    return encode_text_char_trigram(text, dim=dim)
 
 
 def encode_image(image: np.ndarray, dim: int = D_REP) -> np.ndarray:
@@ -205,7 +208,16 @@ class EncoderRegistry:
         self._by_id: dict[str, EncoderEntry] = {}
         self._active_per_modality: dict[Modality, str] = {}
 
-        self.register(EncoderEntry(ENCODER_TEXT_ID,  Modality.TEXT,  encode_text),  active=True)
+        # Both text encoders are registered. The active one is whichever
+        # ENCODER_TEXT_ID points at — GloVe when its binary is on disk,
+        # char-trigram otherwise. The inactive one stays addressable by
+        # encoder_id so concepts written under it remain explainable.
+        if ENCODER_TEXT_ID == ENCODER_TEXT_GLOVE:
+            self.register(EncoderEntry(ENCODER_TEXT_GLOVE, Modality.TEXT, encode_text_glove), active=True)
+            self.register(EncoderEntry(ENCODER_TEXT_CHAR_TRIGRAM, Modality.TEXT, encode_text_char_trigram), active=False)
+        else:
+            self.register(EncoderEntry(ENCODER_TEXT_CHAR_TRIGRAM, Modality.TEXT, encode_text_char_trigram), active=True)
+
         self.register(EncoderEntry(ENCODER_IMAGE_ID, Modality.IMAGE, encode_image), active=True)
         self.register(EncoderEntry(ENCODER_AUDIO_ID, Modality.AUDIO, encode_audio), active=True)
 
@@ -407,13 +419,35 @@ class InputPipeline:
 
     # ---- ingest paths ----
 
-    def ingest_text(self, text: str, now: float, agent_id: int | None = None) -> IngestResult:
-        encoder = self.encoders.active_for(Modality.TEXT)
-        rep = encoder.encode(text, dim=D_REP)
+    def ingest_text(
+        self,
+        text: str,
+        now: float,
+        agent_id: int | None = None,
+        representation: np.ndarray | None = None,
+        encoder_id: str | None = None,
+    ) -> IngestResult:
+        """Ingest a text. Phase 5: an optional pre-encoded representation
+        can be passed in (from data/encoded_corpus.db) to skip encoding
+        entirely. When supplied, encoder_id should also be supplied so
+        the Stimulus carries the correct provenance; if omitted, the
+        active text encoder's id is stamped.
+        """
+        if representation is None:
+            encoder = self.encoders.active_for(Modality.TEXT)
+            rep = encoder.encode(text, dim=D_REP)
+            stamped_id = encoder.encoder_id
+        else:
+            if representation.shape != (D_REP,):
+                raise ValueError(
+                    f"pre-encoded representation must be ({D_REP},), got {representation.shape}"
+                )
+            rep = representation.astype(np.float32, copy=False)
+            stamped_id = encoder_id or self.encoders.active_for(Modality.TEXT).encoder_id
         return self._dispatch(
             representation=rep,
             modality=Modality.TEXT,
-            encoder_id=encoder.encoder_id,
+            encoder_id=stamped_id,
             name_hint=text[:48],
             agent_id=agent_id,
             now=now,

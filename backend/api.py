@@ -44,13 +44,19 @@ from backend.identity import (
 )
 from backend.input import InputPipeline
 from backend.main_loop import CycleResult, IdleResult, MainLoop, SleepResult
+from backend.mind_paths import MindPaths
 from backend.persistence import MindPersistence
 from backend.predict import PredictionEngine
 from backend.simulation import SimulationReplay
 
 
-# Default DB path for save/load. The file isn't created until /save is called.
-DB_PATH = os.environ.get("MIND_DB", "data/mind.db")
+# Multi-mind: pick which mind this server backs via MIND_NAME (default 'first').
+# Falls back to legacy MIND_DB env var if set, for backward compat with older
+# single-mind setups.
+MIND_NAME = os.environ.get("MIND_NAME", "first")
+PATHS = MindPaths(MIND_NAME)
+PATHS.ensure_dirs()
+DB_PATH = os.environ.get("MIND_DB", PATHS.db)
 
 
 def construct_mind(birth_seed: int = 42) -> MainLoop:
@@ -67,6 +73,8 @@ def construct_mind(birth_seed: int = 42) -> MainLoop:
     f = Attention(affect=a, graph=g)
     gx = Expression(
         affect=a, graph=g, predict_engine=p, identity=ident, input_pipeline=h,
+        lm_weights_path=PATHS.language_head,
+        lm_vocab_path=PATHS.vocab,
     )
     return MainLoop(
         affect=a, graph=g, predict_engine=p, simulation=sim,
@@ -88,14 +96,22 @@ async def lifespan(app: FastAPI):
     state["lock"] = asyncio.Lock()
     if os.path.exists(DB_PATH):
         try:
-            state["loop"] = MindPersistence.load(DB_PATH)
-            print(f"[mind] restored from {DB_PATH}")
+            loop = MindPersistence.load(DB_PATH)
+            # Re-point the loaded Expression at this mind's per-mind LM
+            # files (in case the persisted state was written before the
+            # multi-mind split). reload_language_head() picks them up.
+            loop.expression._lm_weights_path = PATHS.language_head
+            loop.expression._lm_vocab_path = PATHS.vocab
+            loop.expression.reload_language_head()
+            state["loop"] = loop
+            print(f"[mind:{MIND_NAME}] restored from {DB_PATH} "
+                  f"({loop.graph.node_count} nodes, {loop.graph.edge_count} edges)")
         except Exception as exc:  # corrupted DB → start fresh
-            print(f"[mind] failed to restore from {DB_PATH}: {exc}; starting fresh")
+            print(f"[mind:{MIND_NAME}] failed to restore from {DB_PATH}: {exc}; starting fresh")
             state["loop"] = construct_mind()
     else:
         state["loop"] = construct_mind()
-        print(f"[mind] new mind constructed (no save at {DB_PATH})")
+        print(f"[mind:{MIND_NAME}] new mind constructed (no save at {DB_PATH})")
     yield
     # Best-effort save on shutdown.
     try:

@@ -29,6 +29,11 @@ from enum import Enum
 import numpy as np
 
 from backend.affect import AffectStack
+from backend.config import (
+    PROCESSING_DECAY,
+    PROCESSING_MAX_ACTIVATION,
+    PROCESSING_TICKS,
+)
 from backend.graph import ConceptGraph, SpreadMode, SpreadResult
 
 
@@ -67,6 +72,60 @@ class Attention:
     def __init__(self, *, affect: AffectStack, graph: ConceptGraph) -> None:
         self.affect = affect
         self.graph = graph
+
+    def processing_loop(
+        self,
+        input_active_set: dict[int, float],
+        now: float,
+        *,
+        max_internal_ticks: int = PROCESSING_TICKS,
+    ) -> dict[int, float]:
+        """Run internal spread ticks between input perception and action.
+
+        Each tick:
+          1. multiplies the current active values by PROCESSING_DECAY
+             (0.85), shrinking the input concept's dominance and freeing
+             room for new neighbors to surface;
+          2. calls F.attend(PROCESSING) using the decayed values as
+             seeds — spread reaches further out at each tick because
+             the floor activation gets lower while the structural
+             reach stays the same.
+
+        After the loop, normalize the final active set so no single
+        concept exceeds PROCESSING_MAX_ACTIVATION (0.5). This is the
+        synthesis-locked "treat input as evidence, not mental state":
+        the input was loud once, but by the time expression fires,
+        the broader mental state should be what the mind speaks from.
+
+        Returns the final active set (unchanged shape: dict[cid, float]).
+        """
+        if not input_active_set:
+            return {}
+
+        current: dict[int, float] = dict(input_active_set)
+        for _tick in range(max_internal_ticks):
+            decayed: dict[int, float] = {
+                cid: v * PROCESSING_DECAY for cid, v in current.items()
+            }
+            spread_result, _ = self.attend(
+                phase=AttentionPhase.PROCESSING,
+                raw_seeds=decayed,
+                now=now,
+            )
+            current = spread_result.active_set
+            if not current:
+                # No reachable neighbors and the seeds decayed below
+                # SPREAD_ACTIVATE_MIN — early exit, nothing left to think.
+                break
+
+        # Normalize so no single concept dominates final expression.
+        if current:
+            max_act = max(current.values())
+            if max_act > PROCESSING_MAX_ACTIVATION:
+                scale = PROCESSING_MAX_ACTIVATION / max_act
+                current = {cid: v * scale for cid, v in current.items()}
+
+        return current
 
     def attend(
         self,

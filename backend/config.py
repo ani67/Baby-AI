@@ -28,6 +28,13 @@ INJECTION_GAIN_INPUT      = 1.0
 INJECTION_GAIN_PROCESSING = 0.6
 INJECTION_GAIN_OUTPUT     = 0.8
 
+# Hard ceiling on every affect-layer L2 norm. Without this, dense
+# ingestion (thousands of cycles/sec, half-lives much longer than the
+# inter-cycle interval) lets the upward nudge chain accumulate without
+# bound — the upper layers were observed at 1e8+ after 3K cycles. With
+# this ceiling, the system has bounded affect under any input regime.
+MAX_LAYER_NORM = 10.0
+
 # Surprise (B)
 MIN_THRESHOLD          = 1.5    # z-score multiplier: threshold = mean + 1.5·stddev
 COLD_START_N           = 30     # min observations before Welford z-scoring engages
@@ -36,3 +43,15 @@ STDDEV_FLOOR           = 1e-9   # guard against division by zero in z-score
 
 # Concept graph (C)
 R_MATCH = 0.92  # cosine similarity threshold for find_or_match dedup
+
+# Processing loop (F) — Phase 5
+# Between INPUT attend and action selection, F runs PROCESSING_TICKS
+# internal spread iterations. Each tick decays the existing actives by
+# PROCESSING_DECAY and re-spreads, so the input concept's dominance
+# fades from 1.0 toward ~0.5 as neighbors accumulate activation. After
+# the loop completes, any concept above PROCESSING_MAX_ACTIVATION is
+# scaled down (proportionally) so the final active set treats input
+# as evidence rather than the entirety of mental state.
+PROCESSING_TICKS           = 4
+PROCESSING_DECAY           = 0.85   # per-tick global multiplier; 1.0^4·0.85^4 ≈ 0.52
+PROCESSING_MAX_ACTIVATION  = 0.5    # post-loop cap so the seed never dominates expression
