@@ -45,6 +45,7 @@ from backend.attention import Attention, AttentionFrame, AttentionPhase
 from backend.expression import Expression, ExpressionIntent
 from backend.graph import ConceptGraph, EdgeType, SpreadResult
 from backend.identity import (
+    CandidateExpression,
     ChosenCandidate,
     ExpressionDecision,
     Identity,
@@ -133,6 +134,13 @@ class MainLoop:
 
         self.last_observation_t: float = identity.spine.birth_time
         self.cycle_count: int = 0
+
+        # Phase 7 workstream B: bind Attention into Expression so that
+        # Expression.generate_extended can spread from each sentence's
+        # self-overhearing echo into the next sentence's intent. Done here
+        # rather than in Expression's ctor so the existing Expression
+        # constructor signature stays stable across persistence reload.
+        self.expression.set_attention(self.attention)
 
     # ---- one cycle (run after each ingest) ----
 
@@ -313,15 +321,82 @@ class MainLoop:
                 now=now,
                 audience_concept_id=action.target_concept_id,
             )
-            expression_decision = self.expression.request_expression(intent)
-            if isinstance(expression_decision, ChosenCandidate):
-                emitted_surface = expression_decision.candidate.surface_text
-                echo_result = self.input_pipeline.emit_output(
-                    modality=Modality.TEXT,
-                    surface=emitted_surface,
-                    now=now,
+
+            # Phase 7 workstream B: length signal. budget=1 retains the
+            # legacy single-sentence path (request_expression + emit_output)
+            # so existing tests and force_respond=True minimal-arousal
+            # cases stay byte-identical. budget>1 drops into the iterative
+            # generate_extended which emits per-sentence echoes internally
+            # and returns the list of surfaces; MainLoop joins and emits
+            # the combined utterance once for the world delivery / UI.
+            budget = self.compute_expression_budget(active_for_express, now)
+
+            if budget <= 1:
+                expression_decision = self.expression.request_expression(intent)
+                if isinstance(expression_decision, ChosenCandidate):
+                    emitted_surface = expression_decision.candidate.surface_text
+                    echo_result = self.input_pipeline.emit_output(
+                        modality=Modality.TEXT,
+                        surface=emitted_surface,
+                        now=now,
+                        parent_stimulus_id=ingest_result.stimulus.stimulus_id,
+                    )
+            else:
+                sentences = self.expression.generate_extended(
+                    intent,
+                    budget=budget,
                     parent_stimulus_id=ingest_result.stimulus.stimulus_id,
                 )
+                if sentences:
+                    emitted_surface = " ".join(sentences)
+                    # The world delivery: one combined utterance. Each
+                    # sentence's per-step INTERNAL_OUTPUT_ECHO already
+                    # fired inside generate_extended; this final emit
+                    # delivers to emitted_log and produces one more echo
+                    # of the joined surface (the system "remembers"
+                    # what it just said as a unified statement).
+                    echo_result = self.input_pipeline.emit_output(
+                        modality=Modality.TEXT,
+                        surface=emitted_surface,
+                        now=now,
+                        parent_stimulus_id=ingest_result.stimulus.stimulus_id,
+                    )
+                    # Synthesize a ChosenCandidate-shaped record for the
+                    # CycleResult so downstream consumers (api.py, frontend
+                    # ConversationLog) get a "Chosen"-type decision name
+                    # for the joined utterance. The candidate's surface_repr
+                    # equals internal_repr (joined response is self-honest:
+                    # the system's internal centroid maps directly to what
+                    # it said, with sentence-by-sentence gaps already
+                    # absorbed into per-sentence echoes inside the loop).
+                    expression_decision = ChosenCandidate(
+                        candidate=CandidateExpression(
+                            candidate_id=f"{intent.intent_id}/extended",
+                            intent_id=intent.intent_id,
+                            internal_repr=intent.internal_repr,
+                            surface_repr=intent.internal_repr,
+                            surface_text=emitted_surface,
+                            modality="text",
+                        ),
+                        expression_gap=0.0,
+                        score=float(len(sentences)),
+                    )
+                else:
+                    # generate_extended returned []: every iteration
+                    # bailed (Revision / Suppression / unknown). Fall
+                    # through to a single-shot request so a budget>1
+                    # turn never produces a worse outcome than budget=1.
+                    # The cycle's expression_decision faithfully captures
+                    # whichever path actually landed.
+                    expression_decision = self.expression.request_expression(intent)
+                    if isinstance(expression_decision, ChosenCandidate):
+                        emitted_surface = expression_decision.candidate.surface_text
+                        echo_result = self.input_pipeline.emit_output(
+                            modality=Modality.TEXT,
+                            surface=emitted_surface,
+                            now=now,
+                            parent_stimulus_id=ingest_result.stimulus.stimulus_id,
+                        )
 
         return CycleResult(
             stimulus_id=ingest_result.stimulus.stimulus_id,
@@ -335,6 +410,44 @@ class MainLoop:
             input_active_set=input_active_set,
             processed_active_set=processed_active_set,
         )
+
+    # ---- expression budget (Phase 7 — workstream B) ----
+
+    def compute_expression_budget(
+        self,
+        active_set: dict[int, float],
+        now: float,
+    ) -> int:
+        """Decide how many sentences the mind has to say in this turn.
+
+        Coupling: more aroused + a richer active set → more to say. The
+        thresholds are spec-locked (Phase 7 workstream B step 1):
+
+            arousal > 0.6  and  |active| > 30   →  5    paragraph
+            arousal > 0.3  and  |active| > 15   →  3    multi-sentence
+            arousal > 0.1  and  |active| >  8   →  2    two-sentence thought
+            otherwise                            →  1    minimal
+
+        Notes
+        -----
+        - The budget is consumed by Expression.generate_extended in the
+          EXPRESS branch of `cycle`; budget=1 falls back to the existing
+          single-sentence path so the runtime contract stays identical
+          for the calm / sparse case.
+        - This is a length signal, not an importance signal — it asks
+          "how much is the mind currently holding," not "how badly does
+          it want to talk."
+        """
+        arousal = float(self.affect.current_arousal(now))
+        set_size = len(active_set)
+
+        if arousal > 0.6 and set_size > 30:
+            return 5
+        if arousal > 0.3 and set_size > 15:
+            return 3
+        if arousal > 0.1 and set_size > 8:
+            return 2
+        return 1
 
     # ---- idle (run when nothing fresh has arrived) ----
 

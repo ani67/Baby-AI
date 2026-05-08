@@ -165,7 +165,14 @@ def run_book_step(loop: MainLoop, paths: MindPaths, step: dict) -> dict:
     surprises_before = loop.predict_engine.surprise_count
 
     pre_encoded = is_source_encoded(source, ENCODED_DB_PATH)
-    print(f"  [book] {name} [{domain}]  pre-encoded={pre_encoded}")
+    print(f"  [book] {name} [{domain}]  pre-encoded={pre_encoded}  ingestion_mode=ON")
+
+    # Phase 7: bulk book ingestion uses the relaxed surprise threshold
+    # (1.0σ instead of 1.5σ) so the language-head training corpus grows
+    # fast enough to override GPT-2's web-text priors. Restored to False
+    # in the finally block so subsequent live conversation uses the
+    # calibrated default.
+    loop.predict_engine.set_ingestion_mode(True)
 
     # Capture the kept-sentence list to paths.book_text_log so train_lm
     # has the full corpus for vocab building.
@@ -236,6 +243,7 @@ def run_book_step(loop: MainLoop, paths: MindPaths, step: dict) -> dict:
                     persist.save(loop, now=time.time())
     finally:
         train_log.close()
+        loop.predict_engine.set_ingestion_mode(False)
 
     # Append to the book-text-log (used by train_lm vocab build); keep
     # accumulating across book steps so the vocab covers the full curriculum.
@@ -372,6 +380,12 @@ def run_interleaved(
     # Stream the kept-sentence list to paths.book_text_log for vocab-builds.
     bt_log = open(paths.book_text_log, "a", encoding="utf-8")
 
+    # Phase 7 ingestion mode (1.0σ threshold) for the entire interleaved run.
+    # The post-run dialogue is invoked by a separate process, so this flag
+    # only affects bulk book ingestion.
+    loop.predict_engine.set_ingestion_mode(True)
+    print("[interleaved] ingestion_mode=ON (1.0σ threshold)")
+
     try:
         for sent in reader:
             if max_sentences is not None and n_pulled >= max_sentences:
@@ -446,6 +460,7 @@ def run_interleaved(
     if bt_log is not None:
         bt_log.close()
 
+    loop.predict_engine.set_ingestion_mode(False)
     persist.save(loop, now=time.time())
     duration = time.perf_counter() - t0
 

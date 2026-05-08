@@ -100,8 +100,21 @@ async def lifespan(app: FastAPI):
             # Re-point the loaded Expression at this mind's per-mind LM
             # files (in case the persisted state was written before the
             # multi-mind split). reload_language_head() picks them up.
+            #
+            # Phase 7: persistence.MindPersistence.load constructs Expression
+            # without lm_weights_path, leaving _cd_root=None — so CD
+            # discovery silently skipped before this fix. Re-point _cd_root
+            # and _cd_weights_path explicitly so the GPT-2 v2 / v1 deltas
+            # can be picked up by reload_language_head.
             loop.expression._lm_weights_path = PATHS.language_head
             loop.expression._lm_vocab_path = PATHS.vocab
+            loop.expression._cd_root = (
+                os.path.dirname(PATHS.language_head) or "."
+            )
+            from backend.language_head import CONDITIONED_DECODER_FILENAME
+            loop.expression._cd_weights_path = os.path.join(
+                loop.expression._cd_root, CONDITIONED_DECODER_FILENAME,
+            )
             loop.expression.reload_language_head()
             state["loop"] = loop
             print(f"[mind:{MIND_NAME}] restored from {DB_PATH} "
@@ -203,11 +216,22 @@ def serialize_cycle(c: CycleResult, loop: MainLoop, now: float) -> dict:
     elif isinstance(d, SuppressionRequest):
         expr = {"type": "suppression", "reason": d.reason, "best_gap": d.best_gap}
 
+    # Phase 7 workstream B: expose the budget the cycle saw (computed
+    # against the post-processing active set, same now). Useful for the
+    # frontend ConversationLog and for end-to-end test harnesses verifying
+    # that the length signal landed.
+    proc_set = c.processed_active_set or c.input_active_set or {}
+    budget = loop.compute_expression_budget(proc_set, now=now)
+    n_sentences = 0
+    if c.emitted_surface:
+        n_sentences = sum(1 for s in c.emitted_surface.split(". ") if s.strip())
+
     return {
         "type":         "cycle",
         "stimulus_id":  c.stimulus_id,
         "now":          now,
         "active_set":   {str(cid): float(v) for cid, v in c.spread.active_set.items()},
+        "processed_active_set_size": len(proc_set),
         "traversed_edges": [
             # ((src, dst, edge_type), propagated_activation)
             {
@@ -228,6 +252,8 @@ def serialize_cycle(c: CycleResult, loop: MainLoop, now: float) -> dict:
         },
         "expression":      expr,
         "emitted_surface": c.emitted_surface,
+        "budget":          int(budget),
+        "n_sentences":     int(n_sentences),
         "stats":           serialize_state_lite(loop, now),
     }
 

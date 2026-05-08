@@ -36,6 +36,8 @@ from backend.config import (
     COLD_START_MAGNITUDE_FLOOR,
     COLD_START_N,
     D_REP,
+    INGESTION_COLD_START_MAGNITUDE_FLOOR,
+    INGESTION_MIN_THRESHOLD,
     MIN_THRESHOLD,
     STDDEV_FLOOR,
 )
@@ -144,6 +146,11 @@ class PredictionEngine:
         # Optional D sink — set by D after construction (avoids circular init).
         # When attached, B auto-pushes every non-replay surprise to D for replay.
         self.replay_target: "SimulationReplay | None" = None
+
+        # Ingestion mode (Phase 7). Default off; the curriculum runner flips
+        # this on around bulk book steps so the training corpus grows fast
+        # enough for the language head to override GPT-2's base priors.
+        self._ingestion_mode: bool = False
 
     # ---- predict ----
 
@@ -318,16 +325,36 @@ class PredictionEngine:
             action_kind=action_kind,
         )
 
+    # ---- ingestion mode ----
+
+    def set_ingestion_mode(self, active: bool) -> None:
+        """Phase 7 conditioning fix. While active, surprise scoring uses
+        INGESTION_MIN_THRESHOLD (1.0σ) and INGESTION_COLD_START_MAGNITUDE_FLOOR
+        (0.06) instead of the default 1.5σ / 0.10. Increases the surprise
+        rate from ~5% to ~15%, tripling the language-head training corpus.
+
+        The curriculum runner toggles this around each book step; the
+        running mind itself never enters ingestion mode (responses to the
+        user must use the calibrated default).
+        """
+        self._ingestion_mode = bool(active)
+
+    @property
+    def is_ingestion_mode(self) -> bool:
+        return self._ingestion_mode
+
     # ---- diagnostic ----
 
     def layer_stats(self, layer: str) -> dict:
         """Read-only snapshot of one layer's running stats. For tests / debug."""
         s = self._stats[layer]
+        threshold_mult = INGESTION_MIN_THRESHOLD if self._ingestion_mode else MIN_THRESHOLD
         return {
             "count":  s.count,
             "mean":   s.mean,
             "stddev": s.stddev,
-            "threshold": s.mean + MIN_THRESHOLD * s.stddev if s.count >= COLD_START_N else None,
+            "threshold": s.mean + threshold_mult * s.stddev if s.count >= COLD_START_N else None,
+            "ingestion_mode": self._ingestion_mode,
         }
 
     # ---- internals ----
@@ -336,21 +363,31 @@ class PredictionEngine:
         """Cold-start absolute floor while count < COLD_START_N, Welford z
         once stats have accumulated.
 
-        Cold-start (count < 30): magnitude > COLD_START_MAGNITUDE_FLOOR
-        registers a synthetic z = MIN_THRESHOLD crossing.
+        Cold-start (count < 30): magnitude > floor registers a synthetic z =
+        MIN_THRESHOLD crossing.
 
         Warm (count ≥ 30): z = (magnitude − mean) / max(stddev, eps);
-        surprise iff magnitude > mean + MIN_THRESHOLD · stddev (equivalent
-        to z > MIN_THRESHOLD). Returns the actual z as the score so callers
+        surprise iff magnitude > mean + threshold_mult · stddev (equivalent
+        to z > threshold_mult). Returns the actual z as the score so callers
         get a calibrated number.
+
+        threshold_mult and the cold-start floor are 1.5 / 0.10 by default,
+        and 1.0 / 0.06 while ingestion mode is active (Phase 7).
         """
+        if self._ingestion_mode:
+            threshold_mult = INGESTION_MIN_THRESHOLD
+            cold_floor     = INGESTION_COLD_START_MAGNITUDE_FLOOR
+        else:
+            threshold_mult = MIN_THRESHOLD
+            cold_floor     = COLD_START_MAGNITUDE_FLOOR
+
         stats = self._stats[layer]
         if stats.count < COLD_START_N:
-            if magnitude > COLD_START_MAGNITUDE_FLOOR:
-                return MIN_THRESHOLD, True
+            if magnitude > cold_floor:
+                return threshold_mult, True
             return 0.0, False
 
         std = max(stats.stddev, STDDEV_FLOOR)
         z = (magnitude - stats.mean) / std
-        threshold_magnitude = stats.mean + MIN_THRESHOLD * stats.stddev
+        threshold_magnitude = stats.mean + threshold_mult * stats.stddev
         return float(z), magnitude > threshold_magnitude

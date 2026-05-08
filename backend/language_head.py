@@ -227,11 +227,27 @@ def is_available() -> bool:
 # frozen. This preserves GPT-2's English while letting the top of the
 # stack learn to use the soft prefix.
 
-CONDITIONED_DECODER_FILENAME = "language_head_gpt2.pt"
+CONDITIONED_DECODER_FILENAME    = "language_head_gpt2.pt"
+CONDITIONED_DECODER_V2_FILENAME = "language_head_gpt2_v2.pt"   # Phase 7 A3
 GPT2_HIDDEN_DIM = 768
 GPT2_NUM_LAYERS = 12
 GPT2_FROZEN_BOTTOM = 8                 # layers 0-7 frozen; 8-11 fine-tune
 GPT2_BASE_MODEL = "gpt2"
+
+# Phase 7 A2: multi-token soft prefix.
+#
+# v0.4 used a single virtual token: condition_proj projected the 1292-d
+# conditioning vector to one 768-d "embedding" prepended as the first
+# token of the GPT-2 context. One token is too narrow a channel — GPT-2's
+# 117M-param web-text priors swamp the conditioning at decode time, so
+# answers drift toward generic web language.
+#
+# v0.5 projects to FIVE virtual tokens. Each gets its own 768-d slot in
+# the prefix sequence; GPT-2's attention sees five contextual cues to
+# lean on instead of one. Trainable params on condition_proj go from
+# ~1M (768·1292) to ~5M (5·768·1292) — still negligible vs the 29.3M
+# trainable from the top-4 transformer layers.
+N_PREFIX_TOKENS = 5
 
 
 def _try_import_transformers():
@@ -270,7 +286,11 @@ class ConditionedDecoder(nn.Module):
         self.base_model = GPT2LMHeadModel.from_pretrained(base_model_name)
         self.base_model.config.pad_token_id = self.tokenizer.pad_token_id
 
-        self.condition_proj = nn.Linear(COND_DIM, GPT2_HIDDEN_DIM)
+        # Phase 7 A2: project to N_PREFIX_TOKENS × GPT2_HIDDEN_DIM, then
+        # reshape to (B, N_PREFIX_TOKENS, GPT2_HIDDEN_DIM) at forward time.
+        self.condition_proj = nn.Linear(
+            COND_DIM, N_PREFIX_TOKENS * GPT2_HIDDEN_DIM,
+        )
 
         self._freeze_partial()
 
@@ -292,6 +312,19 @@ class ConditionedDecoder(nn.Module):
         # Final LayerNorm + lm_head left trainable (default).
         # condition_proj is trainable by default.
 
+    # ---- shared: build the multi-token soft prefix ----
+
+    def _build_prefix(self, cond: torch.Tensor) -> torch.Tensor:
+        """cond: (B, COND_DIM) → prefix embeds: (B, N_PREFIX_TOKENS, H).
+
+        Linear projection followed by tanh squashing (matches the v0.4
+        single-token formulation in spirit) reshaped to N_PREFIX_TOKENS
+        independent virtual-token slots.
+        """
+        B = cond.shape[0]
+        flat = self.condition_proj(cond)                              # (B, N*H)
+        return torch.tanh(flat.view(B, N_PREFIX_TOKENS, GPT2_HIDDEN_DIM))
+
     # ---- training helper: forward pass with prefix ----
 
     def forward_with_prefix(
@@ -300,20 +333,28 @@ class ConditionedDecoder(nn.Module):
         token_ids: torch.Tensor,       # (B, T)  the sentence to learn
         attention_mask: torch.Tensor,  # (B, T)
     ) -> torch.Tensor:
-        """Forward pass with the soft prefix prepended. Returns the loss
-        (causal-LM CE; labels masked at the prefix position)."""
+        """Forward pass with N_PREFIX_TOKENS soft prefix slots prepended.
+        Returns the loss (causal-LM CE; labels masked at every prefix
+        position so the model trains only on real-token next-step
+        predictions)."""
         B, T = token_ids.shape
-        # Embed the conditioning into GPT-2 hidden space.
-        prefix = torch.tanh(self.condition_proj(cond)).unsqueeze(1)  # (B, 1, H)
+        # N virtual tokens of conditioning prefix.
+        prefix = self._build_prefix(cond)                                  # (B, N, H)
         # Embed the sentence tokens.
-        token_embeds = self.base_model.transformer.wte(token_ids)    # (B, T, H)
-        inputs_embeds = torch.cat([prefix, token_embeds], dim=1)     # (B, T+1, H)
-        # Attention mask + 1 for the prefix position.
-        prefix_mask = torch.ones((B, 1), dtype=attention_mask.dtype, device=attention_mask.device)
-        full_mask = torch.cat([prefix_mask, attention_mask], dim=1)  # (B, T+1)
-        # Labels: -100 for prefix, token_ids for the rest. The model
-        # shifts internally for CE so labels[i] is predicted from i-1.
-        prefix_labels = torch.full((B, 1), -100, dtype=token_ids.dtype, device=token_ids.device)
+        token_embeds = self.base_model.transformer.wte(token_ids)          # (B, T, H)
+        inputs_embeds = torch.cat([prefix, token_embeds], dim=1)           # (B, N+T, H)
+        # Attention mask: N ones for prefix, then the existing mask.
+        prefix_mask = torch.ones(
+            (B, N_PREFIX_TOKENS),
+            dtype=attention_mask.dtype, device=attention_mask.device,
+        )
+        full_mask = torch.cat([prefix_mask, attention_mask], dim=1)        # (B, N+T)
+        # Labels: -100 for every prefix slot, token_ids for the rest.
+        # GPT-2 shifts internally for CE — labels[i] is predicted from i-1.
+        prefix_labels = torch.full(
+            (B, N_PREFIX_TOKENS), -100,
+            dtype=token_ids.dtype, device=token_ids.device,
+        )
         labels = torch.cat([prefix_labels, token_ids], dim=1)
         # Mask out pad positions in labels too.
         labels = labels.masked_fill(full_mask == 0, -100)
@@ -342,7 +383,10 @@ class ConditionedDecoder(nn.Module):
         device = next(self.parameters()).device
         cond = cond.to(device)
 
-        prefix = torch.tanh(self.condition_proj(cond)).unsqueeze(1)  # (1, 1, H)
+        # N_PREFIX_TOKENS virtual tokens. The first forward pass populates
+        # past_key_values across all of them so subsequent autoregressive
+        # steps attend to the full conditioning context.
+        prefix = self._build_prefix(cond)                            # (1, N, H)
         out = self.base_model(inputs_embeds=prefix, use_cache=True)
         past = out.past_key_values
         logits = out.logits[:, -1, :]                                # (1, V)

@@ -78,6 +78,30 @@ export function InputPanel({ lastCycle, onResponse }: Props) {
   );
 }
 
+/** Phase 7 workstream B4: when the budget produced multiple sentences,
+ *  generate_extended joined them with ". " before the world delivery.
+ *  Split here for display only — each sentence on its own line. The
+ *  underlying CycleEvent is unchanged.
+ *
+ *  Splits are made on the literal ". " boundary, with the period kept
+ *  on the preceding sentence. Empty fragments are filtered. A single-
+ *  sentence response just renders as one line.
+ */
+function splitForDisplay(s: string): string[] {
+  const parts: string[] = [];
+  let buf = "";
+  for (let i = 0; i < s.length; i++) {
+    buf += s[i];
+    if (s[i] === "." && i + 1 < s.length && s[i + 1] === " ") {
+      parts.push(buf);
+      buf = "";
+      i++; // skip the separator space
+    }
+  }
+  if (buf) parts.push(buf);
+  return parts.map((t) => t.trim()).filter(Boolean);
+}
+
 function ExpressionLine({
   expr,
   emitted,
@@ -86,10 +110,22 @@ function ExpressionLine({
   emitted: string | null;
 }) {
   if (expr.type === "chosen") {
+    const text = emitted ?? expr.surface;
+    const sentences = splitForDisplay(text);
     return (
       <div>
         <span className="text-emerald-400">said </span>
-        <span className="text-zinc-100">"{emitted ?? expr.surface}"</span>
+        {sentences.length <= 1 ? (
+          <span className="text-zinc-100">"{text}"</span>
+        ) : (
+          <div className="mt-1 space-y-1 pl-4 border-l border-emerald-500/20">
+            {sentences.map((sent, i) => (
+              <div key={i} className="text-zinc-100">
+                "{sent}"
+              </div>
+            ))}
+          </div>
+        )}
         <span className="text-zinc-600 ml-1">· gap {expr.expression_gap.toFixed(3)}</span>
       </div>
     );

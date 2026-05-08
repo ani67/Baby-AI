@@ -321,18 +321,43 @@ def run_training_cd(
     epochs: int = CD_EPOCHS,
     device: str | None = None,
     batch_size: int = CD_BATCH_SIZE,
+    resume_from: str | None = None,
+    save_to: str | None = None,
+    lr_override: float | None = None,
+    skip_warmup: bool = False,
 ) -> None:
-    """Fine-tune the GPT-2 conditioned decoder on this mind's surprise corpus."""
+    """Fine-tune the GPT-2 conditioned decoder on this mind's surprise corpus.
+
+    Phase 7 A2 default usage:
+      run_training_cd(paths, epochs=20)
+    saves the best-loss delta to <root>/language_head_gpt2.pt and uses
+    CD_LR with CD_WARMUP_FRAC linear warmup.
+
+    Phase 7 A3 second-pass usage:
+      run_training_cd(
+          paths, epochs=30, resume_from=<...>/language_head_gpt2.pt,
+          save_to=<...>/language_head_gpt2_v2.pt,
+          lr_override=1e-5, skip_warmup=True,
+      )
+    The continuation path warmup is skipped because the model already saw
+    the data; constant lr=1e-5 from step 0.
+    """
     from backend.language_head import (        # noqa: E402
         CONDITIONED_DECODER_FILENAME,
         ConditionedDecoder,
     )
 
     device = device or ("mps" if torch.backends.mps.is_available() else "cpu")
-    print(f"[cd-train] mind={paths.mind_name}  device={device}")
+    lr = lr_override if lr_override is not None else CD_LR
+    print(f"[cd-train] mind={paths.mind_name}  device={device}  lr={lr:g}")
 
     print("[cd-train] constructing ConditionedDecoder (loads GPT-2 small) …")
     model = ConditionedDecoder()                      # imports transformers; downloads weights
+    if resume_from:
+        if not os.path.exists(resume_from):
+            raise FileNotFoundError(f"resume_from missing: {resume_from}")
+        print(f"[cd-train] resuming from {resume_from} …")
+        model.load_delta(resume_from)
     model.to(device)
 
     tokenizer = model.tokenizer
@@ -352,24 +377,28 @@ def run_training_cd(
     # it for ~1000 examples.
     pad_id = tokenizer.pad_token_id
 
-    optim_obj = torch.optim.AdamW(trainable, lr=CD_LR, weight_decay=CD_WD)
+    optim_obj = torch.optim.AdamW(trainable, lr=lr, weight_decay=CD_WD)
 
-    # Linear warmup over the first 10% of steps then constant. This is
-    # what kept training stable after the initial 1e-4 / no-warmup run
-    # destabilized within 2 epochs.
+    # Linear warmup over the first 10% of steps then constant. The first-
+    # pass training (A2) uses warmup; the A3 continuation skips warmup
+    # because the model has already adapted to the data.
     n_batches_per_epoch = max(1, len(examples) // batch_size + (1 if len(examples) % batch_size else 0))
     total_steps = epochs * n_batches_per_epoch
-    warmup_steps = max(1, int(total_steps * CD_WARMUP_FRAC))
+    if skip_warmup:
+        warmup_steps = 0
+    else:
+        warmup_steps = max(1, int(total_steps * CD_WARMUP_FRAC))
 
     def lr_at_step(step: int) -> float:
-        if step < warmup_steps:
-            return CD_LR * (step + 1) / warmup_steps
-        return CD_LR
+        if warmup_steps and step < warmup_steps:
+            return lr * (step + 1) / warmup_steps
+        return lr
 
     import random
     step = 0
     best_loss = float("inf")
-    saved_path = os.path.join(paths.root, CONDITIONED_DECODER_FILENAME)
+    saved_path = save_to or os.path.join(paths.root, CONDITIONED_DECODER_FILENAME)
+    print(f"[cd-train] best-loss delta will be saved to {saved_path}")
     for epoch in range(1, epochs + 1):
         model.train()
         random.shuffle(examples)
@@ -447,6 +476,21 @@ def main() -> int:
                          "Phase-5 LSTM head (Phase 7).")
     ap.add_argument("--batch-size", type=int, default=CD_BATCH_SIZE,
                     help="batch size for --gpt2 mode")
+    ap.add_argument("--resume-from", default=None,
+                    help="(--gpt2 only) load existing delta weights from this "
+                         "path before training. Used by Phase 7 A3 to continue "
+                         "fine-tuning at a lower lr from the A2 checkpoint.")
+    ap.add_argument("--save-to", default=None,
+                    help="(--gpt2 only) override the default save path "
+                         "(<mind_root>/language_head_gpt2.pt). Used by Phase 7 "
+                         "A3 to write the v2 checkpoint to language_head_gpt2_v2.pt.")
+    ap.add_argument("--lr", type=float, default=None,
+                    help="(--gpt2 only) override the default lr (CD_LR=2e-5). "
+                         "Phase 7 A3 uses 1e-5 for the second-pass continuation.")
+    ap.add_argument("--skip-warmup", action="store_true",
+                    help="(--gpt2 only) skip the linear-warmup schedule. "
+                         "Used for second-pass continuation training where the "
+                         "model has already adapted to the data.")
     args = ap.parse_args()
 
     paths = MindPaths(args.mind)
@@ -458,6 +502,10 @@ def main() -> int:
             epochs=args.epochs or CD_EPOCHS,
             device=args.device,
             batch_size=args.batch_size,
+            resume_from=args.resume_from,
+            save_to=args.save_to,
+            lr_override=args.lr,
+            skip_warmup=args.skip_warmup,
         )
     else:
         run_training(

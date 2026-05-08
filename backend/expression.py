@@ -48,19 +48,28 @@ Deferred (no caller in Phase 3 G):
 from __future__ import annotations
 
 import os
+import sys
 import uuid
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from backend.affect import AffectStack
 from backend.config import D_REP, N_AFF
 from backend.graph import ConceptGraph, EdgeType
+
+if TYPE_CHECKING:
+    # Late-bound to avoid the circular Expression ←→ Attention import.
+    from backend.attention import Attention
 from backend.identity import (
     CandidateExpression,
+    ChosenCandidate,
     ExpressionDecision,
     Identity,
     PinReason,
+    RevisionRequest,
+    SuppressionRequest,
 )
 from backend.input import InputPipeline, encode_text
 from backend.predict import PredictionEngine
@@ -72,6 +81,7 @@ try:
     import torch
     from backend.language_head import (
         CONDITIONED_DECODER_FILENAME,
+        CONDITIONED_DECODER_V2_FILENAME,
         ConditionedDecoder,
         DEFAULT_VOCAB_PATH,
         DEFAULT_WEIGHTS_PATH,
@@ -195,11 +205,19 @@ class Expression:
         # Phase 7: GPT-2 conditioned decoder lives next to the LSTM head
         # in each mind's dir. Tried first; falls back silently to LSTM,
         # which falls back silently to templates.
+        #
+        # The decoder filename used at load time is selected by
+        # _try_load_conditioned_decoder: A3's `language_head_gpt2_v2.pt`
+        # is preferred when present (longer fine-tune at lr=1e-5),
+        # otherwise A2's `language_head_gpt2.pt`. _cd_weights_path holds
+        # the path of the v1 file (compat with code that reads it directly,
+        # e.g. test harnesses). _cd_root is the dir we search both files in.
+        self._cd_root: str | None = None
         self._cd_weights_path: str | None = None
         if lm_weights_path:
+            self._cd_root = os.path.dirname(lm_weights_path) or "."
             self._cd_weights_path = os.path.join(
-                os.path.dirname(lm_weights_path) or ".",
-                CONDITIONED_DECODER_FILENAME,
+                self._cd_root, CONDITIONED_DECODER_FILENAME,
             )
         self._language_head: "LanguageHead | None" = None
         self._conditioned_decoder: "ConditionedDecoder | None" = None
@@ -208,11 +226,30 @@ class Expression:
             "mps" if (_TORCH_OK and torch.backends.mps.is_available())
             else "cpu"
         )
+
+        # Phase 7 workstream B: late-bound Attention reference. MainLoop
+        # injects this in its constructor (and on persistence reload).
+        # generate_extended needs to spread from the self-overhearing echo;
+        # rather than push attention through Expression's already-long ctor,
+        # we accept that the runtime owner (MainLoop) wires it post-init.
+        # Setting to None means generate_extended falls back to single-shot
+        # behavior (no echo-driven re-attention between sentences).
+        self.attention: "Attention | None" = None
         self._lm_load_attempted: bool = False
         self._cd_load_attempted: bool = False
 
         if not skip_boot:
             self._load_seed_templates()
+
+    # ---- late-bound Attention reference (Phase 7 workstream B) ----
+
+    def set_attention(self, attention: "Attention") -> None:
+        """MainLoop calls this in __init__ (and after persistence reload)
+        so generate_extended can request a PROCESSING-mode spread from the
+        echo-written concept between sentences. Optional — when unset,
+        generate_extended falls back to no echo-driven re-attention.
+        """
+        self.attention = attention
 
     # ---- language head (lazy load + on-demand reload) ----
 
@@ -244,7 +281,12 @@ class Expression:
     def _try_load_conditioned_decoder(self) -> bool:
         """Phase 7: try loading GPT-2 conditioned decoder. Idempotent.
         Silent failure if transformers isn't installed or the delta
-        weights file is missing — Expression falls back to the LSTM head."""
+        weights file is missing — Expression falls back to the LSTM head.
+
+        Load priority (Phase 7 A3):
+          1. <root>/language_head_gpt2_v2.pt   (lr=1e-5, +30 epochs)
+          2. <root>/language_head_gpt2.pt      (lr=2e-5, 20 epochs)
+        """
         if self._conditioned_decoder is not None:
             return True
         if self._cd_load_attempted:
@@ -252,21 +294,37 @@ class Expression:
         self._cd_load_attempted = True
         if not _TORCH_OK:
             return False
-        if not (self._cd_weights_path and is_conditioned_decoder_available(self._cd_weights_path)):
+        if not self._cd_root:
             return False
-        try:
-            print(f"[expression] loading conditioned decoder from {self._cd_weights_path} …")
-            cd = ConditionedDecoder()
-            cd.load_delta(self._cd_weights_path)
-            cd.to(self._lm_device)
-            cd.eval()
-            self._conditioned_decoder = cd
-            print(f"[expression] conditioned decoder ready (device={self._lm_device})")
-            return True
-        except Exception as exc:
-            print(f"[expression] conditioned decoder load failed: {exc}")
-            self._conditioned_decoder = None
+
+        # v2-first preference. Each is independently checked for
+        # `is_conditioned_decoder_available` (which validates that
+        # transformers is importable and the file exists).
+        candidates: list[tuple[str, str]] = []
+        v2_path = os.path.join(self._cd_root, CONDITIONED_DECODER_V2_FILENAME)
+        if is_conditioned_decoder_available(v2_path):
+            candidates.append(("v2", v2_path))
+        if self._cd_weights_path and is_conditioned_decoder_available(self._cd_weights_path):
+            candidates.append(("v1", self._cd_weights_path))
+
+        if not candidates:
             return False
+
+        for label, path in candidates:
+            try:
+                print(f"[expression] loading {label} conditioned decoder from {path} …")
+                cd = ConditionedDecoder()
+                cd.load_delta(path)
+                cd.to(self._lm_device)
+                cd.eval()
+                self._conditioned_decoder = cd
+                print(f"[expression] conditioned decoder ready ({label}, device={self._lm_device})")
+                return True
+            except Exception as exc:
+                print(f"[expression] {label} conditioned decoder load failed: {exc}")
+                self._conditioned_decoder = None
+                # Fall through to next candidate.
+        return False
 
     def reload_language_head(self) -> bool:
         """Force a reload — useful when training finishes mid-session.
@@ -564,6 +622,188 @@ class Expression:
         # E's decision.
         private_state = self.identity.snapshot_private_state(intent.now, intent.active_concepts)
         return self.identity.decide_expression(candidates, private_state)
+
+    # ---- iterative expression — Phase 7 workstream B ----
+
+    def generate_extended(
+        self,
+        intent: ExpressionIntent,
+        budget: int,
+        *,
+        parent_stimulus_id: int | None = None,
+    ) -> list[str]:
+        """Generate up to `budget` consecutive sentences with self-overhearing.
+
+        After each ChosenCandidate the just-said sentence re-enters via
+        H.emit_output (which delivers + injects INTERNAL_OUTPUT_ECHO). If
+        the echo wrote/matched a concept, F.attend(PROCESSING) seeds from
+        it at 0.5 and the spread merges into the next intent at 0.3 weight.
+        The original active set is preserved as the dominant signal — echo
+        adds, never replaces.
+
+        Stop conditions:
+          - budget exhausted (returned `len(sentences) == budget`)
+          - RevisionRequest    (the system tried, couldn't, stopped)
+          - SuppressionRequest (nothing left to say)
+          - empty echo + budget==1 fallback (single-shot)
+
+        Falls back to single-shot single-sentence behavior when:
+          - budget <= 1 (always run exactly request_expression once)
+          - self.attention is None (no spread reference; can't echo-attend)
+        """
+        if budget <= 0:
+            return []
+
+        sentences: list[str] = []
+        current_intent = intent
+
+        from backend.attention import AttentionPhase
+        from backend.input import Modality
+
+        debug = os.environ.get("MIND_GEN_EXTENDED_DEBUG") == "1"
+        if debug:
+            sys.stderr.write(
+                f"      [gen_ext START]  budget={budget}  "
+                f"active={len(intent.active_concepts)}  "
+                f"attention={'set' if self.attention is not None else 'None'}\n"
+            )
+            sys.stderr.flush()
+
+        for _i in range(budget):
+            decision = self.request_expression(current_intent)
+
+            if debug:
+                t = type(decision).__name__
+                gap = (
+                    decision.expression_gap
+                    if isinstance(decision, ChosenCandidate)
+                    else getattr(decision, "best_gap", None)
+                )
+                sys.stderr.write(
+                    f"      [gen_ext iter {_i+1}/{budget}]  decision={t}  "
+                    f"best_gap={gap}  active={len(current_intent.active_concepts)}\n"
+                )
+                sys.stderr.flush()
+
+            if isinstance(decision, ChosenCandidate):
+                surface = decision.candidate.surface_text
+                sentences.append(surface)
+                if debug:
+                    sys.stderr.write(f"        chose: {surface!r}\n")
+                    sys.stderr.flush()
+
+                # If we have no attention reference, we still emit + echo
+                # (so the system feels what it said), but we cannot spread
+                # from the echo to update the active set. The next iteration
+                # uses the same intent — typically generates the same
+                # sentence which the dedup at the surface-text level should
+                # break out of, but to stay clean we just stop.
+                echo_result = self.input_pipeline.emit_output(
+                    modality=Modality.TEXT,
+                    surface=surface,
+                    now=intent.now,
+                    parent_stimulus_id=parent_stimulus_id,
+                )
+
+                if self.attention is None:
+                    if debug:
+                        sys.stderr.write("        break: attention is None\n")
+                        sys.stderr.flush()
+                    break
+
+                # Echo seeding. If write_on_surprise fired, the echo bound
+                # to a concept and we use that. Otherwise (fluent self-talk
+                # is below the surprise threshold), the echo still has a
+                # representation — seed from its cosine-nearest existing
+                # concept. This mirrors MainLoop.cycle's fallback for
+                # non-surprise input. Only when neither path produces a
+                # seed (echo_cid None AND graph empty / no near match) do
+                # we break.
+                echo_cid: int | None = echo_result.gap.concept_id
+                seed_activation = 0.5
+                if echo_cid is None:
+                    nearest = self.graph.nearest(echo_result.stimulus.representation)
+                    if nearest is not None:
+                        cid, sim = nearest
+                        if sim > 0.0:
+                            echo_cid = int(cid)
+                            seed_activation = float(sim)
+                if echo_cid is None:
+                    if debug:
+                        sys.stderr.write(
+                            f"        break: no echo seed  "
+                            f"(echo gap mag={float(echo_result.gap.magnitude):.4f}, "
+                            f"is_surprise={echo_result.gap.is_surprise}, "
+                            f"no near match)\n"
+                        )
+                        sys.stderr.flush()
+                    break
+
+                # Spread from the echo seed at the chosen activation strength.
+                spread_result, _ = self.attention.attend(
+                    phase=AttentionPhase.PROCESSING,
+                    raw_seeds={echo_cid: seed_activation},
+                    now=intent.now,
+                )
+
+                # Merge echo activation at 0.3 weight into the original
+                # active set. Original concepts retain their full weight
+                # so the system stays on topic; the echo nudges, doesn't
+                # dictate. (If the echo reaches a concept already in the
+                # active set, weights additively combine — the topic
+                # tightens around what was said.)
+                merged: dict[int, float] = dict(current_intent.active_concepts)
+                for cid, act in spread_result.active_set.items():
+                    merged[cid] = merged.get(cid, 0.0) + float(act) * 0.3
+
+                # Recompute internal_repr from the merged active set's
+                # weighted centroid so each sentence is evaluated against
+                # an *evolved* intent rather than the original fixed
+                # representation. Without this, every iteration after the
+                # first compares its candidates against a centroid that
+                # the conversation has already moved past — gaps balloon
+                # and E suppresses the rest of the budget. With this,
+                # the intent drifts with what the system is overhearing
+                # itself say.
+                evolved_repr = current_intent.internal_repr
+                if merged:
+                    cids_in_graph = [c for c in merged if c in self.graph.nodes]
+                    if cids_in_graph:
+                        embeddings = np.stack([
+                            self.graph.nodes[c].embedding for c in cids_in_graph
+                        ])
+                        weights = np.array(
+                            [merged[c] for c in cids_in_graph], dtype=np.float32,
+                        )
+                        if float(weights.sum()) > 1e-9:
+                            centroid = np.average(embeddings, axis=0, weights=weights)
+                            n = float(np.linalg.norm(centroid))
+                            if n > 1e-9:
+                                evolved_repr = (centroid / n).astype(np.float32)
+
+                current_intent = ExpressionIntent(
+                    intent_id=intent.intent_id,
+                    internal_repr=evolved_repr,
+                    active_concepts=merged,
+                    now=intent.now,
+                    audience_concept_id=intent.audience_concept_id,
+                )
+
+            elif isinstance(decision, RevisionRequest):
+                # Tried, couldn't — stop. The sentences emitted so far are
+                # what the system can honestly stand behind.
+                break
+
+            elif isinstance(decision, SuppressionRequest):
+                # Nothing left to say — stop.
+                break
+
+            else:
+                # Unknown decision shape; defensive break (would only fire
+                # if the decision taxonomy is extended without updating G).
+                break
+
+        return sentences
 
     # ---- surface-form binding ----
 

@@ -41,6 +41,17 @@ COLD_START_N           = 30     # min observations before Welford z-scoring enga
 COLD_START_MAGNITUDE_FLOOR = 0.10  # raw-magnitude floor during cold-start
 STDDEV_FLOOR           = 1e-9   # guard against division by zero in z-score
 
+# Ingestion-mode surprise (B) — Phase 7 conditioning fix.
+# During curriculum/book ingestion the mind reads thousands of sentences in
+# bulk. The default 1.5σ threshold yields ~5% surprise rate which leaves the
+# language-head training corpus too small to override GPT-2's web-text
+# priors. PredictionEngine.set_ingestion_mode(True) swaps these in for the
+# duration of a book step; the warm-state Welford branch uses 1.0σ instead
+# of 1.5σ, and the cold-start floor drops from 0.10 to 0.06. Surprise rate
+# rises ~3× to ~15%, tripling the training corpus per book step.
+INGESTION_MIN_THRESHOLD              = 1.0
+INGESTION_COLD_START_MAGNITUDE_FLOOR = 0.06
+
 # Concept graph (C)
 R_MATCH = 0.92  # cosine similarity threshold for find_or_match dedup
 

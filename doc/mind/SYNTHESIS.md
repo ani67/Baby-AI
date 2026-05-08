@@ -1154,6 +1154,18 @@ Target: curriculum vocabulary dominates GPT-2 base priors. The
 self-examination dialogue should answer with words from the books the
 mind actually read, not generic web-text drift.
 
+INGESTION THRESHOLD CALIBRATION (measured 2026-05-08, v0.5 build):
+Cross-domain interleaving widens Welford stddev, reducing threshold
+sensitivity. At 27 sources the 1.0σ multiplier only moves threshold
+~8% vs expected 33% — observed 1.6× more surprises in ingestion mode
+(9.0% → 14.4% rate on 500 mixed-domain sentences). Options if more
+surprises needed:
+- lower multiplier to 0.5σ
+- lower cold floor to 0.04
+- or accept 1.6× and grow corpus through multiple curriculum passes
+Current recommendation: multiple passes over curriculum beats
+aggressive threshold lowering. Let Welford stabilize first.
+
 ---
 
 ## PHASE 5 ROADMAP — THE PROCESSING PHASE
@@ -1185,6 +1197,22 @@ These three together produce genuine association.
 The encoder is a separate concern — char-trigram BoW puts semantically
 related sentences too far apart. Phase 5+ encoder upgrade to something
 with learned semantic neighborhoods.
+
+---
+
+## PHASE 6 ROADMAP — POST-v0.5 OPEN ITEMS
+
+COMPARISON METRIC NOISE — divergence scores are noisy at small corpus sizes.
+Average over N>=5 random seeds before interpreting score changes.
+Qualitative fingerprints (domain-specific vocabulary) are more reliable
+than raw cosine scores at this scale.
+
+NEXT OPEN ITEMS:
+- encoder upgrade: GloVe → sentence-transformers
+- divergent belief TOM: model what other believes vs what this knows
+- conditioning corpus growth: run full interleaved curriculum,
+  re-examine conditioning strength at 5K+ surprised sentences
+- abstraction threshold tuning: BFS density 0.5 may be too conservative
 
 ---
 

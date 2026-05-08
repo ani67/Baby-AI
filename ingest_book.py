@@ -302,6 +302,12 @@ def main() -> int:
     print(f"\ningesting sentences {skip:,} … {end:,} of {total:,}\n")
     t_started = time.perf_counter()
 
+    # Phase 7: bulk ingestion uses the relaxed 1.0σ surprise threshold.
+    # Restored to default in the finally branches so live conversation
+    # afterward uses the calibrated 1.5σ default.
+    loop.predict_engine.set_ingestion_mode(True)
+    print("  ingestion_mode=ON (1.0σ surprise threshold)")
+
     try:
         for i in range(skip, end):
             sentence = sentences[i]
@@ -351,12 +357,14 @@ def main() -> int:
                 print(f"    [save] mind.db + progress at sentence {n_done:,}")
     except KeyboardInterrupt:
         print("\ninterrupted — saving before exit …")
+        loop.predict_engine.set_ingestion_mode(False)
         persist.save(loop, now=time.time())
         save_progress(paths, source_file, i, total)
         print(f"[save] mind.db + progress at sentence {i:,}")
         train_log.close()
         return 130
 
+    loop.predict_engine.set_ingestion_mode(False)
     train_log.close()
 
     # Final save.
