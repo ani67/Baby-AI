@@ -55,6 +55,25 @@ INGESTION_COLD_START_MAGNITUDE_FLOOR = 0.06
 # Concept graph (C)
 R_MATCH = 0.92  # cosine similarity threshold for find_or_match dedup
 
+# Auto-link top-K (Phase 7 perf fix). On every fresh concept write, lay
+# similar_to edges to the K cosine-nearest existing concepts above
+# AUTO_LINK_MIN_COSINE. K=3 was the v0.4 default but adds 3 FAISS searches
+# per write; at K=1 the graph still builds horizontal density (sleep's
+# replay path strengthens what the spread re-traverses) at a third of the
+# per-write cost.
+AUTO_LINK_K          = 1
+AUTO_LINK_MIN_COSINE = 0.25
+
+# LM training cadence during interleaved ingestion (Phase 7 perf fix).
+# v0.4 fired GPT-2 retraining every 500 surprises which at the 25%
+# ingestion-mode rate is every ~2,000 sentences — too frequent. Each
+# train spends 5-10 minutes that doesn't earn enough delta to justify
+# the interruption. 2000 surprises means trains land at every ~8K
+# ingested sentences instead, plus a hard floor: don't train until at
+# least LM_TRAIN_MIN_CORPUS surprised sentences exist on disk.
+TRAIN_LM_EVERY_N_SURPRISES = 2000
+LM_TRAIN_MIN_CORPUS        = 500
+
 # Processing loop (F) — Phase 5
 # Between INPUT attend and action selection, F runs PROCESSING_TICKS
 # internal spread iterations. Each tick decays the existing actives by

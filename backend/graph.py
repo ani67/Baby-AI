@@ -21,12 +21,21 @@ What does NOT exist (deferred to later phases):
 """
 from __future__ import annotations
 
+import os
+# faiss-cpu ships its own libomp on macOS, which collides with the libomp
+# that PyTorch / NumPy may have already loaded. The mode change is
+# documented as "unsafe" by the OMP runtime but is practically harmless
+# for our single-process M1 workload (no nested-parallel hot loops between
+# the two libraries). Set BEFORE importing faiss so the runtime sees it.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 from dataclasses import dataclass
 from enum import Enum
 
+import faiss
 import numpy as np
 
-from backend.config import R_MATCH
+from backend.config import AUTO_LINK_K, AUTO_LINK_MIN_COSINE, D_REP, R_MATCH
 
 
 class EdgeType(Enum):
@@ -160,10 +169,21 @@ class ConceptGraph:
         self._pins: dict[int, str] = {}
 
         # Lazily rebuilt L2-normalized matrix used for cosine search.
+        # Kept around as a fallback for callers that need the full
+        # similarity vector (rare; mostly the LM trainer's top-K lookup).
         # _matrix_ids[i] is the concept_id whose unit-vector lives at row i.
         self._matrix: np.ndarray | None = None
         self._matrix_ids: list[int] = []
         self._matrix_dirty: bool = True
+
+        # FAISS exact-IP index (Phase 7 perf fix). On L2-normalized vectors
+        # inner product equals cosine similarity, so IndexFlatIP gives
+        # identical results to the brute-force matmul but in vectorized C.
+        # Add-only — strengthen does not change embeddings, so the index
+        # stays in sync without invalidation. Rebuilt only at __init__ and
+        # after MindPersistence.load.
+        self._faiss_index = faiss.IndexFlatIP(D_REP)
+        self._faiss_id_map: list[int] = []
 
     @property
     def node_count(self) -> int:
@@ -180,15 +200,50 @@ class ConceptGraph:
     # ---- queries ----
 
     def nearest(self, representation: np.ndarray) -> tuple[int, float] | None:
-        """Return (concept_id, cosine_similarity) for the nearest node, or None
-        if the graph is empty. Caller decides whether the similarity is good
-        enough for their purpose.
+        """Return (concept_id, cosine_similarity) for the nearest node, or
+        None if the graph is empty. Caller decides whether the similarity
+        is good enough for their purpose.
+
+        Phase 7 perf fix: FAISS IndexFlatIP. On L2-normalized vectors this
+        is bit-exact equivalent to the prior brute-force `_cosine_to_all`
+        + argmax — same result, vectorized C kernel, sublinear in practice
+        once the SIMD path lights up.
         """
-        if not self.nodes:
+        if self._faiss_index.ntotal == 0:
             return None
-        sims = self._cosine_to_all(representation)
-        best = int(np.argmax(sims))
-        return self._matrix_ids[best], float(sims[best])
+        rep = representation.astype(np.float32, copy=False)
+        n = float(np.linalg.norm(rep))
+        if n < 1e-9:
+            return None
+        rep_unit = (rep / n).reshape(1, -1).astype(np.float32, copy=False)
+        D, I = self._faiss_index.search(rep_unit, 1)
+        idx = int(I[0][0])
+        if idx < 0:
+            return None
+        return self._faiss_id_map[idx], float(D[0][0])
+
+    def nearest_k(
+        self, representation: np.ndarray, k: int,
+    ) -> list[tuple[int, float]]:
+        """Return up to k (concept_id, cosine) pairs sorted descending.
+        Used by the auto-link hot path so it doesn't need a full
+        similarity vector — FAISS top-K is sublinear in N.
+        """
+        if self._faiss_index.ntotal == 0 or k <= 0:
+            return []
+        rep = representation.astype(np.float32, copy=False)
+        n = float(np.linalg.norm(rep))
+        if n < 1e-9:
+            return []
+        rep_unit = (rep / n).reshape(1, -1).astype(np.float32, copy=False)
+        kk = min(int(k), self._faiss_index.ntotal)
+        D, I = self._faiss_index.search(rep_unit, kk)
+        out: list[tuple[int, float]] = []
+        for d, i in zip(D[0].tolist(), I[0].tolist()):
+            if i < 0:
+                continue
+            out.append((self._faiss_id_map[int(i)], float(d)))
+        return out
 
     def find_or_match(self, representation: np.ndarray, threshold: float = R_MATCH) -> int | None:
         """Return concept_id of the nearest node with cosine ≥ threshold, else None."""
@@ -249,6 +304,14 @@ class ConceptGraph:
             surprise_at_birth=float(surprise),
         )
         self._matrix_dirty = True
+        # Register in FAISS — kept in sync incrementally so nearest() never
+        # needs to rebuild on the hot path. Strengthen path doesn't change
+        # the embedding, so it never invalidates.
+        n = float(np.linalg.norm(embedding))
+        if n >= 1e-9:
+            unit = (embedding / n).reshape(1, -1).astype(np.float32, copy=False)
+            self._faiss_index.add(unit)
+            self._faiss_id_map.append(cid)
         return cid, True
 
     # ---- edges ----
@@ -372,8 +435,8 @@ class ConceptGraph:
         self,
         concept_id: int,
         *,
-        top_k: int = 3,
-        min_cosine: float = 0.30,
+        top_k: int = AUTO_LINK_K,
+        min_cosine: float = AUTO_LINK_MIN_COSINE,
         edge_type: EdgeType = EdgeType.SIMILAR_TO,
         now: float = 0.0,
     ) -> list[Edge]:
@@ -385,27 +448,26 @@ class ConceptGraph:
         Pure structural augmentation — no affect side effects, no surprise.
         Used after any concept write so the graph builds horizontal density
         as it grows. Without this every new concept is an island.
+
+        Phase 7 perf fix: uses FAISS `nearest_k(top_k+1)` instead of
+        scanning the full similarity vector. The +1 reserves one slot
+        for self (write_on_surprise registers the new embedding before
+        this method runs, so the FAISS top-1 result is the new node
+        itself). top_k defaults to AUTO_LINK_K=1.
         """
         if concept_id not in self.nodes:
             return []
-        if self._matrix_dirty or self._matrix is None:
-            self._rebuild_matrix()
-        if self._matrix is None or len(self._matrix_ids) <= 1:
+        if self._faiss_index.ntotal <= 1:
             return []
 
         rep = self.nodes[concept_id].embedding
-        sims = self._cosine_to_all(rep)
-        if sims.size == 0:
-            return []
-
-        # argsort descending; skip self
-        order = np.argsort(-sims)
+        # Pull top_k + 1 from FAISS — the freshly-added concept itself
+        # almost always sits at rank 0 with sim≈1.0; we filter it out.
+        candidates = self.nearest_k(rep, top_k + 1)
         out: list[Edge] = []
-        for idx in order:
-            peer_id = self._matrix_ids[int(idx)]
+        for peer_id, sim in candidates:
             if peer_id == concept_id:
                 continue
-            sim = float(sims[int(idx)])
             if sim < min_cosine:
                 break
             weight = max(0.0, min(1.0, sim))
@@ -597,3 +659,25 @@ class ConceptGraph:
         self._matrix = rows
         self._matrix_ids = ids
         self._matrix_dirty = False
+
+    def _rebuild_faiss_index(self) -> None:
+        """Rebuild the FAISS index from scratch over all current nodes.
+
+        Called at __init__ (no-op on empty graph) and after
+        MindPersistence.load restores nodes in bulk. The hot path
+        (write_on_surprise) keeps the index in sync incrementally so
+        runtime never needs to call this.
+        """
+        index = faiss.IndexFlatIP(D_REP)
+        id_map: list[int] = []
+        if self.nodes:
+            ids = sorted(self.nodes.keys())
+            rows = np.empty((len(ids), D_REP), dtype=np.float32)
+            for i, cid in enumerate(ids):
+                emb = self.nodes[cid].embedding
+                n = float(np.linalg.norm(emb))
+                rows[i] = emb / n if n >= 1e-9 else 0.0
+                id_map.append(cid)
+            index.add(rows)
+        self._faiss_index = index
+        self._faiss_id_map = id_map

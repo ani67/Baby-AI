@@ -656,6 +656,10 @@ class MindPersistence:
             )
             g.nodes[node.concept_id] = node
         g._matrix_dirty = True
+        # Phase 7: rebuild FAISS index over all restored nodes in one
+        # batch add. Hot-path writes (write_on_surprise) keep it in sync
+        # incrementally afterward.
+        g._rebuild_faiss_index()
 
         for r in cur.execute("SELECT * FROM concept_edges"):
             edge = Edge(

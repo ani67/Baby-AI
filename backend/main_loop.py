@@ -197,10 +197,10 @@ class MainLoop:
         #     neighbors via similar_to. Without this, every fresh concept
         #     is structurally isolated and F.spread has nothing to bring in.
         if ingest_result.gap.was_new_write and ingest_result.gap.concept_id is not None:
+            # top_k / min_cosine fall through to AUTO_LINK_K and
+            # AUTO_LINK_MIN_COSINE in config (Phase 7 perf fix).
             self.graph.link_to_nearest_neighbors(
                 ingest_result.gap.concept_id,
-                top_k=3,
-                min_cosine=0.25,
                 now=now,
             )
 

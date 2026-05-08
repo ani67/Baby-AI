@@ -347,7 +347,14 @@ def run_training_cd(
         ConditionedDecoder,
     )
 
-    device = device or ("mps" if torch.backends.mps.is_available() else "cpu")
+    # Phase 7 stability fix: force CPU. MPS produced corrupt zero-loss
+    # weights mid-A3 (saw norm=inf in a transformer ln_1). On a 16 GB M1
+    # under memory pressure MPS also silently falls back to CPU-class
+    # speeds anyway. CPU is reliable and fast enough for batch=8.
+    # `device` arg is honored if explicitly passed — only the auto-pick
+    # default changes.
+    if device is None:
+        device = "cpu"
     lr = lr_override if lr_override is not None else CD_LR
     print(f"[cd-train] mind={paths.mind_name}  device={device}  lr={lr:g}")
 

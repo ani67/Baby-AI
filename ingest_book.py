@@ -315,7 +315,14 @@ def main() -> int:
             ingest = loop.input_pipeline.ingest_text(
                 sentence, agent_id=agent_id, now=now,
             )
-            cycle_result = loop.cycle(ingest, now=now + 1e-3, force_respond=False)
+            # Phase 7 perf fix: book ingestion never wants D's simulation
+            # rollouts or G's expression path — force_respond=False already
+            # rules out emission, and the simulation costs ~60% of cycle
+            # time for nothing observable. Mirrors the interleaved path.
+            cycle_result = loop.cycle(
+                ingest, now=now + 1e-3,
+                force_respond=False, skip_simulation=True,
+            )
 
             # Log surprised sentences (for LM training corpus).
             if ingest.gap.is_surprise:

@@ -37,6 +37,31 @@ import os
 import subprocess
 import sys
 import time
+import traceback
+from collections import Counter, deque
+
+try:
+    import psutil
+    _PSUTIL_OK = True
+except ImportError:
+    _PSUTIL_OK = False
+
+
+# Phase 7 stability fix: skip LM training if free RAM falls below this
+# floor. Loading GPT-2 (~500 MB) + the trainer's optimizer state on a
+# memory-pressured laptop has crashed before. Skipping a single training
+# round and letting the system recover is cheaper than losing a long
+# ingestion run.
+LM_TRAIN_MIN_FREE_GB = 2.0
+
+
+def _have_enough_memory_for_training() -> tuple[bool, float]:
+    """Returns (ok, available_gb). When psutil isn't installed we
+    assume ok and report 0.0 — caller logs and proceeds."""
+    if not _PSUTIL_OK:
+        return True, 0.0
+    avail = psutil.virtual_memory().available / (1024 ** 3)
+    return avail >= LM_TRAIN_MIN_FREE_GB, avail
 
 # Allow running from repo root.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -105,9 +130,24 @@ def load_or_construct(paths: MindPaths, birth_seed: int) -> MainLoop:
         # default global paths (older saves predate the lm_weights_path arg).
         loop.expression._lm_weights_path = paths.language_head
         loop.expression._lm_vocab_path = paths.vocab
+        # Phase 7 fix: persistence.MindPersistence.load builds Expression
+        # without lm_weights_path, so _cd_root stays None and the GPT-2
+        # conditioned-decoder loader silently skips. Re-point it here so
+        # reload_language_head can find both v2 and v1 deltas. Without
+        # this, in-curriculum probes fall back to the LSTM head even
+        # when a fresh GPT-2 v2 is on disk.
+        loop.expression._cd_root = (
+            os.path.dirname(paths.language_head) or "."
+        )
+        from backend.language_head import CONDITIONED_DECODER_FILENAME
+        loop.expression._cd_weights_path = os.path.join(
+            loop.expression._cd_root, CONDITIONED_DECODER_FILENAME,
+        )
         loop.expression._language_head = None
+        loop.expression._conditioned_decoder = None
         loop.expression._lm_vocab = None
         loop.expression._lm_load_attempted = False
+        loop.expression._cd_load_attempted = False
         return loop
     return construct_mind(birth_seed=birth_seed, paths=paths)
 
@@ -307,6 +347,98 @@ def run_train_lm_step(paths: MindPaths, step: dict) -> dict:
     return {"name": step["name"], "ok": True, "epochs": epochs, "duration_s": duration}
 
 
+def _top_k_concepts_by_activation(loop: MainLoop, k: int = 5) -> list[tuple[int, str, int]]:
+    """Sorted (cid, name, activation_count) for the top-k most activated
+    concepts. Names are cleaned of trailing newlines and truncated to 60ch."""
+    nodes = sorted(
+        loop.graph.nodes.values(),
+        key=lambda n: -int(getattr(n, "activation_count", 0)),
+    )[:k]
+    out = []
+    for n in nodes:
+        name = (getattr(n, "name", "") or "").replace("\n", " ").strip()
+        out.append((int(n.concept_id), name[:60], int(n.activation_count)))
+    return out
+
+
+def _milestone_report(
+    loop: MainLoop,
+    n_pulled: int,
+    domain_window: deque,
+    surprises_at_milestone: int,
+    t0: float,
+) -> None:
+    """Print the every-10K-sentence milestone snapshot."""
+    now = time.time()
+    arousal  = float(loop.affect.current_arousal(now))
+    nodes    = loop.graph.node_count
+    edges    = loop.graph.edge_count
+    surprise = loop.predict_engine.surprise_count
+    rate     = n_pulled / max(time.perf_counter() - t0, 1e-6)
+
+    print()
+    print(f"  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print(f"   [milestone @ {n_pulled:,}]  rate={rate:,.0f}/s")
+    print(f"     nodes={nodes:,}  edges={edges:,}  surprises={surprise:,}  "
+          f"arousal={arousal:.3f}")
+
+    # Domain distribution of last 1000 sentences (whatever is in the deque).
+    if domain_window:
+        c = Counter(domain_window)
+        n = len(domain_window)
+        dist_strs = [f"{d}:{100*v/n:.0f}%" for d, v in c.most_common()]
+        print(f"     last_{n}_domains: {' '.join(dist_strs)}")
+
+    # Top-5 most activated concepts.
+    top5 = _top_k_concepts_by_activation(loop, k=5)
+    if top5:
+        print(f"     top_5_activated:")
+        for cid, name, count in top5:
+            label = name if name else f"<unnamed:{cid}>"
+            print(f"       cid={cid:<6d} act={count:>4d}  {label!r}")
+    print(f"  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print()
+
+
+def _train_lm_with_curve(paths: MindPaths, epochs: int) -> tuple[bool, list[float]]:
+    """Wrap _train_lm_subprocess and parse out the per-epoch loss line.
+    Returns (ok, [losses])."""
+    import re
+    cmd = [
+        sys.executable, "scripts/train_language_head.py",
+        "--mind", paths.mind_name, "--gpt2", "--epochs", str(epochs),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    losses: list[float] = []
+    for line in proc.stdout.splitlines():
+        m = re.search(r"epoch \d+/\d+\s+loss=([\d.]+)", line)
+        if m:
+            losses.append(float(m.group(1)))
+    if proc.returncode != 0:
+        print("    [train_lm] FAILED:")
+        print(proc.stdout[-1500:])
+        print(proc.stderr[-1500:])
+        return False, losses
+    # Print a compact tail of the trainer's own output so we still see what
+    # it reported.
+    for line in proc.stdout.strip().splitlines()[-4:]:
+        print(f"      {line}")
+    return True, losses
+
+
+def _sample_response(loop: MainLoop, prompt: str = "what is beautiful") -> str:
+    """Run a one-shot force_respond cycle and return the surface text.
+    Used by the post-training milestone report — non-destructive enough at
+    one cycle (the cycle does fire B.observe + write_on_surprise if applicable).
+    """
+    h = loop.input_pipeline
+    examiner = h.register_agent("post_train_probe", now=time.time())
+    now = time.time()
+    ing = h.ingest_text(prompt, agent_id=examiner, now=now)
+    cyc = loop.cycle(ing, now=now + 1e-3, force_respond=True)
+    return cyc.emitted_surface or "(no surface)"
+
+
 def run_interleaved(
     paths: MindPaths,
     curriculum_path: str,
@@ -326,9 +458,22 @@ def run_interleaved(
     with open(curriculum_path, "r", encoding="utf-8") as f:
         curr = json.load(f)
 
+    from backend.config import (                                    # noqa: E402
+        LM_TRAIN_MIN_CORPUS,
+        TRAIN_LM_EVERY_N_SURPRISES,
+    )
     sleep_every  = int(curr.get("sleep_every_n_sentences", 8000))
     idle_every   = int(curr.get("idle_every_n_sentences",  2000))
-    train_after  = int(curr.get("train_lm_every_n_surprises", 500))
+    # Phase 7 perf fix: default cadence comes from config (2000); a
+    # curriculum file can override only by *raising* the threshold —
+    # we cap at the config minimum so a stale JSON doesn't pin us back
+    # to the v0.4 frequent-train regime.
+    train_after  = max(
+        int(curr.get("train_lm_every_n_surprises", TRAIN_LM_EVERY_N_SURPRISES)),
+        TRAIN_LM_EVERY_N_SURPRISES,
+    )
+    print(f"[interleaved] train_lm_every_n_surprises={train_after} "
+          f"(min corpus floor: {LM_TRAIN_MIN_CORPUS} surprised sentences)")
 
     sources = [
         SourceSpec(
@@ -376,6 +521,9 @@ def run_interleaved(
     pending_train = False
 
     domain_distribution: dict[str, int] = {}
+    domain_window: deque = deque(maxlen=1000)
+    milestone_every = 10_000
+    next_milestone = milestone_every
 
     # Stream the kept-sentence list to paths.book_text_log for vocab-builds.
     bt_log = open(paths.book_text_log, "a", encoding="utf-8")
@@ -400,6 +548,7 @@ def run_interleaved(
             loop.cycle(ingest, now=now + 1e-3, force_respond=False, skip_simulation=True)
 
             domain_distribution[sent.domain] = domain_distribution.get(sent.domain, 0) + 1
+            domain_window.append(sent.domain)
             bt_log.write(sent.sentence + "\n")
 
             if ingest.gap.is_surprise:
@@ -426,27 +575,103 @@ def run_interleaved(
                 arousal = loop.affect.current_arousal(time.time())
                 print(f"  [{n_pulled:>6,d}]  nodes={loop.graph.node_count:>5d}  "
                       f"edges={loop.graph.edge_count:>5d}  arousal={arousal:.3f}  "
-                      f"({rate:,.0f}/s)")
+                      f"({rate:,.0f}/s)", flush=True)
+
+            # Every 10K sentences: rich milestone report (nodes, edges,
+            # surprises, arousal, last-1000 domain distribution, top-5
+            # most activated concepts).
+            if n_pulled >= next_milestone:
+                _milestone_report(
+                    loop=loop,
+                    n_pulled=n_pulled,
+                    domain_window=domain_window,
+                    surprises_at_milestone=loop.predict_engine.surprise_count,
+                    t0=t0,
+                )
+                next_milestone += milestone_every
 
             if n_done % idle_every == 0:
                 replayed = loop.idle(now=time.time(), max_replays=3)
-                print(f"    [idle @ {n_pulled:,}]  replayed={replayed.replayed_count}")
+                print(f"    [idle @ {n_pulled:,}]  replayed={replayed.replayed_count}",
+                      flush=True)
 
             if n_done % sleep_every == 0 or pending_train:
+                # Pre-sleep snapshot for the rich after-sleep report.
+                nodes_before  = loop.graph.node_count
+                edges_before  = loop.graph.edge_count
                 slept = loop.sleep(now=time.time(), duration_seconds=20.0)
+                nodes_after  = loop.graph.node_count
+                edges_after  = loop.graph.edge_count
                 print(f"    [sleep @ {n_pulled:,}]  replays={slept.replays_fired}  "
                       f"abstractions={slept.abstractions_formed}  "
-                      f"actual={slept.duration_actual:.2f}s")
+                      f"nodes:{nodes_before:,}->{nodes_after:,}  "
+                      f"edges:{edges_before:,}->{edges_after:,}  "
+                      f"actual={slept.duration_actual:.2f}s",
+                      flush=True)
                 # Save before triggering the LM training subprocess —
                 # train_language_head loads the mind from disk.
                 train_log.close(); train_log = None
                 bt_log.close(); bt_log = None
                 persist.save(loop, now=time.time())
                 if pending_train:
+                    # Min-corpus guard — don't train on a sliver. The
+                    # surprised_sentences.jsonl is the trainer's input; if
+                    # it has < LM_TRAIN_MIN_CORPUS lines, the resulting
+                    # model is just noise. Counter reset so the next
+                    # window has a clean shot.
+                    surprise_lines = 0
+                    if os.path.exists(paths.surprised_log):
+                        with open(paths.surprised_log, "r", encoding="utf-8") as f:
+                            for _ in f:
+                                surprise_lines += 1
+                    if surprise_lines < LM_TRAIN_MIN_CORPUS:
+                        print(f"    [train_lm @ {n_pulled:,}]  SKIPPED — "
+                              f"corpus has only {surprise_lines} surprised "
+                              f"sentences (< {LM_TRAIN_MIN_CORPUS} floor); "
+                              f"counter reset", flush=True)
+                        surprises_since_train = 0
+                        pending_train = False
+                        train_log = open(paths.surprised_log, "a", encoding="utf-8")
+                        bt_log = open(paths.book_text_log, "a", encoding="utf-8")
+                        continue
+                    # Memory guard — don't fire the GPT-2 trainer when the
+                    # machine is already pressured. Loading GPT-2 (~500 MB)
+                    # + optimizer state on top of an already-tight system
+                    # is the documented crash mode on 16 GB M1 / Phase 7.
+                    have_mem, avail_gb = _have_enough_memory_for_training()
+                    if not have_mem:
+                        print(f"    [train_lm @ {n_pulled:,}]  SKIPPED — "
+                              f"only {avail_gb:.1f} GB free "
+                              f"(< {LM_TRAIN_MIN_FREE_GB:.1f} GB floor); "
+                              f"counter reset, will retry next window",
+                              flush=True)
+                        surprises_since_train = 0
+                        pending_train = False
+                        # Re-open the logs that were closed for the
+                        # subprocess hand-off, then continue.
+                        train_log = open(paths.surprised_log, "a", encoding="utf-8")
+                        bt_log = open(paths.book_text_log, "a", encoding="utf-8")
+                        continue
                     print(f"    [train_lm @ {n_pulled:,}]  "
-                          f"surprises_since_last={surprises_since_train}")
-                    _train_lm_subprocess(paths, epochs=10)
-                    loop.expression.reload_language_head()
+                          f"surprises_since_last={surprises_since_train}  "
+                          f"free_ram={avail_gb:.1f}GB",
+                          flush=True)
+                    ok, losses = _train_lm_with_curve(paths, epochs=10)
+                    if losses:
+                        # Compact loss-curve line + final loss.
+                        curve = " ".join(f"{x:.3f}" for x in losses)
+                        print(f"      loss_curve: {curve}")
+                        print(f"      final_loss: {losses[-1]:.4f}", flush=True)
+                    if ok:
+                        loop.expression.reload_language_head()
+                        # Sample response after the training stage —
+                        # uses the freshly-reloaded LM.
+                        try:
+                            resp = _sample_response(loop, "what is beautiful")
+                            print(f"      probe 'what is beautiful' -> {resp!r}",
+                                  flush=True)
+                        except Exception as exc:
+                            print(f"      [probe failed: {exc}]", flush=True)
                     surprises_since_train = 0
                     pending_train = False
                 # Re-open the logs after the subprocess completes.
@@ -454,6 +679,27 @@ def run_interleaved(
                 bt_log = open(paths.book_text_log, "a", encoding="utf-8")
     except KeyboardInterrupt:
         print("\n[interleaved] interrupted; saving …")
+    except Exception as exc:
+        # Phase 7 crash recovery — checkpoint the mind state before the
+        # process unwinds so a long ingestion run survives an unexpected
+        # crash (MPS OOM, torch internals, anything that bubbles up
+        # through cycle()). After saving we re-raise so the caller still
+        # sees the original traceback / non-zero exit.
+        print(f"\n[interleaved] CRASH at sentence {n_pulled:,}: "
+              f"{type(exc).__name__}: {exc}", flush=True)
+        traceback.print_exc()
+        try:
+            if train_log is not None:
+                train_log.close()
+            if bt_log is not None:
+                bt_log.close()
+            loop.predict_engine.set_ingestion_mode(False)
+            persist.save(loop, now=time.time())
+            print(f"[interleaved] crash-checkpoint saved to {paths.db}", flush=True)
+        except Exception as save_exc:
+            print(f"[interleaved] crash-checkpoint ALSO failed: {save_exc}",
+                  flush=True)
+        raise
 
     if train_log is not None:
         train_log.close()
