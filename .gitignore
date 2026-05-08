@@ -3,5 +3,10 @@ __pycache__/
 *.pyc
 .DS_Store
 backend/data/
+data/
+.logs/
 frontend/dist/
 .env
+
+# legacy in-repo agent worktrees from prior runs
+.claude/worktrees/

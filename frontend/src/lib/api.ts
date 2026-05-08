@@ -1,145 +1,89 @@
-import { BASE_URL } from './constants'
+import type { GraphPayload, StateSnapshot, AnyEvent } from "./types";
 
-export const api = {
-  start:    () => fetch(`${BASE_URL}/start`, { method: 'POST' }).then(r => r.json()),
-  pause:    () => fetch(`${BASE_URL}/pause`, { method: 'POST' }).then(r => r.json()),
-  resume:   () => fetch(`${BASE_URL}/resume`, { method: 'POST' }).then(r => r.json()),
-  step:     () => fetch(`${BASE_URL}/step`, { method: 'POST' }).then(r => r.json()),
-  reset: (notes: {
-    architecture_state: string
-    signal_quality: string
-    why_reset: string
-    what_was_learned: string
-  }) =>
-    fetch(`${BASE_URL}/reset`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(notes),
-    }).then(r => {
-      if (!r.ok) throw new Error(`HTTP ${r.status}`)
-      return r.json()
-    }),
-  status:   () => fetch(`${BASE_URL}/status`).then(r => r.json()),
-  snapshot: () => fetch(`${BASE_URL}/snapshot`).then(r => r.json()),
+const json = { "Content-Type": "application/json" };
 
-  setStage: (stage: number) =>
-    fetch(`${BASE_URL}/stage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stage }),
-    }).then(r => r.json()),
+export async function ingest(text: string, agent_handle?: string) {
+  const res = await fetch("/ingest", {
+    method: "POST",
+    headers: json,
+    body: JSON.stringify({ text, agent_handle }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
 
-  setSpeed: (delay_ms: number) =>
-    fetch(`${BASE_URL}/speed`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ delay_ms }),
-    }).then(r => r.json()),
+export async function idle(max_replays = 1) {
+  const res = await fetch("/idle", {
+    method: "POST",
+    headers: json,
+    body: JSON.stringify({ max_replays }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
 
-  chat: (message: string) =>
-    fetch(`${BASE_URL}/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message }),
-    }).then(r => r.json()),
+export async function sleep(duration_seconds = 2.0) {
+  const res = await fetch("/sleep", {
+    method: "POST",
+    headers: json,
+    body: JSON.stringify({ duration_seconds }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
 
-  uploadImage: (file: File, label?: string) => {
-    const form = new FormData()
-    form.append('file', file)
-    if (label) form.append('label', label)
-    return fetch(`${BASE_URL}/image`, { method: 'POST', body: form }).then(r => r.json())
-  },
+export async function fetchState(): Promise<StateSnapshot> {
+  const res = await fetch("/state");
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
 
-  uploadImageUrl: (url: string, label?: string) =>
-    fetch(`${BASE_URL}/image-url`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, label: label || null }),
-    }).then(r => {
-      if (!r.ok) throw new Error(`HTTP ${r.status}`)
-      return r.json()
-    }),
+export async function fetchGraph(): Promise<GraphPayload> {
+  const res = await fetch("/graph");
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
 
-  uploadImagesBulk: (urls: string[]) =>
-    fetch(`${BASE_URL}/images-bulk`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ urls }),
-    }).then(r => {
-      if (!r.ok) throw new Error(`HTTP ${r.status}`)
-      return r.json()
-    }),
+export async function save() {
+  const res = await fetch("/save", { method: "POST" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
 
-  clusterLabels: () =>
-    fetch(`${BASE_URL}/clusters/labels`).then(r => r.json()) as Promise<{ labels: Record<string, string[]> }>,
+/** Open a WebSocket to /ws and call the handler on each event.
+ *  Returns a function that closes the socket. Auto-reconnects every 2s.
+ */
+export function subscribe(onEvent: (ev: AnyEvent) => void): () => void {
+  let closed = false;
+  let ws: WebSocket | null = null;
+  let reconnectTimer: number | null = null;
 
-  clusterCofiring: () =>
-    fetch(`${BASE_URL}/clusters/cofiring`).then(r => r.json()) as Promise<{
-      pairs: Array<{ a: string; b: string; count: number; strength: number }>
-    }>,
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const url = `${proto}//${location.host}/ws`;
 
-  clusterTree: () =>
-    fetch(`${BASE_URL}/clusters/tree`).then(r => r.json()) as Promise<{
-      nodes: Array<{
-        id: string
-        parent: string | null
-        depth: number
-        dormant: boolean
-        cluster_type: string | null
-        labels: string[]
-        phantom: boolean
-      }>
-      edges: Array<{ source: string; target: string }>
-      max_depth: number
-    }>,
-
-  metrics: () =>
-    fetch(`${BASE_URL}/metrics`).then(r => r.json()) as Promise<{
-      distillation: {
-        text_cosine_sim: number | null
-        text_cosine_sim_trend: number | null
-        text_samples: number
-        vision_cosine_sim: number | null
-        vision_cosine_sim_trend: number | null
-        vision_samples: number
+  function open() {
+    if (closed) return;
+    ws = new WebSocket(url);
+    ws.onmessage = (m) => {
+      try {
+        onEvent(JSON.parse(m.data));
+      } catch (e) {
+        // ignore malformed
       }
-      generation: {
-        response_relevance: number | null
-        vocab_size: number
-        unique_words_last_100: number
-      }
-      reasoning: {
-        comparison_accuracy: number | null
-        sequence_accuracy: number | null
-        analogy_accuracy: number | null
-        memory_retrieval_accuracy: number | null
-        odd_one_out_accuracy: number | null
-        overall_accuracy: number | null
-        total_tasks: number
-      }
-    }>,
+    };
+    ws.onclose = () => {
+      if (closed) return;
+      reconnectTimer = window.setTimeout(open, 2000);
+    };
+    ws.onerror = () => {
+      try { ws?.close(); } catch {}
+    };
+  }
+  open();
 
-  dashboard: () =>
-    fetch(`${BASE_URL}/dashboard`).then(r => r.json()) as Promise<{
-      step: number
-      clusters: number
-      layers: number
-      edges: number
-      nodes: number
-      growth_rate: number
-      edge_ratio: number
-      categories: {
-        best: Array<{ category: string; total: number; positive: number; avg_sim: number; last_step: number }>
-        worst: Array<{ category: string; total: number; positive: number; avg_sim: number; last_step: number }>
-        total_tracked: number
-      }
-      structure: {
-        spatial_score: number | null
-        sibling_coherence: number
-        layer_diversity: Record<number, number>
-        cofiring_communities: number
-        community_sizes: number[]
-      }
-      memory_buffer: { norm: number; decay: number; weight: number; top_k: number }
-    }>,
+  return () => {
+    closed = true;
+    if (reconnectTimer) window.clearTimeout(reconnectTimer);
+    try { ws?.close(); } catch {}
+  };
 }

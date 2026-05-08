@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  background: #000;
+  color: #e4e4e7;
+  overflow: hidden;
+}
+
+/* Glass-panel utility */
+.glass {
+  background: rgba(10, 10, 14, 0.55);
+  backdrop-filter: blur(12px) saturate(160%);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+
+/* Smooth value transitions for affect bars */
+.bar-fill {
+  transition: height 600ms cubic-bezier(0.22, 1, 0.36, 1),
+              background-color 600ms ease;
+}
+
+input[type="text"]::placeholder { color: rgba(228, 228, 231, 0.35); }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.22); }
+
+@keyframes consolidation-aurora {
+  0%   { box-shadow: inset 0 0 80px rgba(140,  60, 255, 0.10); }
+  50%  { box-shadow: inset 0 0 200px rgba(140,  60, 255, 0.32); }
+  100% { box-shadow: inset 0 0 80px rgba(140,  60, 255, 0.10); }
+}
+
+.consolidating {
+  animation: consolidation-aurora 4s ease-in-out infinite;
+}
+
+@keyframes pulse-soft {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1.0; }
+}
+
+.pulse-soft { animation: pulse-soft 2.4s ease-in-out infinite; }

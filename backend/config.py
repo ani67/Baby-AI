@@ -1,65 +1,38 @@
-import os
-from dataclasses import dataclass
+"""Locked constants from doc/mind/SYNTHESIS.md (Symbol Table).
 
+Phase 1 uses the subset relevant to the A+B+C+H minimal slice.
+Constants not used in Phase 1 are not declared here.
+"""
 
-@dataclass
-class Config:
-    # Server
-    host: str = "0.0.0.0"
-    port: int = 8000
+# Dimensions
+N_AFF = 12      # affect-vector dim
+D_REP = 256     # representation-space dim
 
-    # Ollama
-    ollama_url: str = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-    teacher_model: str = os.environ.get("TEACHER_MODEL", "llava")
+# Affect timescales (half-life seconds)
+HALF_LIFE_REACTION    = 2.0
+HALF_LIFE_WORKING     = 180.0
+HALF_LIFE_MOOD        = 7200.0
+HALF_LIFE_DISPOSITION = 1.21e6
+HALF_LIFE_CHARACTER   = 6.3e7
 
-    # Database
-    db_path: str = os.environ.get("DB_PATH", "data/dev.db")
+# Composite weighting across the five layers
+# Order: reaction, working, mood, disposition, character
+COMPOSITE_WEIGHTS = (0.30, 0.30, 0.20, 0.15, 0.05)
 
-    # Data
-    data_dir: str = os.environ.get("DATA_DIR", "data")
+# Layer-to-layer nudge (lower → upper). Index i is from layer i to layer i+1.
+NUDGE_GAINS      = (0.05, 0.05, 0.04, 0.02)
+NUDGE_THRESHOLDS = (0.10, 0.10, 0.20, 0.35)
 
-    # Model
-    initial_clusters: int = 4
-    nodes_per_cluster: int = 8
+# Per-injection-point gain
+INJECTION_GAIN_INPUT      = 1.0
+INJECTION_GAIN_PROCESSING = 0.6
+INJECTION_GAIN_OUTPUT     = 0.8
 
-    # Viz
-    snapshot_interval: int = 50
-    projection_interval: int = 10
+# Surprise (B)
+MIN_THRESHOLD          = 1.5    # z-score multiplier: threshold = mean + 1.5·stddev
+COLD_START_N           = 30     # min observations before Welford z-scoring engages
+COLD_START_MAGNITUDE_FLOOR = 0.10  # raw-magnitude floor during cold-start
+STDDEV_FLOOR           = 1e-9   # guard against division by zero in z-score
 
-    # Inhibition
-    inhibition_radius: float = 0.92       # cosine similarity threshold (very similar only)
-    suppression_factor: float = 0.5       # halve suppressed activations (not obliterate)
-
-    # Resonance
-    resonance_threshold: float = 0.02     # min cosine sim to input for cluster to participate
-
-    # Memory buffer — decaying echo of recent activations
-    buffer_decay: float = 0.9             # per-step decay (0.9 = ~10 step half-life)
-    buffer_weight: float = 0.15           # how much buffer biases current input
-    buffer_top_k: int = 5                 # clusters contributing to echo each step
-
-    # C.1: Per-cluster staged learning signal
-    per_cluster_signal: bool = True       # Enable staged per-cluster signal
-    per_cluster_global_steps: int = 5000  # Steps 0–5K: 100% global signal (training wheels)
-    per_cluster_blend_steps: int = 10000  # Steps 5K–10K: linear blend global→per-cluster
-    # After 10K: 100% per-cluster signal
-
-    # C.2: Content-aware routing
-    gate_activation_step: int = 2000      # Gates inactive before this (sigmoid≈0.5 is noise)
-
-    # FF Signal Enrichment Experiments (all default OFF for baseline)
-    exp_per_cluster_sign: bool = False    # Exp 1 (superseded by C.1 above)
-    exp_error_direction: bool = False     # Exp 2: push toward teacher answer, not just input
-    exp_contrastive_pairs: bool = False   # Exp 3: rank pairs within batch instead of threshold
-    exp_multi_target: bool = False        # Exp 4: additive bonus update toward teacher direction
-    exp_structure_reuse: bool = False     # Exp 5: save/load graph topology for warm starts
-
-    @property
-    def device(self) -> str:
-        try:
-            import torch
-            if torch.backends.mps.is_available():
-                return "mps"
-        except Exception:
-            pass
-        return "cpu"
+# Concept graph (C)
+R_MATCH = 0.92  # cosine similarity threshold for find_or_match dedup
