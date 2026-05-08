@@ -70,13 +70,16 @@ class ConceptGraph:
         best_node: ConceptNode | None = None
         best_sim: float = -1.0
 
-        # Fast path: exact name match with single candidate — skip vector search entirely.
+        # Name match: check same-name candidates with vector similarity.
         if name and name in self._name_index:
             candidates = self._name_index[name]
             if len(candidates) == 1:
-                # Unambiguous name match — no matmul needed
-                best_node = self._nodes[candidates[0]]
-                best_sim = 1.0
+                # Single candidate — quick single-vector cosine check (not full matmul)
+                node = self._nodes[candidates[0]]
+                sim = self._cosine(node.vector, vector)
+                if sim >= 0.85:
+                    best_node = node
+                    best_sim = sim
             else:
                 # Multiple concepts with same name (homonyms) — use vector to pick
                 for nid in candidates:

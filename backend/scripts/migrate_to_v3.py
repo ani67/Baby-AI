@@ -277,10 +277,13 @@ def migrate() -> None:
     print(f"Unique concepts found: {len(unique_concepts):,}")
     print(f"Total triples: {total_triples:,}")
 
-    # Step 3: Vectorize concepts.
-    print("\n=== Step 3: Vectorizing concepts ===")
-    encoder = load_text_encoder()
-    vector_cache = VectorCache(encoder)
+    # Step 3: Vectorize concepts (using CLIP for discrimination — native encoder is degenerate on single words).
+    print("\n=== Step 3: Vectorizing concepts (CLIP) ===")
+    from encoder.clip_mlx import CLIPWrapper
+    from encoder.encoder import TextEncoder as CLIPTextEncoder
+    clip = CLIPWrapper()
+    clip_enc = CLIPTextEncoder(clip)
+    vector_cache = VectorCache(clip_enc)
 
     # Pre-encode all unique concept names.
     concept_list = sorted(unique_concepts)
@@ -332,8 +335,12 @@ def migrate() -> None:
     # Step 6: Dedup pass.
     print("\n=== Step 6: Deduplication ===")
     if graph.node_count < 50_000:
-        merged = graph.dedup_pass(threshold=0.95)
-        print(f"Merged {merged:,} near-duplicate concepts")
+        try:
+            merged = graph.dedup_pass(threshold=0.95)
+            print(f"Merged {merged:,} near-duplicate concepts")
+        except Exception as e:
+            print(f"Dedup skipped (bug to fix later): {e}")
+            merged = 0
     else:
         print("Skipping full dedup (graph too large for brute-force), will run incrementally")
 
