@@ -1,6 +1,11 @@
 """S1 test — MPSConceptIndex correctness vs brute-force, plus speed
-benchmark at increasing N. Also confirms torch + the index can coexist
-with the rest of the backend imports without crashing."""
+benchmark at increasing N.
+
+Originally validated the MPS-backed index; that backend produced ~1ms
+per query of CPU↔MPS round-trip overhead, which dominated cycle time
+on a populated mind. The class is now numpy-backed (CPU); the test
+still validates correctness and per-query latency.
+"""
 from __future__ import annotations
 
 import os
@@ -10,8 +15,6 @@ import time
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import torch  # noqa: E402
 
 from backend.graph import MPSConceptIndex   # noqa: E402
 
@@ -23,8 +26,6 @@ def _unit(rng, n, d):
 
 
 def main() -> int:
-    print(f"torch.backends.mps.is_available: {torch.backends.mps.is_available()}")
-
     rng = np.random.default_rng(0xc0ffee)
     print()
     print("[mps] correctness — 10,000 vectors, 1,000 queries vs brute-force matmul")
