@@ -152,6 +152,13 @@ class PredictionEngine:
         # enough for the language head to override GPT-2's base priors.
         self._ingestion_mode: bool = False
 
+        # Multi-resolution curriculum knob. Default 1.0 leaves the active
+        # threshold (MIN_THRESHOLD or INGESTION_MIN_THRESHOLD) unchanged.
+        # >1.0 lowers the effective threshold (more surprise) — used for
+        # word/phrase items. <1.0 raises it (rarer surprise) — paragraph
+        # items. The curriculum runner sets this per-item and clears it.
+        self._surprise_multiplier: float = 1.0
+
     # ---- predict ----
 
     def predict(self, query_seed: np.ndarray, layer: str = "INPUT") -> Prediction:
@@ -343,18 +350,37 @@ class PredictionEngine:
     def is_ingestion_mode(self) -> bool:
         return self._ingestion_mode
 
+    # ---- surprise multiplier (multi-resolution curriculum) ----
+
+    def set_surprise_multiplier(self, multiplier: float) -> None:
+        """Scale the effective surprise threshold for the next observations.
+
+        The threshold and cold-start floor are *divided* by this value, so
+        higher multiplier → lower threshold → more surprises. Word items
+        come in at 1.5; phrases at 1.3; sentences at 1.0 (no-op);
+        paragraphs at 0.8 (rarer).
+        """
+        if multiplier <= 0.0:
+            raise ValueError(f"surprise_multiplier must be > 0, got {multiplier}")
+        self._surprise_multiplier = float(multiplier)
+
+    def clear_surprise_multiplier(self) -> None:
+        self._surprise_multiplier = 1.0
+
     # ---- diagnostic ----
 
     def layer_stats(self, layer: str) -> dict:
         """Read-only snapshot of one layer's running stats. For tests / debug."""
         s = self._stats[layer]
-        threshold_mult = INGESTION_MIN_THRESHOLD if self._ingestion_mode else MIN_THRESHOLD
+        base_mult = INGESTION_MIN_THRESHOLD if self._ingestion_mode else MIN_THRESHOLD
+        threshold_mult = base_mult / self._surprise_multiplier
         return {
             "count":  s.count,
             "mean":   s.mean,
             "stddev": s.stddev,
             "threshold": s.mean + threshold_mult * s.stddev if s.count >= COLD_START_N else None,
             "ingestion_mode": self._ingestion_mode,
+            "surprise_multiplier": self._surprise_multiplier,
         }
 
     # ---- internals ----
@@ -373,6 +399,11 @@ class PredictionEngine:
 
         threshold_mult and the cold-start floor are 1.5 / 0.10 by default,
         and 1.0 / 0.06 while ingestion mode is active (Phase 7).
+
+        The multi-resolution curriculum may also set a surprise_multiplier
+        (1.5 for words … 0.8 for paragraphs). Both threshold_mult and
+        cold_floor are divided by it, so higher multiplier → lower
+        effective threshold → more surprise.
         """
         if self._ingestion_mode:
             threshold_mult = INGESTION_MIN_THRESHOLD
@@ -380,6 +411,9 @@ class PredictionEngine:
         else:
             threshold_mult = MIN_THRESHOLD
             cold_floor     = COLD_START_MAGNITUDE_FLOOR
+
+        threshold_mult /= self._surprise_multiplier
+        cold_floor     /= self._surprise_multiplier
 
         stats = self._stats[layer]
         if stats.count < COLD_START_N:
