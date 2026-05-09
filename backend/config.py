@@ -55,13 +55,17 @@ INGESTION_COLD_START_MAGNITUDE_FLOOR = 0.06
 # Concept graph (C)
 R_MATCH = 0.92  # cosine similarity threshold for find_or_match dedup
 
-# Auto-link top-K (Phase 7 perf fix). On every fresh concept write, lay
-# similar_to edges to the K cosine-nearest existing concepts above
-# AUTO_LINK_MIN_COSINE. K=3 was the v0.4 default but adds 3 FAISS searches
-# per write; at K=1 the graph still builds horizontal density (sleep's
-# replay path strengthens what the spread re-traverses) at a third of the
-# per-write cost.
-AUTO_LINK_K          = 1
+# Auto-link top-K. On every fresh concept write, lay similar_to edges
+# to the K cosine-nearest existing concepts above AUTO_LINK_MIN_COSINE.
+#
+# Was lowered to K=1 during the FAISS era to amortize per-write search
+# cost. The numpy-backed index makes a top-3 search nearly free
+# (~0.06 ms at N=7K, ~1 ms at N=50K), and the v0.7b run revealed the
+# downside: 3.7 mean edges/node leaves the spread function with no
+# paths to follow — active sets stayed at 1-3 even on a 73K mind.
+# At K=3 mean degree climbs to ~9-11, giving spreading activation real
+# bridges across domains.
+AUTO_LINK_K          = 3
 AUTO_LINK_MIN_COSINE = 0.25
 
 # LM training cadence during interleaved ingestion (Phase 7 perf fix).

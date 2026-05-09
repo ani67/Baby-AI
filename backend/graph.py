@@ -151,6 +151,14 @@ class MPSConceptIndex:
             [self._id_map[int(i)] for i in order],
         )
 
+    def search_k(
+        self, query: np.ndarray, k: int = 3,
+    ) -> tuple[list[float], list[int]]:
+        """Top-k nearest-neighbor search. Thin alias for `search` with a
+        more obvious name. Used by edge-densification and any caller
+        that wants the top few neighbors rather than just the best one."""
+        return self.search(query, k=k)
+
     def search_batch(
         self, queries: np.ndarray, k: int = 1,
     ) -> list[tuple[float, int]]:

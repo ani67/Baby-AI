@@ -140,6 +140,19 @@ async def lifespan(app: FastAPI):
                 loop.expression._cd_root, CONDITIONED_DECODER_FILENAME,
             )
             loop.expression.reload_language_head()
+            # Rebuild the cosine index over loaded nodes. Persistence
+            # leaves it empty (the FAISS-era stability fix); without
+            # this rebuild, graph.nearest() returns None for every
+            # query, so find_or_match misses, the input pipeline
+            # writes a fresh concept with zero edges, and spread has
+            # nothing to propagate through. Active sets stay at 1.
+            t_idx = time.perf_counter()
+            loop.graph._rebuild_index()
+            print(
+                f"[mind:{MIND_NAME}] cosine index rebuilt: "
+                f"ntotal={loop.graph._index.ntotal:,} "
+                f"({(time.perf_counter() - t_idx) * 1000:.0f}ms)"
+            )
             state["loop"] = loop
             print(f"[mind:{MIND_NAME}] restored from {DB_PATH} "
                   f"({loop.graph.node_count} nodes, {loop.graph.edge_count} edges)")
