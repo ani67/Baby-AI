@@ -43,6 +43,7 @@ import numpy as np
 from backend.affect import AffectStack
 from backend.attention import Attention, AttentionFrame, AttentionPhase
 from backend.expression import Expression, ExpressionIntent
+from backend.config import R_MATCH
 from backend.graph import ConceptGraph, EdgeType, SpreadResult
 from backend.identity import (
     CandidateExpression,
@@ -103,8 +104,11 @@ class SleepResult:
 # Sleep tunables — Phase 4 minimal defaults.
 SLEEP_REPLAYS_PER_BURST       = 8        # how many entries to replay per loop iteration
 ABSTRACTION_MIN_MEMBERS       = 3        # cluster size threshold (per user spec)
-ABSTRACTION_DENSITY_THRESHOLD = 0.5      # min mutual similar_to density [0, 1]
 ABSTRACTION_PARENT_WEIGHT     = 0.7      # is_a edge weight from member → parent
+# ABSTRACTION_DENSITY_THRESHOLD removed — the BFS-on-similar_to algorithm
+# it gated cannot form abstractions at AUTO_LINK_K=1 (single giant
+# component, density 0.0008, 600× below 0.5). Replaced with vector-space
+# clustering on embeddings via MiniBatchKMeans.
 
 
 class MainLoop:
@@ -553,26 +557,36 @@ class MainLoop:
     # ---- abstraction formation (called inside sleep) ----
 
     def _form_abstractions(self, now: float) -> int:
-        """Find similar_to-connected components of size ≥ 3 with mutual
-        density ≥ 0.5; promote each to an abstraction parent + is_a edges.
-        """
-        # 1. Build undirected adjacency over the similar_to subgraph.
-        #    We treat similar_to as bidirectional even though edges are
-        #    stored directionally — synthesis describes it as a symmetric
-        #    associative tie, and add_edge in either direction qualifies.
-        adj: dict[int, set[int]] = {}
-        for edge in self.graph._edges.values():
-            if edge.type is not EdgeType.SIMILAR_TO:
-                continue
-            adj.setdefault(edge.source_id, set()).add(edge.target_id)
-            adj.setdefault(edge.target_id, set()).add(edge.source_id)
+        """Vector-space clustering on concept embeddings (Phase 7 fix).
 
-        if not adj:
+        BFS-on-similar_to was the prior algorithm; it cannot work at
+        AUTO_LINK_K=1 because every new concept gets pulled into the
+        existing giant connected component (density 2/n on a tree,
+        which crosses 0.5 only at n ≤ 4). The diagnostic in
+        scripts/diagnose_abstractions.py confirmed: at 6,474 nodes the
+        similar_to subgraph collapsed to ONE component of 5,993 nodes
+        with density 0.0008 — 600× below the 0.5 threshold.
+
+        New approach: cluster the L2-normalized embeddings directly via
+        MiniBatchKMeans at k = max(8, ceil(sqrt(N))). Each cluster of
+        ≥ ABSTRACTION_MIN_MEMBERS becomes an abstraction parent if
+        find_or_match (R_MATCH=0.92) doesn't already cover its centroid
+        — that's the idempotency guarantee. Already-abstracted nodes
+        and existing abstraction parents are excluded from
+        re-clustering, same as the BFS version.
+
+        Returns the number of new abstraction parents written.
+        """
+        try:
+            from sklearn.cluster import MiniBatchKMeans
+        except ImportError:
+            # Graceful degradation if sklearn isn't installed — sleep
+            # still runs replays + persistence saves.
             return 0
 
-        # 2. Identify nodes already absorbed into an abstraction (have an
-        #    outbound is_a) and nodes that ARE abstractions (have an
-        #    inbound is_a). Exclude both from cluster-membership.
+        # Exclude nodes already absorbed into an abstraction (have an
+        # outbound is_a) and nodes that ARE abstractions (have an
+        # inbound is_a). Same predicate as the BFS version.
         already_member: set[int] = {
             e.source_id for e in self.graph._edges.values() if e.type is EdgeType.IS_A
         }
@@ -581,66 +595,81 @@ class MainLoop:
         }
         excluded = already_member | is_abstraction
 
-        # 3. Connected components by BFS on the similar_to subgraph.
-        visited: set[int] = set()
-        components: list[set[int]] = []
-        for seed in adj:
-            if seed in visited or seed in excluded:
-                continue
-            component: set[int] = set()
-            stack = [seed]
-            while stack:
-                cid = stack.pop()
-                if cid in visited or cid in excluded:
-                    continue
-                visited.add(cid)
-                component.add(cid)
-                for neighbor in adj.get(cid, ()):
-                    if neighbor not in visited and neighbor not in excluded:
-                        stack.append(neighbor)
-            if len(component) >= ABSTRACTION_MIN_MEMBERS:
-                components.append(component)
+        eligible_ids = [cid for cid in self.graph.nodes if cid not in excluded]
+        if len(eligible_ids) < ABSTRACTION_MIN_MEMBERS:
+            return 0
 
-        # 4. For each component, check density and form abstraction.
+        # Stack L2-normalized embeddings. The graph is supposed to keep
+        # them unit-norm but we re-normalize defensively (older save
+        # files may not have).
+        rows = []
+        for cid in eligible_ids:
+            emb = self.graph.nodes[cid].embedding
+            n = float(np.linalg.norm(emb))
+            rows.append(emb / n if n >= 1e-9 else np.zeros_like(emb))
+        X = np.stack(rows).astype(np.float32)
+
+        n_concepts = len(eligible_ids)
+        k = max(8, int(np.ceil(np.sqrt(n_concepts))))
+        # Can't have more clusters than would viably hit MIN_MEMBERS each.
+        k = min(k, n_concepts // ABSTRACTION_MIN_MEMBERS)
+        if k < 1:
+            return 0
+
+        kmeans = MiniBatchKMeans(
+            n_clusters=k,
+            random_state=0,
+            batch_size=256,
+            n_init=3,
+        )
+        labels = kmeans.fit_predict(X)
+
         abstractions_formed = 0
-        composite = self.affect.composite(now)
-        for component in components:
-            n = len(component)
-            max_pairs = n * (n - 1) // 2
-            actual_pairs = 0
-            members_list = sorted(component)
-            for i, a in enumerate(members_list):
-                for b in members_list[i + 1:]:
-                    if b in adj.get(a, ()):     # bidirectional adj already, one check suffices
-                        actual_pairs += 1
-            density = actual_pairs / max_pairs if max_pairs > 0 else 0.0
-            if density < ABSTRACTION_DENSITY_THRESHOLD:
+
+        for cluster_idx in range(k):
+            mask = labels == cluster_idx
+            member_count = int(mask.sum())
+            if member_count < ABSTRACTION_MIN_MEMBERS:
                 continue
 
-            # Build the parent: centroid embedding, mean birth affect.
-            embeddings = np.stack([self.graph.nodes[cid].embedding for cid in members_list])
-            centroid = embeddings.mean(axis=0).astype(np.float32)
+            # Centroid: mean of member embeddings, L2-normalized. We
+            # recompute from the data rather than using
+            # kmeans.cluster_centers_[i] since those are not unit-norm
+            # (k-means centroids minimize squared distance, which
+            # collapses lengths) — and find_or_match expects unit-norm
+            # cosine comparisons.
+            centroid = X[mask].mean(axis=0).astype(np.float32)
             cn = float(np.linalg.norm(centroid))
-            if cn > 1e-9:
-                centroid /= cn
+            if cn < 1e-9:
+                continue
+            centroid = centroid / cn
 
+            # Idempotency: if any existing concept (member or otherwise)
+            # already covers this region within R_MATCH, skip — the next
+            # run of _form_abstractions would have done the same.
+            match = self.graph.find_or_match(centroid, threshold=R_MATCH)
+            if match is not None:
+                continue
+
+            members = [eligible_ids[i] for i, m in enumerate(mask) if m]
             mean_birth = np.mean(
-                [self.graph.nodes[cid].affect_trace.birth_state for cid in members_list],
+                [self.graph.nodes[cid].affect_trace.birth_state for cid in members],
                 axis=0,
             ).astype(np.float32)
 
-            # force_write=True so the centroid doesn't dedup back to a member.
+            # force_write=True so the centroid doesn't dedup back to one
+            # of its own members (centroids of tightly-clustered unit
+            # vectors typically sit within R_MATCH of the cluster).
             parent_cid, _ = self.graph.write_on_surprise(
                 representation=centroid,
                 surprise=0.0,
                 current_affect=mean_birth,
-                name_hint=f"abstraction:{members_list[0]}+{n - 1}",
+                name_hint=f"abstraction:k{cluster_idx}+{member_count - 1}",
                 now=now,
                 force_write=True,
             )
 
-            # is_a edges: every member → parent.
-            for cid in members_list:
+            for cid in members:
                 self.graph.add_edge(
                     source_id=cid,
                     target_id=parent_cid,
