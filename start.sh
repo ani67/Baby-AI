@@ -5,6 +5,14 @@ cd "$(dirname "$0")"
 
 mkdir -p data .logs
 
+# OMP threading conflict fix. FAISS and PyTorch each link their own
+# libomp; concurrent init crashes the process at the kernel level. The
+# Python module backend/graph.py also sets these via os.environ.setdefault
+# but env vars passed in via the shell are guaranteed to be set BEFORE
+# any Python import — this is belt-and-braces.
+export OMP_NUM_THREADS=1
+export KMP_DUPLICATE_LIB_OK=TRUE
+
 # 1. Backend on :8765
 echo "[start] backend on http://127.0.0.1:8765"
 PYTHONUNBUFFERED=1 python3 -m uvicorn backend.api:app \

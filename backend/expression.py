@@ -222,10 +222,12 @@ class Expression:
         self._language_head: "LanguageHead | None" = None
         self._conditioned_decoder: "ConditionedDecoder | None" = None
         self._lm_vocab: "Vocab | None" = None
-        self._lm_device: str = (
-            "mps" if (_TORCH_OK and torch.backends.mps.is_available())
-            else "cpu"
-        )
+        # Phase 7 stability fix: pin CD inference to CPU. MPS gets killed
+        # under memory pressure on 16 GB M1 (the lifespan loaded GPT-2,
+        # called .to('mps'), and the kernel killed the process before any
+        # Python except clause could fire). Override with the env var if a
+        # mind has more memory headroom: MIND_LM_DEVICE=mps python3 ...
+        self._lm_device: str = os.environ.get("MIND_LM_DEVICE", "cpu")
 
         # Phase 7 workstream B: late-bound Attention reference. MainLoop
         # injects this in its constructor (and on persistence reload).

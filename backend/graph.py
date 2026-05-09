@@ -5,7 +5,8 @@ What exists:
   - One-shot write on surprise, with find-or-match dedup against existing nodes.
   - Strengthen path for matched writes (activation_count, last_activated, EWMA on
     running affect trace).
-  - Brute-force cosine search over an L2-normalized embedding matrix.
+  - Brute-force cosine search over an L2-normalized embedding matrix
+    (kept as fallback). Phase 7 perf fix routes nearest() through FAISS.
   - The full 10-type edge taxonomy (is_a, has_property, causes, precedes,
     similar_to, opposite_of, context_of, refers_to, expresses, part_of).
     Edges carry source_id, target_id, type, weight, created_at, last_activated,
@@ -21,12 +22,17 @@ What does NOT exist (deferred to later phases):
 """
 from __future__ import annotations
 
+# OMP threading conflict fix — FAISS and PyTorch each link their own
+# libomp, and concurrent init crashes the process at the kernel level
+# (no Python traceback, just a resource_tracker leaked-semaphore warning
+# at shutdown). MUST be set before `import faiss` and before any module
+# that imports torch — once either library initialises its thread pool
+# the env var is too late. start.sh exports the same vars at shell
+# level and run_curriculum.py mirrors them at the top of its own module
+# (it spawns the LM trainer subprocess). __future__ imports must be the
+# first statement, so the env vars are set immediately after.
 import os
-# faiss-cpu ships its own libomp on macOS, which collides with the libomp
-# that PyTorch / NumPy may have already loaded. The mode change is
-# documented as "unsafe" by the OMP runtime but is practically harmless
-# for our single-process M1 workload (no nested-parallel hot loops between
-# the two libraries). Set BEFORE importing faiss so the runtime sees it.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 from dataclasses import dataclass

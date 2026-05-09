@@ -31,9 +31,16 @@ Resumable
 """
 from __future__ import annotations
 
+# OMP threading conflict fix — same rationale as backend/graph.py. Set
+# AT THE TOP before any heavy import (especially anything that pulls
+# torch transitively, which loads libomp). The trainer subprocess we
+# spawn inherits these env vars, so its torch import is also safe.
+import os
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 import argparse
 import json
-import os
 import subprocess
 import sys
 import time
