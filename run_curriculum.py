@@ -83,6 +83,12 @@ from backend.main_loop import MainLoop                   # noqa: E402
 from backend.mind_paths import MindPaths                 # noqa: E402
 from backend.persistence import MindPersistence          # noqa: E402
 from backend.predict import PredictionEngine             # noqa: E402
+from backend.multilevel_preprocessor import (             # noqa: E402
+    MULTILEVEL_DB_PATH,
+    fetch_encoded_multilevel,
+    is_source_encoded_multilevel,
+    multilevel_stream,
+)
 from backend.preencoder import (                         # noqa: E402
     DB_PATH as ENCODED_DB_PATH,
     fetch_encoded,
@@ -446,11 +452,93 @@ def _sample_response(loop: MainLoop, prompt: str = "what is beautiful") -> str:
     return cyc.emitted_surface or "(no surface)"
 
 
+# ============================================================
+# Multi-resolution interleaved reader (used when --multilevel)
+# ============================================================
+
+class _MultilevelInterleavedReader:
+    """Mirror of InterleavedReader that yields multilevel items.
+
+    Each yielded record carries (text, representation, level, multiplier,
+    domain, source_name, position). Sources draw probability proportional
+    to weight × size_factor where size_factor = min(1.0, 5000 / N_items).
+
+    Pre-encoded items must be in `encoded_multilevel` (run encode_corpus.py
+    --multilevel first). Sources missing from that table are skipped with
+    a warning.
+    """
+
+    def __init__(
+        self,
+        sources: list[SourceSpec],
+        db_path: str = MULTILEVEL_DB_PATH,
+        seed: int | None = None,
+    ) -> None:
+        import random as _random
+        self._rng = _random.Random(seed)
+        self._sources: list[dict] = []
+        for spec in sources:
+            if not is_source_encoded_multilevel(spec.source_file, db_path):
+                print(f"[multilevel] [skip] not pre-encoded: {spec.source_file}")
+                continue
+            rows = list(fetch_encoded_multilevel(spec.source_file, db_path))
+            if not rows:
+                print(f"[multilevel] [skip] empty source: {spec.source_file}")
+                continue
+            size_factor = min(1.0, 5000.0 / len(rows))
+            self._sources.append({
+                "spec": spec,
+                "rows": rows,
+                "cursor": 0,
+                "size_factor": size_factor,
+                "active": True,
+                "n_pulled": 0,
+            })
+
+    @property
+    def total_items(self) -> int:
+        return sum(len(s["rows"]) for s in self._sources)
+
+    @property
+    def active_sources(self) -> int:
+        return sum(1 for s in self._sources if s["active"])
+
+    def per_source_pulls(self) -> dict[str, int]:
+        return {s["spec"].name: s["n_pulled"] for s in self._sources}
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        active = [s for s in self._sources if s["active"]]
+        if not active:
+            raise StopIteration
+        weights = [s["spec"].weight * s["size_factor"] for s in active]
+        chosen = self._rng.choices(active, weights=weights, k=1)[0]
+        idx = chosen["cursor"]
+        row = chosen["rows"][idx]
+        chosen["cursor"] = idx + 1
+        chosen["n_pulled"] += 1
+        if chosen["cursor"] >= len(chosen["rows"]):
+            chosen["active"] = False
+        sentence, rep, position, level, multiplier = row
+        return {
+            "text":           sentence,
+            "representation": rep,
+            "level":          level,
+            "multiplier":     multiplier,
+            "domain":         chosen["spec"].domain,
+            "source_name":    chosen["spec"].name,
+            "position":       position,
+        }
+
+
 def run_interleaved(
     paths: MindPaths,
     curriculum_path: str,
     max_sentences: int | None = None,
     birth_seed: int | None = None,
+    multilevel: bool = False,
 ) -> dict:
     """Phase 7 — interleaved curriculum mode.
 
@@ -492,11 +580,22 @@ def run_interleaved(
     ]
     print(f"[interleaved] {len(sources)} source(s) declared in {curriculum_path}")
 
-    reader = InterleavedReader(sources)
-    print(f"[interleaved] {reader.active_sources} encoded sources, "
-          f"{reader.total_sentences:,} total sentences available")
-    if reader.active_sources == 0:
-        raise RuntimeError("no encoded sources — run encode_corpus.py first")
+    if multilevel:
+        ml_reader = _MultilevelInterleavedReader(sources)
+        print(f"[interleaved] [multilevel] {ml_reader.active_sources} pre-encoded sources, "
+              f"{ml_reader.total_items:,} multilevel items available")
+        if ml_reader.active_sources == 0:
+            raise RuntimeError(
+                "no multilevel-encoded sources — run "
+                "`python3 encode_corpus.py --multilevel --curriculum <path>` first"
+            )
+        reader = ml_reader  # type: ignore[assignment]
+    else:
+        reader = InterleavedReader(sources)
+        print(f"[interleaved] {reader.active_sources} encoded sources, "
+              f"{reader.total_sentences:,} total sentences available")
+        if reader.active_sources == 0:
+            raise RuntimeError("no encoded sources — run encode_corpus.py first")
 
     seed = birth_seed if birth_seed is not None else _seed_for_mind_name(paths.mind_name)
     loop = load_or_construct(paths, birth_seed=seed)
@@ -540,34 +639,66 @@ def run_interleaved(
     # only affects bulk book ingestion.
     loop.predict_engine.set_ingestion_mode(True)
     print("[interleaved] ingestion_mode=ON (1.0σ threshold)")
+    if multilevel:
+        print("[interleaved] multilevel=ON — per-item surprise multipliers active")
+
+    # Per-level pull counters (multilevel only) for the post-run summary.
+    level_pulls: dict[str, int] = {}
 
     try:
         for sent in reader:
             if max_sentences is not None and n_pulled >= max_sentences:
                 break
 
-            now = time.time()
-            agent_id = name_to_agent_id[sent.source_name]
-            ingest = h.ingest_text(
-                sent.sentence, now=now, agent_id=agent_id,
-                representation=sent.representation,
-            )
-            loop.cycle(ingest, now=now + 1e-3, force_respond=False, skip_simulation=True)
+            # Normalize: legacy InterleavedSentence vs multilevel dict.
+            if multilevel:
+                text         = sent["text"]
+                rep          = sent["representation"]
+                domain       = sent["domain"]
+                source_name  = sent["source_name"]
+                level        = sent["level"]
+                multiplier   = sent["multiplier"]
+            else:
+                text         = sent.sentence
+                rep          = sent.representation
+                domain       = sent.domain
+                source_name  = sent.source_name
+                level        = "sentence"
+                multiplier   = 1.0
 
-            domain_distribution[sent.domain] = domain_distribution.get(sent.domain, 0) + 1
-            domain_window.append(sent.domain)
-            bt_log.write(sent.sentence + "\n")
+            now = time.time()
+            agent_id = name_to_agent_id[source_name]
+
+            # Apply the level-specific surprise multiplier just for this
+            # item; the finally-clear keeps it from leaking into anything
+            # downstream (e.g. the post-run dialogue).
+            loop.predict_engine.set_surprise_multiplier(multiplier)
+            try:
+                ingest = h.ingest_text(
+                    text, now=now, agent_id=agent_id,
+                    representation=rep,
+                )
+                loop.cycle(ingest, now=now + 1e-3, force_respond=False, skip_simulation=True)
+            finally:
+                loop.predict_engine.clear_surprise_multiplier()
+
+            domain_distribution[domain] = domain_distribution.get(domain, 0) + 1
+            domain_window.append(domain)
+            bt_log.write(text + "\n")
+            if multilevel:
+                level_pulls[level] = level_pulls.get(level, 0) + 1
 
             if ingest.gap.is_surprise:
                 composite = loop.affect.composite(now)
                 train_log.write(json.dumps({
-                    "sentence":       sent.sentence,
+                    "sentence":       text,
                     "affect":         [float(x) for x in composite],
                     "surprise_score": float(ingest.gap.surprise_score),
                     "concept_id":     ingest.gap.concept_id,
                     "t":              float(now),
-                    "domain":         sent.domain,
-                    "source":         sent.source_name,
+                    "domain":         domain,
+                    "source":         source_name,
+                    "level":          level,
                 }) + "\n")
                 surprises_since_train += 1
                 if surprises_since_train >= train_after:
@@ -729,8 +860,11 @@ def run_interleaved(
         "final_node_count":    loop.graph.node_count,
         "final_edge_count":    loop.graph.edge_count,
     }
+    if multilevel:
+        summary["level_pulls"] = level_pulls
     print()
-    print(f"[interleaved] pulled {n_pulled:,} sentences in {duration:.1f}s "
+    unit = "items" if multilevel else "sentences"
+    print(f"[interleaved] pulled {n_pulled:,} {unit} in {duration:.1f}s "
           f"({summary['throughput']:,.0f}/s)")
     print(f"[interleaved] graph: +{summary['nodes_added']} nodes,  "
           f"+{summary['edges_added']} edges,  "
@@ -738,6 +872,10 @@ def run_interleaved(
     print(f"[interleaved] domain distribution:")
     for d, n in sorted(domain_distribution.items(), key=lambda kv: -kv[1]):
         print(f"    {d:14s}  {n:>5,d}  ({100*n/max(n_pulled,1):5.1f}%)")
+    if multilevel and level_pulls:
+        print(f"[interleaved] level distribution:")
+        for lvl, n in sorted(level_pulls.items(), key=lambda kv: -kv[1]):
+            print(f"    {lvl:14s}  {n:>5,d}  ({100*n/max(n_pulled,1):5.1f}%)")
 
     return summary
 
@@ -820,6 +958,11 @@ def main() -> int:
                          "sources simultaneously, instead of exhausting one before the next.")
     ap.add_argument("--max-sentences", type=int, default=None,
                     help="cap total sentences pulled (interleave mode only)")
+    ap.add_argument("--multilevel", action="store_true",
+                    help="(interleave mode) pull from the multilevel encoded "
+                         "table — words / phrases / sentences / paragraphs — "
+                         "with per-level surprise multipliers. Requires running "
+                         "encode_corpus.py --multilevel first.")
     args = ap.parse_args()
 
     birth_seed = args.birth_seed if args.birth_seed is not None else _seed_for_mind_name(args.mind)
@@ -841,8 +984,11 @@ def main() -> int:
             curriculum_path=args.curriculum,
             max_sentences=args.max_sentences,
             birth_seed=birth_seed,
+            multilevel=args.multilevel,
         )
         return 0
+    if args.multilevel:
+        raise SystemExit("--multilevel currently only supported with --interleave")
 
     with open(args.curriculum, "r", encoding="utf-8") as f:
         curriculum = json.load(f)
