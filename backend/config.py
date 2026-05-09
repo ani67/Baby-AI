@@ -85,3 +85,9 @@ LM_TRAIN_MIN_CORPUS        = 500
 PROCESSING_TICKS           = 4
 PROCESSING_DECAY           = 0.85   # per-tick global multiplier; 1.0^4·0.85^4 ≈ 0.52
 PROCESSING_MAX_ACTIVATION  = 0.5    # post-loop cap so the seed never dominates expression
+
+# Parallel ingestion (Phase 7 perf — N readers + 1 writer architecture).
+# Readers preprocess + encode + propose diffs into a multiprocessing
+# queue; writer consumes diffs and applies via find_or_match dedup.
+PARALLEL_INGESTION_SNAPSHOT_INTERVAL = 500    # writer pushes FAISS snapshot every N writes
+PARALLEL_INGESTION_LOCAL_DEDUP_WINDOW = 60.0  # seconds — reader-side dedup window

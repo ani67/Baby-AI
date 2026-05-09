@@ -798,6 +798,87 @@ def run_dialogue_step(loop: MainLoop, paths: MindPaths, step: dict) -> dict:
 
 
 # ============================================================
+# Parallel ingestion (Phase 7 — N readers + 1 writer)
+# ============================================================
+
+def run_parallel_ingestion(
+    paths: MindPaths,
+    curriculum_path: str,
+    n_readers: int,
+    birth_seed: int,
+) -> dict:
+    """Phase 7 — parallel ingestion mode.
+
+    Reads the curriculum's `sources` list, groups source paths by domain,
+    spawns n_readers reader processes that encode in parallel, and the
+    main process drives loop.cycle for each diff via ParallelIngestionManager.
+
+    No max_sentences cap — readers stream through the assigned sources end
+    to end. Use --interleave (without --parallel) for capped runs.
+    """
+    from backend.parallel_ingestion import ParallelIngestionManager  # noqa: E402
+
+    with open(curriculum_path, "r", encoding="utf-8") as f:
+        curr = json.load(f)
+
+    sources_by_domain: dict[str, list[str]] = {}
+    for s in curr.get("sources", []):
+        path = s["source"]
+        if not os.path.exists(path):
+            print(f"[parallel] skipping missing source: {path}")
+            continue
+        domain = s.get("domain", "unknown")
+        sources_by_domain.setdefault(domain, []).append(path)
+
+    if not sources_by_domain:
+        raise RuntimeError(
+            f"no usable sources in {curriculum_path} "
+            f"(check `sources[].source` paths)"
+        )
+
+    seed = birth_seed
+    loop = load_or_construct(paths, birth_seed=seed)
+    print(f"[parallel] mind: {paths.mind_name} (birth_seed={seed})")
+    print(f"[parallel]   loaded: {loop.graph.node_count} nodes, "
+          f"{loop.graph.edge_count} edges, cycle_count={loop.cycle_count}")
+    print(f"[parallel] domains: "
+          f"{', '.join(f'{d}={len(p)}' for d, p in sources_by_domain.items())}")
+    print(f"[parallel] n_readers={n_readers}")
+
+    persist = MindPersistence(paths.db)
+
+    nodes_before     = loop.graph.node_count
+    edges_before     = loop.graph.edge_count
+    surprises_before = loop.predict_engine.surprise_count
+
+    t0 = time.perf_counter()
+    mgr = ParallelIngestionManager(loop=loop, n_readers=n_readers)
+    items_processed = mgr.run(sources_by_domain)
+    duration = time.perf_counter() - t0
+
+    persist.save(loop, now=time.time())
+
+    summary = {
+        "items_processed":   items_processed,
+        "duration_s":        duration,
+        "throughput":        items_processed / max(duration, 1e-6),
+        "nodes_added":       loop.graph.node_count - nodes_before,
+        "edges_added":       loop.graph.edge_count - edges_before,
+        "surprises_added":   loop.predict_engine.surprise_count - surprises_before,
+        "final_node_count":  loop.graph.node_count,
+        "final_edge_count":  loop.graph.edge_count,
+        "n_readers":         n_readers,
+    }
+    print()
+    print(f"[parallel] processed {items_processed:,} items in {duration:.1f}s "
+          f"({summary['throughput']:,.0f}/s)")
+    print(f"[parallel] graph: +{summary['nodes_added']} nodes,  "
+          f"+{summary['edges_added']} edges,  "
+          f"+{summary['surprises_added']} surprises")
+    return summary
+
+
+# ============================================================
 # Driver
 # ============================================================
 
@@ -820,6 +901,13 @@ def main() -> int:
                          "sources simultaneously, instead of exhausting one before the next.")
     ap.add_argument("--max-sentences", type=int, default=None,
                     help="cap total sentences pulled (interleave mode only)")
+    ap.add_argument("--parallel", action="store_true",
+                    help="Phase 7 perf — N reader processes + 1 writer thread. "
+                         "Requires --interleave (uses the curriculum's `sources` "
+                         "list grouped by domain).")
+    ap.add_argument("--n-readers", type=int, default=4,
+                    help="number of parallel reader processes (default: 4); "
+                         "only used when --parallel is set")
     args = ap.parse_args()
 
     birth_seed = args.birth_seed if args.birth_seed is not None else _seed_for_mind_name(args.mind)
@@ -836,6 +924,14 @@ def main() -> int:
 
     # ---- Phase 7: interleaved mode short-circuits the sequential path ----
     if args.interleave:
+        if args.parallel:
+            run_parallel_ingestion(
+                paths=paths,
+                curriculum_path=args.curriculum,
+                n_readers=args.n_readers,
+                birth_seed=birth_seed,
+            )
+            return 0
         run_interleaved(
             paths=paths,
             curriculum_path=args.curriculum,
