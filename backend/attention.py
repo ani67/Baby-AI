@@ -30,6 +30,7 @@ import numpy as np
 
 from backend.affect import AffectStack
 from backend.config import (
+    ATTENTION_AROUSAL_CAP,
     PROCESSING_DECAY,
     PROCESSING_MAX_ACTIVATION,
     PROCESSING_TICKS,
@@ -146,7 +147,15 @@ class Attention:
         these; Phase 3 minimal does not augment them with habit seeds.
         """
         composite = self.affect.composite(now)
-        arousal = self.affect.current_arousal(now)
+        # Felt arousal flows to AttentionFrame (and downstream to
+        # Expression's tone-shaping + the API surface). The spread gate
+        # below sees a capped value so post-ingestion saturation
+        # (mood + working + reaction all accumulated to ~0.9 after a long
+        # surprise-rich run) doesn't collapse the spread to a 1-3 concept
+        # active set. The mind still *feels* intense; it just doesn't go
+        # blind from it.
+        felt_arousal = self.affect.current_arousal(now)
+        gated_arousal = min(felt_arousal, ATTENTION_AROUSAL_CAP)
         mode = _PHASE_TO_MODE[phase]
 
         # Phase 3 minimal: pass raw seeds straight through. HabitOverlay later.
@@ -157,7 +166,7 @@ class Attention:
             mode=mode,
             seeds=seeds,
             composite_affect=composite,
-            arousal=arousal,
+            arousal=felt_arousal,
             now=now,
         )
 
@@ -165,7 +174,7 @@ class Attention:
             seeds=seeds,
             affect=self.affect,
             composite_affect=composite,
-            arousal=arousal,
+            arousal=gated_arousal,
             max_steps=max_steps,
             budget=budget,
             mode=mode,

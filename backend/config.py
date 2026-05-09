@@ -132,3 +132,28 @@ PARALLEL_INGESTION_SLEEP_DURATION     = 10.0
 # parents AND members) are immune.
 CONCEPT_CEILING = 50000
 PRUNE_TO        = 45000
+
+# Attention arousal cap. F.attend feeds arousal into the spread gate;
+# at saturating arousal (0.9+) the gate collapses to a tiny top-k and
+# the active set narrows to 1-3 concepts. That's appropriate for
+# fight-or-flight, but it means a mind freshly emerging from a
+# 1.4M-item ingestion run (where reaction/working/mood layers have all
+# accumulated) cannot think broadly until arousal decays — even when
+# the underlying graph has 73K concepts ready to spread through.
+#
+# This cap preserves the *felt* arousal (composite_affect, the affect
+# engine, expression's tone-shaping all see the real value) but prevents
+# saturated arousal from collapsing perception. The mind still feels
+# intense; it just doesn't go blind from it.
+ATTENTION_AROUSAL_CAP = 0.6
+
+# Expression gating thresholds. The original 0.4 / 0.8 values were
+# calibrated against the LSTM language head. GPT-2 at loss 0.40
+# generates more fluent text but encodes to different GloVe positions,
+# so the gap-to-input distance distribution shifted. With these values
+# and honesty_bias=0.7 the effective thresholds become 0.91 (revise)
+# and 1.17 (suppress) — the LM has real room to express, while the
+# suppression mechanism still catches genuinely misaligned outputs.
+EXPRESSION_REVISE_THRESHOLD   = 0.70
+EXPRESSION_SUPPRESS_THRESHOLD = 0.90
+EXPRESSION_HONESTY_BIAS       = 0.7

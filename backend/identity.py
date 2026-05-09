@@ -48,15 +48,25 @@ from enum import Enum
 import numpy as np
 
 from backend.affect import AffectStack
-from backend.config import D_REP, N_AFF
+from backend.config import (
+    D_REP,
+    EXPRESSION_HONESTY_BIAS,
+    EXPRESSION_REVISE_THRESHOLD,
+    EXPRESSION_SUPPRESS_THRESHOLD,
+    N_AFF,
+)
 from backend.graph import ConceptGraph
 from backend.predict import PredictionEngine
 from backend.simulation import ReplayEntry, SimulationReplay
 
 
-# Synthesis-locked thresholds (from the symbol table).
-REVISE_THRESHOLD        = 0.4
-SUPPRESS_HARD_THRESHOLD = 0.8
+# Synthesis-locked thresholds (from the symbol table). Values now live
+# in backend.config so calibration tracks the language head — the
+# original 0.4 / 0.8 were tuned for the LSTM head; GPT-2 at loss 0.40
+# generates more fluent text but encodes to different GloVe positions,
+# so the gap-to-input distribution shifted.
+REVISE_THRESHOLD        = EXPRESSION_REVISE_THRESHOLD
+SUPPRESS_HARD_THRESHOLD = EXPRESSION_SUPPRESS_THRESHOLD
 
 MAX_PINS    = 128
 MAX_ANCHORS = 64
@@ -112,7 +122,7 @@ class ExpressionCalibration:
     settles; if empirical runs land too far from the desired band, this
     knob shifts the tipping point.
     """
-    honesty_bias: float = 0.7   # 1.0 = always honest, 0.0 = always strategic
+    honesty_bias: float = EXPRESSION_HONESTY_BIAS   # 1.0 = always honest, 0.0 = always strategic
 
 
 @dataclass
