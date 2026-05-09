@@ -1216,4 +1216,48 @@ NEXT OPEN ITEMS:
 
 ---
 
+## PHASE 7 — COMPLETED (v0.6 candidate)
+
+- k-means abstraction (f734461): replaces the BFS-on-similar_to
+  algorithm that proved unworkable at AUTO_LINK_K=1 (single giant
+  component, density 0.0008 vs 0.5 threshold). MiniBatchKMeans on
+  L2-normalized embeddings at k = max(8, ceil(sqrt(N))). 28
+  abstractions formed on the v0.5 mind 'first' (6,474 nodes, 2.0s);
+  centroids land within 0.87-0.92 cosine of named concepts that
+  capture each cluster (Cicero, Spinoza, Bhagavad Gita, Existentialism,
+  Aeneid). Idempotent: pass 2 forms 0.
+
+- multi-resolution curriculum (b07cac1, subagent 1): same source
+  text now yields word + phrase + sentence + paragraph items via
+  spaCy. Each level gets its own surprise multiplier (word 1.5,
+  phrase 1.3, sentence 1.0, paragraph 0.8) layered on top of
+  ingestion mode's 1.0σ base. multilevel_ratio achieved: **7.7×**
+  on the spec test, **10.9×** on Aesop's Fables. predict.py grew
+  set_/clear_surprise_multiplier; threshold_mult and cold_floor
+  divide by the multiplier so higher multiplier → lower threshold
+  → more writes.
+
+- parallel diff queue (f61eb0f, subagent 2): N reader processes +
+  1 writer thread architecture. Readers preprocess + encode + push
+  ConceptDiff messages into a multiprocessing queue; writer applies
+  via the existing find_or_match dedup. Phase 7 throughput on a
+  small char-trigram smoke test: 0.59× (slower) — the cheap encoder
+  is dwarfed by IPC overhead. The architecture pays off when the
+  encoder dominates per-item cost (GloVe + multilevel preprocessor),
+  which is the realistic curriculum path. macOS-specific tweaks:
+  QUEUE_MAXSIZE 30K (SEM_VALUE_MAX cap), cancel_join_thread() on
+  shutdown to avoid deadlock when no reader consumes snapshots.
+  --parallel + --n-readers CLI flags wire it into run_curriculum.
+
+- attended surprise: queued for v0.7
+
+POST-MERGE INTEGRATION:
+- parallel_ingestion's writer loop calls set_surprise_multiplier
+  per-item from diff.surprise_multiplier (composes with ingestion_mode).
+- run_curriculum.py CLI: --multilevel and --parallel are independent
+  flags both gated on --interleave.
+- Phase 1 + Phase 3 regressions both PASS on the merged tree.
+
+---
+
 End of unified specification.
