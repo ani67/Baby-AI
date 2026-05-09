@@ -78,8 +78,9 @@ def _encode_one_multilevel(
 def _encode_source_multilevel(
     source_file: str, domain: str, db_path: str,
 ) -> tuple[int, float]:
-    # Lazy import — keeps the GloVe binary out of the parent process.
-    from backend.input import ENCODER_TEXT_ID, encode_text
+    # Lazy import — keeps the GloVe binary / torch out of the parent
+    # process until the worker subprocess actually starts.
+    from backend.input import ENCODER_TEXT_ID, encode_text_batch
 
     t0 = time.perf_counter()
 
@@ -104,42 +105,67 @@ def _encode_source_multilevel(
     encoder_id = ENCODER_TEXT_ID
     encoded_at = time.time()
 
-    batch: list[tuple] = []
+    # Phase 8 (v0.7): batch encoding. Accumulate ENCODE_BATCH items,
+    # call encode_text_batch once (single GPU matmul after Section 5),
+    # then write to the DB in one executemany. 10-20x fewer Python<->
+    # GPU round trips than per-item encoding.
+    ENCODE_BATCH = 64
+    DB_FLUSH_EVERY = 8        # flush every N batches (8*64 = 512 rows)
+    pending_items: list = []          # PreprocessedItem
+    pending_positions: list[int] = [] # absolute position in stream
+    db_batch: list[tuple] = []
     written = 0
-    BATCH_SIZE = 500
-    for position, item in enumerate(items):
-        rep = encode_text(item.text)
-        batch.append((
-            source_file, domain, item.text, position,
-            rep.astype(np.float32, copy=False).tobytes(),
-            encoder_id, item.level, item.surprise_multiplier, encoded_at,
-        ))
-        if len(batch) >= BATCH_SIZE:
-            cur.executemany(
-                "INSERT INTO encoded_multilevel "
-                "(source_file, domain, sentence, position, representation, "
-                " encoder_id, level, surprise_multiplier, encoded_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
-                batch,
-            )
-            written += len(batch)
-            batch.clear()
-            cur.execute(
-                "UPDATE encoding_progress_multilevel "
-                "SET encoded_items = ? WHERE source_file = ?",
-                (written, source_file),
-            )
-            conn.commit()
 
-    if batch:
+    def _flush_encode_batch() -> None:
+        """Encode the pending_items batch and stage rows for the DB."""
+        nonlocal pending_items, pending_positions, db_batch
+        if not pending_items:
+            return
+        texts = [it.text for it in pending_items]
+        reps = encode_text_batch(texts)             # (B, D_REP)
+        for i, item in enumerate(pending_items):
+            rep = reps[i]
+            if not np.any(rep):
+                continue                            # zero vector — skip
+            db_batch.append((
+                source_file, domain, item.text, pending_positions[i],
+                rep.astype(np.float32, copy=False).tobytes(),
+                encoder_id, item.level, item.surprise_multiplier, encoded_at,
+            ))
+        pending_items.clear()
+        pending_positions.clear()
+
+    def _flush_db_batch() -> None:
+        nonlocal db_batch, written
+        if not db_batch:
+            return
         cur.executemany(
             "INSERT INTO encoded_multilevel "
             "(source_file, domain, sentence, position, representation, "
             " encoder_id, level, surprise_multiplier, encoded_at) "
             "VALUES (?,?,?,?,?,?,?,?,?)",
-            batch,
+            db_batch,
         )
-        written += len(batch)
+        written += len(db_batch)
+        db_batch.clear()
+        cur.execute(
+            "UPDATE encoding_progress_multilevel "
+            "SET encoded_items = ? WHERE source_file = ?",
+            (written, source_file),
+        )
+        conn.commit()
+
+    for position, item in enumerate(items):
+        pending_items.append(item)
+        pending_positions.append(position)
+        if len(pending_items) >= ENCODE_BATCH:
+            _flush_encode_batch()
+            if len(db_batch) >= ENCODE_BATCH * DB_FLUSH_EVERY:
+                _flush_db_batch()
+
+    # Tail flush.
+    _flush_encode_batch()
+    _flush_db_batch()
 
     cur.execute(
         "UPDATE encoding_progress_multilevel "

@@ -91,6 +91,20 @@ PROCESSING_MAX_ACTIVATION  = 0.5    # post-loop cap so the seed never dominates 
 # queue; writer consumes diffs and applies via find_or_match dedup.
 PARALLEL_INGESTION_SNAPSHOT_INTERVAL = 500    # writer pushes FAISS snapshot every N writes
 PARALLEL_INGESTION_LOCAL_DEDUP_WINDOW = 60.0  # seconds — reader-side dedup window
+# Periodic mind-save during long parallel runs. Without this, a SIGTERM
+# (e.g. user Ctrl+C → curriculum stop) on a multi-hour run that hangs
+# in mp.Queue cleanup leaves mind.db at the last book-step boundary.
+# 10K writes is roughly 30–60 s of writer time at 200–400/s, so a worst-
+# case crash drops <1 minute of work.
+PARALLEL_INGESTION_SAVE_INTERVAL      = 10_000
+# How often (in writer items) to check whether node_count > CONCEPT_CEILING
+# and, if so, fire a short sleep — this is the only path that runs
+# abstraction formation + ceiling-pruning during a parallel ingestion
+# run. Sequential interleaved runs already sleep on their own cadence;
+# the parallel path has no curriculum step boundaries, so it has to do
+# this itself or the graph grows unbounded.
+PARALLEL_INGESTION_SLEEP_CHECK_EVERY  = 10_000
+PARALLEL_INGESTION_SLEEP_DURATION     = 10.0
 
 # Concept-graph ceiling + post-prune target (synthesis "forgetting is
 # curation" finally in code). Without this every write_on_surprise

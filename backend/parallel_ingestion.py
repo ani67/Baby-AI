@@ -43,9 +43,10 @@ from __future__ import annotations
 import io
 import multiprocessing as mp
 import os
+import signal
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, Optional
 
 import numpy as np
 
@@ -57,6 +58,9 @@ if TYPE_CHECKING:
 
 
 SNAPSHOT_UPDATE_INTERVAL = config.PARALLEL_INGESTION_SNAPSHOT_INTERVAL
+SAVE_INTERVAL            = config.PARALLEL_INGESTION_SAVE_INTERVAL
+SLEEP_CHECK_EVERY        = config.PARALLEL_INGESTION_SLEEP_CHECK_EVERY
+SLEEP_DURATION           = config.PARALLEL_INGESTION_SLEEP_DURATION
 
 
 # Per-level surprise multipliers. Words are short and high-leverage,
@@ -106,7 +110,10 @@ def reader_worker(
         # Hard failure — we have neither the multilevel preprocessor
         # nor the sentence-splitter fallback. Emit DONE sentinel and
         # exit so the writer doesn't hang.
-        _send_done(diff_queue, domain)
+        try:
+            _send_done(diff_queue, domain)
+        finally:
+            diff_queue.close()
         return
 
     # Lazy import the encoder (after env vars are set).
@@ -114,59 +121,78 @@ def reader_worker(
 
     local_seen: dict[bytes, float] = {}
 
-    for source_path in source_paths:
-        if done_event.is_set():
-            break
-        try:
-            text = Path(source_path).read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-
-        for item in multilevel_stream(text):
+    try:
+        for source_path in source_paths:
             if done_event.is_set():
                 break
-
-            item_text = getattr(item, "text", None) or str(item)
-            level = getattr(item, "level", "sentence")
-            level_multiplier = float(getattr(
-                item,
-                "surprise_multiplier",
-                surprise_multiplier_map.get(level, 1.0),
-            ))
-
-            rep = encode_text(item_text)
-            if rep is None:
+            try:
+                text = Path(source_path).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
                 continue
-            n = float(np.linalg.norm(rep))
-            if n < 0.01:
-                continue
-            rep_norm = (rep / (n + 1e-9)).astype(np.float32)
-            rep_key = rep_norm.tobytes()
 
-            now = time.time()
-            last = local_seen.get(rep_key, 0.0)
-            if now - last < config.PARALLEL_INGESTION_LOCAL_DEDUP_WINDOW:
-                continue
-            local_seen[rep_key] = now
-
-            diff = ConceptDiff(
-                representation=rep_key,
-                surprise=ingestion_threshold / max(level_multiplier, 1e-3),
-                affect_snapshot=np.zeros(config.N_AFF, dtype=np.float32).tobytes(),
-                name_hint=item_text[:64],
-                source_domain=domain,
-                source_name=Path(source_path).stem,
-                level=level,
-                surprise_multiplier=level_multiplier,
-            )
-
-            # Backpressure: spin until the queue accepts. If done_event
-            # fires (writer wants to wind down), bail out cleanly.
-            while not diff_queue.put_diff(diff, timeout=0.5):
+            for item in multilevel_stream(text):
                 if done_event.is_set():
-                    return
+                    break
 
-    _send_done(diff_queue, domain)
+                item_text = getattr(item, "text", None) or str(item)
+                level = getattr(item, "level", "sentence")
+                level_multiplier = float(getattr(
+                    item,
+                    "surprise_multiplier",
+                    surprise_multiplier_map.get(level, 1.0),
+                ))
+
+                rep = encode_text(item_text)
+                if rep is None:
+                    continue
+                n = float(np.linalg.norm(rep))
+                if n < 0.01:
+                    continue
+                rep_norm = (rep / (n + 1e-9)).astype(np.float32)
+                rep_key = rep_norm.tobytes()
+
+                now = time.time()
+                last = local_seen.get(rep_key, 0.0)
+                if now - last < config.PARALLEL_INGESTION_LOCAL_DEDUP_WINDOW:
+                    continue
+                local_seen[rep_key] = now
+
+                diff = ConceptDiff(
+                    representation=rep_key,
+                    surprise=ingestion_threshold / max(level_multiplier, 1e-3),
+                    affect_snapshot=np.zeros(config.N_AFF, dtype=np.float32).tobytes(),
+                    name_hint=item_text[:64],
+                    source_domain=domain,
+                    source_name=Path(source_path).stem,
+                    level=level,
+                    surprise_multiplier=level_multiplier,
+                )
+
+                # Backpressure: spin until the queue accepts. If done_event
+                # fires (writer wants to wind down), bail out cleanly.
+                while not diff_queue.put_diff(diff, timeout=0.5):
+                    if done_event.is_set():
+                        return
+
+        _send_done(diff_queue, domain)
+    finally:
+        # On *abnormal* shutdown (writer set done_event), the queue may
+        # be full and the feeder thread blocked on the pipe — joining
+        # it would hang the child indefinitely, which is the v0.6
+        # "curriculum stop hung in mp.Queue cleanup" symptom. Detach
+        # the feeder so the child can exit immediately. We accept that
+        # any items still buffered get dropped — they're already lost
+        # because the writer isn't consuming.
+        #
+        # On *normal* shutdown the writer is still draining; we must
+        # NOT cancel the feeder here or the trailing items (including
+        # the DONE sentinel) get dropped, which is what reduced the
+        # parallel test's items_processed.
+        if done_event.is_set():
+            try:
+                diff_queue.close()
+            except Exception:
+                pass
 
 
 def _resolve_multilevel_stream():
@@ -233,11 +259,28 @@ class ParallelIngestionManager:
     identical graph (modulo ordering) to the sequential runner.
     """
 
-    def __init__(self, *, loop: "MainLoop", n_readers: int = 4) -> None:
+    def __init__(
+        self,
+        *,
+        loop: "MainLoop",
+        n_readers: int = 4,
+        save_callback: Optional[Callable[[], None]] = None,
+        save_interval: int = SAVE_INTERVAL,
+    ) -> None:
         self.loop = loop
         self.n_readers = max(1, int(n_readers))
         self.diff_queue = DiffQueue()
         self._writes_since_snapshot = 0
+        self._writes_since_save = 0
+        self._writes_since_sleep_check = 0
+        # save_callback is invoked from the writer thread (main process)
+        # every save_interval items, on signals (SIGTERM/SIGINT), and
+        # once more in the finally. None disables periodic save and
+        # leaves the caller responsible for the final persist.save.
+        self._save_callback = save_callback
+        self._save_interval = max(1, int(save_interval))
+        self._stop_requested = False
+        self._n_saves = 0
 
     def run(self, sources_by_domain: dict) -> int:
         """Spawn readers, drain diffs, apply through loop.cycle.
@@ -314,8 +357,25 @@ class ParallelIngestionManager:
         items_processed = 0
         t0 = time.perf_counter()
 
+        # Install SIGTERM (and re-install SIGINT) so that an external
+        # `kill` of the curriculum runner sets done_event + flushes a
+        # save before we exit. SIGINT is also caught here so we don't
+        # rely on KeyboardInterrupt firing from inside the cycle —
+        # MPS / numpy can sometimes swallow it. Restored in finally.
+        prev_sigterm = signal.signal(signal.SIGTERM, self._on_signal)
+        try:
+            prev_sigint = signal.signal(signal.SIGINT, self._on_signal)
+        except ValueError:
+            # Not main thread — happens in tests; SIGINT handler is
+            # already installed by the runtime.
+            prev_sigint = None
+
         try:
             while readers_done < total_readers:
+                if self._stop_requested:
+                    done_event.set()
+                    break
+
                 diff = self.diff_queue.get_diff(timeout=0.1)
                 if diff is None:
                     # Empty pull. If every reader has exited *and* the
@@ -363,10 +423,21 @@ class ParallelIngestionManager:
 
                 items_processed += 1
                 self._writes_since_snapshot += 1
+                self._writes_since_save += 1
+                self._writes_since_sleep_check += 1
 
                 if self._writes_since_snapshot >= SNAPSHOT_UPDATE_INTERVAL:
                     self._push_snapshot()
                     self._writes_since_snapshot = 0
+
+                if (self._save_callback is not None
+                        and self._writes_since_save >= self._save_interval):
+                    self._do_save(reason="periodic")
+                    self._writes_since_save = 0
+
+                if self._writes_since_sleep_check >= SLEEP_CHECK_EVERY:
+                    self._writes_since_sleep_check = 0
+                    self._maybe_sleep_for_ceiling()
 
                 if items_processed % 10_000 == 0:
                     rate = items_processed / max(time.perf_counter() - t0, 1e-6)
@@ -374,26 +445,133 @@ class ParallelIngestionManager:
                         f"[parallel] {items_processed:,} items  "
                         f"nodes={self.loop.graph.node_count}  "
                         f"queue={self.diff_queue.qsize()}  "
+                        f"saves={self._n_saves}  "
                         f"({rate:,.0f}/s)",
                         flush=True,
                     )
         except KeyboardInterrupt:
             done_event.set()
+            self._stop_requested = True
         finally:
             done_event.set()
             self.loop.predict_engine.set_ingestion_mode(False)
+            # Restore signal handlers BEFORE we start the join loop —
+            # otherwise a second Ctrl+C during cleanup re-enters our
+            # handler instead of producing the usual KeyboardInterrupt,
+            # which makes the runner unkillable.
+            try:
+                signal.signal(signal.SIGTERM, prev_sigterm)
+                if prev_sigint is not None:
+                    signal.signal(signal.SIGINT, prev_sigint)
+            except (ValueError, TypeError):
+                pass
             # Join readers first so their feeders flush, then close the
             # parent's queue handles. Order matters: closing the queue
             # before readers exit can drop in-flight items and block the
-            # readers' put_diff calls.
+            # readers' put_diff calls. Each reader installs its own
+            # cancel_join_thread in its finally so the join times out
+            # quickly even if the feeder was stuck.
             for p in readers:
                 p.join(timeout=5)
                 if p.is_alive():
                     p.terminate()
                     p.join(timeout=2)
             self.diff_queue.close()
+            # Final save after readers are gone so the on-disk state
+            # matches the final in-memory graph. Idempotent if we just
+            # saved a few items ago — but cheap insurance.
+            if self._save_callback is not None:
+                self._do_save(reason="final")
 
         return items_processed
+
+    # ---- internal: signal + save ----
+
+    def _on_signal(self, signum, _frame) -> None:
+        """Signal handler for SIGTERM / SIGINT during run(). Sets the
+        stop flag so the run loop exits cleanly at the next iteration;
+        the finally block then runs the final save and joins readers.
+
+        Kept extremely small — signal context limits what we can do
+        safely. The actual save happens inside the run loop, not here.
+        """
+        # Stamp the reason so the next save log line says why we're
+        # stopping. print() is technically not signal-safe but we're
+        # already in a controlled shutdown; the line lands or it
+        # doesn't.
+        self._stop_requested = True
+        try:
+            print(
+                f"\n[parallel] received signal {signum} — stopping after current item",
+                flush=True,
+            )
+        except Exception:
+            pass
+
+    def _maybe_sleep_for_ceiling(self) -> None:
+        """Fire a short sleep when node_count has crossed the concept
+        ceiling. Sleep does (in this order) replay → abstraction
+        formation → ceiling-prune; the prune step is the only thing
+        that ever bounds node_count during a parallel run, since the
+        parallel path has no curriculum step boundaries to hang sleep
+        off of. Cheap when graph is below ceiling — just one int compare.
+        """
+        if self.loop.graph.node_count <= config.CONCEPT_CEILING:
+            return
+        pre_nodes = self.loop.graph.node_count
+        pre_edges = self.loop.graph.edge_count
+        # Pause ingestion mode for the duration of sleep so B's surprise
+        # threshold is the standard 1.5σ during replays — same gating
+        # the sequential interleaved path uses around its sleep().
+        self.loop.predict_engine.set_ingestion_mode(False)
+        try:
+            t0 = time.perf_counter()
+            slept = self.loop.sleep(
+                now=time.time(), duration_seconds=SLEEP_DURATION,
+            )
+            dur = time.perf_counter() - t0
+            print(
+                f"[parallel] sleep @ ceiling: nodes "
+                f"{pre_nodes:,}->{self.loop.graph.node_count:,}  "
+                f"edges {pre_edges:,}->{self.loop.graph.edge_count:,}  "
+                f"replays={slept.replays_fired} "
+                f"abstractions={slept.abstractions_formed} "
+                f"({dur:.1f}s)",
+                flush=True,
+            )
+            # If a save_callback is wired, persist immediately after a
+            # ceiling sleep — abstractions and prune both happen here
+            # and we want them on disk before resuming ingestion.
+            if self._save_callback is not None:
+                self._do_save(reason="post-sleep")
+                self._writes_since_save = 0
+        except Exception as exc:
+            print(
+                f"[parallel] sleep FAILED: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
+        finally:
+            self.loop.predict_engine.set_ingestion_mode(True)
+
+    def _do_save(self, *, reason: str) -> None:
+        if self._save_callback is None:
+            return
+        try:
+            t0 = time.perf_counter()
+            self._save_callback()
+            self._n_saves += 1
+            dur = time.perf_counter() - t0
+            print(
+                f"[parallel] {reason} save complete in {dur*1000:.0f}ms "
+                f"(saves={self._n_saves}, nodes={self.loop.graph.node_count})",
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                f"[parallel] {reason} save FAILED: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
 
     # ---- internal: snapshot publishing ----
 

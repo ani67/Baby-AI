@@ -995,12 +995,23 @@ def run_parallel_ingestion(
     edges_before     = loop.graph.edge_count
     surprises_before = loop.predict_engine.surprise_count
 
+    # Periodic save while the parallel run is in flight — protects
+    # against an unkillable mp.Queue cleanup chain dropping a multi-hour
+    # run on the floor (the v0.6 "curriculum stop hung" symptom).
+    def _save_now() -> None:
+        persist.save(loop, now=time.time())
+
     t0 = time.perf_counter()
-    mgr = ParallelIngestionManager(loop=loop, n_readers=n_readers)
+    mgr = ParallelIngestionManager(
+        loop=loop,
+        n_readers=n_readers,
+        save_callback=_save_now,
+    )
     items_processed = mgr.run(sources_by_domain)
     duration = time.perf_counter() - t0
 
-    persist.save(loop, now=time.time())
+    # Manager already issues a final save in its finally block when a
+    # save_callback is provided, so we don't need a redundant one here.
 
     summary = {
         "items_processed":   items_processed,

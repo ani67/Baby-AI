@@ -129,6 +129,18 @@ def encode_text(text: str, dim: int = D_REP) -> np.ndarray:
     return encode_text_char_trigram(text, dim=dim)
 
 
+def encode_text_batch(texts: list[str], dim: int = D_REP) -> np.ndarray:
+    """Batch text encoder. Returns (B, D) np.ndarray of L2-normalized
+    rows. Used by encode_corpus.py to amortize the GPU dispatch (post
+    Section 5: GloVe matrix lives on MPS, the batch is a single matmul).
+    Falls back to a per-item loop today; same shape contract holds.
+    """
+    from backend.encoders import encode_text_glove_batch, encode_text_char_trigram_batch
+    if ENCODER_TEXT_ID == ENCODER_TEXT_GLOVE:
+        return encode_text_glove_batch(texts, dim=dim)
+    return encode_text_char_trigram_batch(texts, dim=dim)
+
+
 def encode_image(image: np.ndarray, dim: int = D_REP) -> np.ndarray:
     """Patch-stats encoder: mean-pool to 16×16, flatten, L2-normalize.
 

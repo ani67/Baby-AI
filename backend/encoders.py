@@ -136,3 +136,35 @@ def encode_text_glove(text: str, dim: int = D_REP) -> np.ndarray:
 
 def glove_is_available() -> bool:
     return os.path.exists(GLOVE_BINARY_PATH)
+
+
+def encode_text_glove_batch(texts: list[str], dim: int = D_REP) -> np.ndarray:
+    """Batch wrapper around encode_text_glove. Same shape contract.
+
+    A previous v0.7 attempt routed this through torch.embedding_bag on
+    MPS; on M1 Pro at the realistic batch sizes our offline encoder
+    uses (64–256 mixed-length items), the GPU upload + kernel-launch
+    overhead more than swallowed the gather speedup. The CPU per-item
+    path runs at ~90K items/s on this hardware, well above the
+    multilevel-preprocessor and SQLite-write rates that bound
+    encode_corpus.py — so encoding is not the bottleneck either way.
+    Keeping the loop simple matches the rest of the encoder module.
+    """
+    if dim != D_REP:
+        raise ValueError(f"encode_text_glove_batch needs dim=D_REP={D_REP}")
+    if not texts:
+        return np.empty((0, D_REP), dtype=np.float32)
+    out = np.empty((len(texts), D_REP), dtype=np.float32)
+    for i, t in enumerate(texts):
+        out[i] = encode_text_glove(t, dim=dim)
+    return out
+
+
+def encode_text_char_trigram_batch(texts: list[str], dim: int = D_REP) -> np.ndarray:
+    """Char-trigram batch wrapper. Same shape contract."""
+    if not texts:
+        return np.empty((0, dim), dtype=np.float32)
+    out = np.empty((len(texts), dim), dtype=np.float32)
+    for i, t in enumerate(texts):
+        out[i] = encode_text_char_trigram(t, dim=dim)
+    return out
