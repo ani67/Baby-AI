@@ -22,15 +22,9 @@ What does NOT exist (deferred to later phases):
 """
 from __future__ import annotations
 
-# OMP threading conflict fix — FAISS and PyTorch each link their own
-# libomp, and concurrent init crashes the process at the kernel level
-# (no Python traceback, just a resource_tracker leaked-semaphore warning
-# at shutdown). MUST be set before `import faiss` and before any module
-# that imports torch — once either library initialises its thread pool
-# the env var is too late. start.sh exports the same vars at shell
-# level and run_curriculum.py mirrors them at the top of its own module
-# (it spawns the LM trainer subprocess). __future__ imports must be the
-# first statement, so the env vars are set immediately after.
+# Phase 8 (v0.7): faiss-cpu is gone; the index is now PyTorch matmul
+# on MPS. The OMP env vars stay as belt-and-braces against any future
+# multi-libomp dep regression.
 import os
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
@@ -39,20 +33,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 import numpy as np
-
-# Phase 7 stability fix — DO NOT import faiss at module level. The api
-# process imports backend.graph transitively; faiss-cpu's libomp then
-# co-loads with torch's libomp inside the same process and the kernel
-# kills the process during cd.generate() with no Python traceback. By
-# deferring the import to first use (curriculum-side ingestion paths
-# explicitly call _rebuild_faiss_index() on startup), the api process
-# never imports faiss and so never has both libraries co-resident.
-def _faiss_module():
-    """Lazy faiss accessor. Callers MUST tolerate ImportError if
-    faiss-cpu isn't installed; nearest() then falls back to brute force.
-    """
-    import faiss  # noqa: PLC0415
-    return faiss
+import torch
 
 from backend.config import (
     AUTO_LINK_K,
@@ -62,6 +43,152 @@ from backend.config import (
     PRUNE_TO,
     R_MATCH,
 )
+
+
+# ============================================================
+# MPSConceptIndex — replaces FAISS IndexFlatIP
+# ============================================================
+#
+# Three problems FAISS gave us, all solved by torch:
+#   1. faiss-cpu's libomp co-loaded with torch's libomp killed the api
+#      at cd.generate() (silent kernel kill, no Python traceback). With
+#      torch as the only matmul lib, libomp is single-vendor.
+#   2. faiss IndexFlatIP at small-to-medium N (5-50K) was actually
+#      slower per-query than numpy BLAS on M1 (BLAS wins on small
+#      matrices; the FAISS speedup for incremental write+search was
+#      from avoiding full rebuild on every dirty bit, not from the
+#      search itself).
+#   3. faiss-cpu doesn't use the GPU. torch can pin the matrix to MPS
+#      and do batched matmul on the M1 unified-memory GPU at no
+#      transfer cost.
+#
+# Same incremental-add semantics as the old FAISS-backed version:
+# write_on_surprise calls add(); strengthen path is a no-op (embeddings
+# don't change). _remove_node calls remove() during prune; rebuild()
+# fires once after MindPersistence.load to populate from saved nodes.
+# ============================================================
+class MPSConceptIndex:
+    """Cosine-similarity index over a torch tensor on MPS (with CPU
+    fallback when MPS isn't available). Inputs are L2-normalized at add
+    time so search is plain inner-product matmul.
+    """
+
+    def __init__(self, d_rep: int = D_REP) -> None:
+        self._device = (
+            torch.device("mps")
+            if torch.backends.mps.is_available()
+            else torch.device("cpu")
+        )
+        self._d_rep = d_rep
+        self._matrix: torch.Tensor | None = None   # (N, D) on device
+        self._id_map: list[int] = []               # row index → concept_id
+
+    @property
+    def ntotal(self) -> int:
+        return len(self._id_map)
+
+    @property
+    def device(self) -> str:
+        return str(self._device)
+
+    def add(self, embedding: np.ndarray, concept_id: int) -> None:
+        vec = torch.tensor(
+            embedding, dtype=torch.float32, device=self._device,
+        ).unsqueeze(0)
+        if self._matrix is None:
+            self._matrix = vec
+        else:
+            self._matrix = torch.cat([self._matrix, vec], dim=0)
+        self._id_map.append(int(concept_id))
+
+    def remove(self, concept_id: int) -> None:
+        try:
+            idx = self._id_map.index(int(concept_id))
+        except ValueError:
+            return
+        self._id_map.pop(idx)
+        if self._matrix is None:
+            return
+        keep = list(range(self._matrix.shape[0]))
+        keep.pop(idx)
+        if keep:
+            self._matrix = self._matrix[keep]
+        else:
+            self._matrix = None
+
+    def remove_many(self, concept_ids: set[int]) -> None:
+        """Bulk remove. Single mask + index, much cheaper than N calls
+        to remove() during a prune that drops thousands of nodes."""
+        if not concept_ids:
+            return
+        if self._matrix is None:
+            self._id_map = [c for c in self._id_map if c not in concept_ids]
+            return
+        keep_indices = [
+            i for i, cid in enumerate(self._id_map)
+            if cid not in concept_ids
+        ]
+        if not keep_indices:
+            self._matrix = None
+            self._id_map = []
+            return
+        self._matrix = self._matrix[keep_indices]
+        self._id_map = [self._id_map[i] for i in keep_indices]
+
+    def search(self, query: np.ndarray, k: int = 1) -> tuple[list[float], list[int]]:
+        if self._matrix is None or not self._id_map:
+            return [], []
+        q = torch.tensor(
+            query, dtype=torch.float32, device=self._device,
+        ).unsqueeze(0)
+        sims = (self._matrix @ q.T).squeeze(1)
+        kk = min(int(k), len(self._id_map))
+        top_sims, top_idx = sims.topk(kk)
+        return (
+            top_sims.cpu().tolist(),
+            [self._id_map[int(i)] for i in top_idx.cpu().tolist()],
+        )
+
+    def search_batch(
+        self, queries: np.ndarray, k: int = 1,
+    ) -> list[tuple[float, int]]:
+        if self._matrix is None or not self._id_map:
+            return [(0.0, -1)] * int(np.asarray(queries).shape[0])
+        Q = torch.tensor(queries, dtype=torch.float32, device=self._device)
+        sims = Q @ self._matrix.T
+        best_sims, best_idx = sims.max(dim=1)
+        bs = best_sims.cpu().tolist()
+        bi = best_idx.cpu().tolist()
+        return [(float(bs[i]), self._id_map[int(bi[i])]) for i in range(len(bs))]
+
+    def rebuild(self, nodes: dict) -> None:
+        if not nodes:
+            self._matrix = None
+            self._id_map = []
+            return
+        ids = sorted(nodes.keys())
+        rows = np.empty((len(ids), self._d_rep), dtype=np.float32)
+        for i, cid in enumerate(ids):
+            emb = nodes[cid].embedding
+            n = float(np.linalg.norm(emb))
+            rows[i] = emb / n if n >= 1e-9 else 0.0
+        self._matrix = torch.tensor(rows, dtype=torch.float32, device=self._device)
+        self._id_map = ids
+
+    def to_numpy_matrix(self) -> np.ndarray | None:
+        if self._matrix is None:
+            return None
+        return self._matrix.cpu().numpy().astype(np.float32, copy=False)
+
+    @classmethod
+    def from_numpy_matrix(
+        cls, matrix: np.ndarray, id_map: list[int], d_rep: int = D_REP,
+    ) -> "MPSConceptIndex":
+        idx = cls(d_rep=d_rep)
+        if matrix is not None and len(id_map) > 0:
+            idx._matrix = torch.tensor(matrix, dtype=torch.float32, device=idx._device)
+            idx._id_map = list(id_map)
+        return idx
 
 
 class EdgeType(Enum):
@@ -202,21 +329,10 @@ class ConceptGraph:
         self._matrix_ids: list[int] = []
         self._matrix_dirty: bool = True
 
-        # FAISS exact-IP index (Phase 7 perf fix). On L2-normalized vectors
-        # inner product equals cosine similarity, so IndexFlatIP gives
-        # identical results to the brute-force matmul but in vectorized C.
-        # Add-only — strengthen does not change embeddings, so the index
-        # stays in sync without invalidation.
-        #
-        # Lazy-init: starts at None. Ingestion-heavy callers (run_curriculum,
-        # ingest_book, parallel_ingestion) call _rebuild_faiss_index() at
-        # startup which imports faiss and builds the index. The api
-        # process never calls that, so faiss never loads in api — keeping
-        # libomp single-vendor in that process and avoiding the GPT-2
-        # generate() crash. nearest()/nearest_k() check None and fall
-        # back to brute force when the index isn't built.
-        self._faiss_index = None
-        self._faiss_id_map: list[int] = []
+        # MPSConceptIndex (Phase 8 / v0.7) replaces FAISS. Single torch-
+        # backed index works equally in api, curriculum, and trainer
+        # processes — no libomp conflict. Always initialised; api too.
+        self._index = MPSConceptIndex(d_rep=D_REP)
 
     @property
     def node_count(self) -> int:
@@ -233,66 +349,33 @@ class ConceptGraph:
     # ---- queries ----
 
     def nearest(self, representation: np.ndarray) -> tuple[int, float] | None:
-        """Return (concept_id, cosine_similarity) for the nearest node, or
-        None if the graph is empty.
-
-        Uses FAISS when the index has been built (curriculum-side hot
-        loop) and falls back to brute-force matmul when faiss isn't
-        loaded in this process (api process — see __init__ for why).
-        Both branches are bit-equivalent on L2-normalized vectors.
-        """
-        if not self.nodes:
+        """Return (concept_id, cosine_similarity) for the nearest node,
+        or None if the graph is empty. Goes through MPSConceptIndex —
+        torch matmul on the M1 unified-memory GPU, flat curve up to
+        N=50K+."""
+        if not self.nodes or self._index.ntotal == 0:
             return None
-        if self._faiss_index is not None:
-            if self._faiss_index.ntotal == 0:
-                return None
-            rep = representation.astype(np.float32, copy=False)
-            n = float(np.linalg.norm(rep))
-            if n < 1e-9:
-                return None
-            rep_unit = (rep / n).reshape(1, -1).astype(np.float32, copy=False)
-            D, I = self._faiss_index.search(rep_unit, 1)
-            idx = int(I[0][0])
-            if idx < 0:
-                return None
-            return self._faiss_id_map[idx], float(D[0][0])
-        # Brute-force fallback. _cosine_to_all rebuilds the matrix lazily
-        # when _matrix_dirty; the api hits this path on first nearest()
-        # after MindPersistence.load and stays here.
-        sims = self._cosine_to_all(representation)
-        if sims.size == 0:
+        rep = representation.astype(np.float32, copy=False)
+        n = float(np.linalg.norm(rep))
+        if n < 1e-9:
             return None
-        idx = int(np.argmax(sims))
-        return self._matrix_ids[idx], float(sims[idx])
+        sims, ids = self._index.search(rep / n, k=1)
+        if not sims:
+            return None
+        return int(ids[0]), float(sims[0])
 
     def nearest_k(
         self, representation: np.ndarray, k: int,
     ) -> list[tuple[int, float]]:
-        """Return up to k (concept_id, cosine) pairs sorted descending."""
-        if not self.nodes or k <= 0:
+        """Top-k (concept_id, cosine) descending."""
+        if not self.nodes or k <= 0 or self._index.ntotal == 0:
             return []
-        if self._faiss_index is not None:
-            if self._faiss_index.ntotal == 0:
-                return []
-            rep = representation.astype(np.float32, copy=False)
-            n = float(np.linalg.norm(rep))
-            if n < 1e-9:
-                return []
-            rep_unit = (rep / n).reshape(1, -1).astype(np.float32, copy=False)
-            kk = min(int(k), self._faiss_index.ntotal)
-            D, I = self._faiss_index.search(rep_unit, kk)
-            out: list[tuple[int, float]] = []
-            for d, i in zip(D[0].tolist(), I[0].tolist()):
-                if i < 0:
-                    continue
-                out.append((self._faiss_id_map[int(i)], float(d)))
-            return out
-        # Brute-force fallback for the api / no-faiss case.
-        sims = self._cosine_to_all(representation)
-        if sims.size == 0:
+        rep = representation.astype(np.float32, copy=False)
+        n = float(np.linalg.norm(rep))
+        if n < 1e-9:
             return []
-        order = np.argsort(-sims)[:int(k)]
-        return [(self._matrix_ids[int(i)], float(sims[int(i)])) for i in order]
+        sims, ids = self._index.search(rep / n, k=int(k))
+        return [(int(ids[i]), float(sims[i])) for i in range(len(ids))]
 
     def find_or_match(self, representation: np.ndarray, threshold: float = R_MATCH) -> int | None:
         """Return concept_id of the nearest node with cosine ≥ threshold, else None."""
@@ -353,16 +436,14 @@ class ConceptGraph:
             surprise_at_birth=float(surprise),
         )
         self._matrix_dirty = True
-        # Register in FAISS — kept in sync incrementally so nearest() never
-        # needs to rebuild on the hot path. Strengthen path doesn't change
-        # the embedding, so it never invalidates. Skipped entirely when
-        # the index hasn't been built (api process / no-faiss mode).
-        if self._faiss_index is not None:
-            n = float(np.linalg.norm(embedding))
-            if n >= 1e-9:
-                unit = (embedding / n).reshape(1, -1).astype(np.float32, copy=False)
-                self._faiss_index.add(unit)
-                self._faiss_id_map.append(cid)
+        # Register in MPSConceptIndex — incremental add so nearest() never
+        # has to rebuild on the hot path. Strengthen path doesn't change
+        # the embedding, so it never invalidates.
+        n = float(np.linalg.norm(embedding))
+        if n >= 1e-9:
+            self._index.add(
+                (embedding / n).astype(np.float32, copy=False), cid,
+            )
         return cid, True
 
     # ---- edges ----
@@ -548,30 +629,46 @@ class ConceptGraph:
 
         # Drop until we hit PRUNE_TO. Never overflow into the immune set.
         n_to_drop = min(self.node_count - PRUNE_TO, len(candidates))
-        drop_ids = [cid for _, cid in candidates[:n_to_drop]]
+        drop_set: set[int] = {cid for _, cid in candidates[:n_to_drop]}
 
-        for cid in drop_ids:
-            self._remove_node(cid, rebuild_faiss=False)
+        # Bulk-remove from the MPS index (single mask op) — much cheaper
+        # than calling self._index.remove(cid) per-cid.
+        self._index.remove_many(drop_set)
 
-        # Rebuild FAISS once at the end (IndexFlatIP doesn't support
-        # in-place removal; doing this per-delete is O(N²) and tanks
-        # the prune from milliseconds to minutes at 70K nodes).
-        if self._faiss_index is not None:
-            self._rebuild_faiss_index()
-        # Dense matrix invalidated similarly.
+        # Drop nodes + their incident edges. Use a single edge-key sweep
+        # since we know all the dropped cids up front.
+        for cid in drop_set:
+            self.nodes.pop(cid, None)
+            self._pins.pop(cid, None)
+        survived: dict[tuple[int, int, EdgeType], Edge] = {}
+        for k, e in self._edges.items():
+            if e.source_id in drop_set or e.target_id in drop_set:
+                continue
+            survived[k] = e
+        self._edges = survived
+        # Rebuild adjacency indexes from survivors (single pass).
+        self._out_edges = {}
+        self._in_edges = {}
+        for e in self._edges.values():
+            self._out_edges.setdefault(e.source_id, []).append(e)
+            self._in_edges.setdefault(e.target_id, []).append(e)
+
+        # Dense matrix invalidated.
         self._matrix = None
         self._matrix_ids = []
         self._matrix_dirty = True
 
-        return len(drop_ids)
+        return len(drop_set)
 
-    def _remove_node(self, cid: int, rebuild_faiss: bool = True) -> None:
-        """Remove a concept node and all its incident edges. By default
-        rebuilds the FAISS index — pass rebuild_faiss=False from a
-        bulk-prune loop and rebuild once at the end."""
+    def _remove_node(self, cid: int) -> None:
+        """Remove one concept and its incident edges. Used in tests +
+        single-cid removal paths. The bulk-prune path inside
+        prune_to_ceiling does NOT route through here — it handles the
+        sweep itself for performance."""
         if cid not in self.nodes:
             return
         del self.nodes[cid]
+        self._pins.pop(cid, None)
 
         keys_to_remove = [
             k for k in self._edges
@@ -579,21 +676,16 @@ class ConceptGraph:
         ]
         for k in keys_to_remove:
             del self._edges[k]
-        # Rebuild adjacency indexes by filtering survivors. Cheaper than
-        # tracking incremental removals against the existing lists.
         self._out_edges = {}
         self._in_edges = {}
         for e in self._edges.values():
             self._out_edges.setdefault(e.source_id, []).append(e)
             self._in_edges.setdefault(e.target_id, []).append(e)
 
-        # Pin set: drop entry if present (defensive — protected concepts
-        # shouldn't reach _remove_node, but if they do don't leave a
-        # dangling pin to a missing cid).
-        self._pins.pop(cid, None)
-
-        if rebuild_faiss and self._faiss_index is not None:
-            self._rebuild_faiss_index()
+        # Drop from the MPS index.
+        self._index.remove(cid)
+        # Dense matrix invalidated.
+        self._matrix_dirty = True
 
     # ---- auto-linking (Phase 4 — densifies the graph as concepts arrive) ----
 
@@ -623,14 +715,8 @@ class ConceptGraph:
         """
         if concept_id not in self.nodes:
             return []
-        # Skip if there's nothing else to link to. Use FAISS ntotal when
-        # available, fall back to len(nodes) for the no-faiss api path.
-        ntotal = (
-            self._faiss_index.ntotal
-            if self._faiss_index is not None
-            else len(self.nodes)
-        )
-        if ntotal <= 1:
+        # Skip if there's nothing else to link to.
+        if self._index.ntotal <= 1:
             return []
 
         rep = self.nodes[concept_id].embedding
@@ -833,25 +919,14 @@ class ConceptGraph:
         self._matrix_ids = ids
         self._matrix_dirty = False
 
-    def _rebuild_faiss_index(self) -> None:
-        """Build (or rebuild) the FAISS index over all current nodes.
-        Imports faiss lazily — the api process never calls this so it
-        never imports faiss, avoiding the libomp co-load that crashed
-        torch's GPT-2 forward pass. Curriculum-side ingestion paths
-        (run_curriculum, ingest_book, parallel_ingestion) call this
-        explicitly after MindPersistence.load.
+    def _rebuild_index(self) -> None:
+        """Rebuild the MPS concept index over all current nodes. Called
+        from MindPersistence._restore_graph after the bulk node load.
+        Single GPU upload; flat curve to N=50K+ on M1 Pro.
         """
-        faiss = _faiss_module()
-        index = faiss.IndexFlatIP(D_REP)
-        id_map: list[int] = []
-        if self.nodes:
-            ids = sorted(self.nodes.keys())
-            rows = np.empty((len(ids), D_REP), dtype=np.float32)
-            for i, cid in enumerate(ids):
-                emb = self.nodes[cid].embedding
-                n = float(np.linalg.norm(emb))
-                rows[i] = emb / n if n >= 1e-9 else 0.0
-                id_map.append(cid)
-            index.add(rows)
-        self._faiss_index = index
-        self._faiss_id_map = id_map
+        self._index.rebuild(self.nodes)
+
+    # Backwards-compat alias — older code paths call _rebuild_faiss_index
+    # (run_curriculum.load_or_construct, ingest_book, scripts/prune_graph,
+    # diagnostic scripts). Keep one name reachable for now.
+    _rebuild_faiss_index = _rebuild_index

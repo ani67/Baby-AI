@@ -398,31 +398,24 @@ class ParallelIngestionManager:
     # ---- internal: snapshot publishing ----
 
     def _push_snapshot(self) -> None:
-        """Serialize the FAISS index + id-map into a GraphSnapshot and
-        push to the readers. Best-effort — failures here only mean
-        readers get a stale snapshot, which is fine because writer-side
-        find_or_match remains authoritative."""
+        """Serialize the MPSConceptIndex matrix + id-map into a
+        GraphSnapshot and push to the readers. Best-effort — failures
+        here only mean readers get a stale snapshot, which is fine
+        because writer-side find_or_match remains authoritative."""
         try:
-            import faiss
-        except ImportError:
-            return
-
-        try:
+            mat = self.loop.graph._index.to_numpy_matrix()
+            if mat is None:
+                return
             buf = io.BytesIO()
-            writer = faiss.PyCallbackIOWriter(buf.write)
-            faiss.write_index(self.loop.graph._faiss_index, writer)
-            del writer  # flush
+            np.save(buf, mat, allow_pickle=False)
             snapshot = GraphSnapshot(
-                faiss_index_bytes=buf.getvalue(),
-                id_map=list(self.loop.graph._faiss_id_map),
+                faiss_index_bytes=buf.getvalue(),  # field name kept for compat
+                id_map=list(self.loop.graph._index._id_map),
                 node_count=self.loop.graph.node_count,
                 updated_at=time.time(),
             )
             self.diff_queue.push_snapshot(snapshot)
         except Exception as exc:
-            # Snapshot failures are non-fatal but we shouldn't swallow
-            # silently — readers won't get fresh priors but the writer
-            # can keep going. Log once per failure type.
             print(
                 f"[parallel] snapshot push failed: "
                 f"{type(exc).__name__}: {exc}",
