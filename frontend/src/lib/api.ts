@@ -44,6 +44,69 @@ export async function fetchGraph(): Promise<GraphPayload> {
   return res.json();
 }
 
+/** Compact binary representation of the graph used by the GPU
+ *  renderer. Layout matches backend.api.get_graph_binary:
+ *    header:   i32 node_count, i32 edge_count
+ *    node:     i32 id, f32 ex, f32 ey, f32 ez, f32 act, f32 surp, f32 arousal
+ *    edge:     i32 src_idx, i32 tgt_idx, f32 weight, f32 type_idx_norm
+ *  source/target on edges are *indices into the node array*, not
+ *  concept_ids. The caller can use them directly as texture coordinates.
+ */
+export type BinaryNode = {
+  id: number;
+  ex: number; ey: number; ez: number;   // embedding[0..2]
+  activation: number;                    // [0,1] normalized
+  surprise: number;
+  arousal: number;
+};
+export type BinaryEdge = {
+  sourceIdx: number;
+  targetIdx: number;
+  weight: number;
+  typeNorm: number;                      // EdgeType ordinal / 10
+};
+export type BinaryGraph = {
+  nodes: BinaryNode[];
+  edges: BinaryEdge[];
+};
+
+export async function fetchGraphBinary(): Promise<BinaryGraph> {
+  const res = await fetch("/graph/binary");
+  if (!res.ok) throw new Error(await res.text());
+  const buf = await res.arrayBuffer();
+  const view = new DataView(buf);
+
+  const nodeCount = view.getInt32(0, true);
+  const edgeCount = view.getInt32(4, true);
+
+  const nodes: BinaryNode[] = new Array(nodeCount);
+  for (let i = 0; i < nodeCount; i++) {
+    const o = 8 + i * 28;
+    nodes[i] = {
+      id:         view.getInt32(o, true),
+      ex:         view.getFloat32(o + 4, true),
+      ey:         view.getFloat32(o + 8, true),
+      ez:         view.getFloat32(o + 12, true),
+      activation: view.getFloat32(o + 16, true),
+      surprise:   view.getFloat32(o + 20, true),
+      arousal:    view.getFloat32(o + 24, true),
+    };
+  }
+
+  const edgeStart = 8 + nodeCount * 28;
+  const edges: BinaryEdge[] = new Array(edgeCount);
+  for (let i = 0; i < edgeCount; i++) {
+    const o = edgeStart + i * 16;
+    edges[i] = {
+      sourceIdx: view.getInt32(o, true),
+      targetIdx: view.getInt32(o + 4, true),
+      weight:    view.getFloat32(o + 8, true),
+      typeNorm:  view.getFloat32(o + 12, true),
+    };
+  }
+  return { nodes, edges };
+}
+
 export async function save() {
   const res = await fetch("/save", { method: "POST" });
   if (!res.ok) throw new Error(await res.text());

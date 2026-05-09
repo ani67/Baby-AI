@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { fetchGraph, fetchState, idle, subscribe } from "./lib/api";
+import { fetchGraphBinary, fetchState, idle, subscribe } from "./lib/api";
+import type { BinaryGraph } from "./lib/api";
 import type {
   AnyEvent,
   CycleEvent,
-  GraphPayload,
   Stats,
   StateSnapshot,
 } from "./lib/types";
@@ -14,21 +14,29 @@ import { InputPanel } from "./components/InputPanel";
 import { MindGraph } from "./components/MindGraph";
 import { StatsPanel } from "./components/StatsPanel";
 
-const GRAPH_REFETCH_INTERVAL_MS = 2000;
+// Graph re-fetch is now a heavy event (~8 MB binary + texture rebuild +
+// worker re-init). Bump the interval up. The WS still pushes per-cycle
+// state to the existing stateTex; we only need the full graph back when
+// nodes/edges actually grew.
+const GRAPH_REFETCH_INTERVAL_MS = 30_000;
 const AUTO_IDLE_INTERVAL_MS     = 10_000;
 
 export function App() {
-  const [graph, setGraph] = useState<GraphPayload | null>(null);
+  const [graph, setGraph] = useState<BinaryGraph | null>(null);
   const [state, setState] = useState<StateSnapshot | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [lastCycle, setLastCycle] = useState<CycleEvent | null>(null);
   const [conversation, setConversation] = useState<ConversationEntry[]>([]);
   const lastInteractionRef = useRef<number>(Date.now());
+  const lastNodeCountRef = useRef<number>(0);
 
   // Initial fetch of state + graph.
   useEffect(() => {
     fetchState().then((s) => { setState(s); setStats(s); }).catch(console.error);
-    fetchGraph().then(setGraph).catch(console.error);
+    fetchGraphBinary().then((g) => {
+      setGraph(g);
+      lastNodeCountRef.current = g.nodes.length;
+    }).catch(console.error);
   }, []);
 
   // WebSocket subscription.
@@ -57,15 +65,33 @@ export function App() {
     });
   }, []);
 
-  // Periodic graph re-fetch — the WS pushes per-cycle deltas but the full
-  // graph (with new nodes / new edges) is cheaper to re-pull on a slow timer
-  // than to incrementally diff over the wire.
+  // Periodic graph re-fetch. Cheaper than diffing on the wire, but
+  // costly enough (worker re-init + texture rebuild) that we only do it
+  // when the node count actually moved. /state gives us the count
+  // every couple seconds; the binary fetch only fires when it changes
+  // (or every GRAPH_REFETCH_INTERVAL_MS as a sanity poll).
   useEffect(() => {
-    const id = window.setInterval(() => {
-      fetchGraph().then(setGraph).catch(() => {});
-      fetchState().then(setState).catch(() => {});
+    const stateId = window.setInterval(() => {
+      fetchState().then((s) => {
+        setState(s);
+        if (Math.abs(s.node_count - lastNodeCountRef.current) >= 200) {
+          fetchGraphBinary().then((g) => {
+            setGraph(g);
+            lastNodeCountRef.current = g.nodes.length;
+          }).catch(() => {});
+        }
+      }).catch(() => {});
+    }, 2000);
+    const graphId = window.setInterval(() => {
+      fetchGraphBinary().then((g) => {
+        setGraph(g);
+        lastNodeCountRef.current = g.nodes.length;
+      }).catch(() => {});
     }, GRAPH_REFETCH_INTERVAL_MS);
-    return () => window.clearInterval(id);
+    return () => {
+      window.clearInterval(stateId);
+      window.clearInterval(graphId);
+    };
   }, []);
 
   // Auto-idle every 10s when no manual input. Toggle is broadcast from Controls

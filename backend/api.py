@@ -35,7 +35,7 @@ from pydantic import BaseModel
 from backend.affect import AffectStack
 from backend.attention import Attention
 from backend.expression import Expression
-from backend.graph import ConceptGraph
+from backend.graph import ConceptGraph, EdgeType
 from backend.identity import (
     ChosenCandidate,
     Identity,
@@ -557,6 +557,90 @@ async def get_state():
 async def get_graph():
     async with state["lock"]:
         return serialize_graph(state["loop"], now=time.time())
+
+
+# Stable per-process ordering of EdgeType for the binary encoder. We
+# pack the enum index / 10 into a float channel so the shader can
+# branch on it without a string lookup.
+_EDGE_TYPE_ORDER = list(EdgeType)
+_EDGE_TYPE_INDEX = {t: i for i, t in enumerate(_EDGE_TYPE_ORDER)}
+
+
+@app.get("/graph/binary")
+async def get_graph_binary():
+    """Compact binary representation of the graph for the GPU-instanced
+    frontend renderer. ~7× smaller than the JSON /graph payload at
+    73K nodes / 416K edges (8.6 MB vs 57 MB), and the frontend can
+    parse it into typed arrays without a JSON.parse pass.
+
+    Layout (little-endian throughout):
+
+        header                 : i32 node_count, i32 edge_count
+        nodes  (28 bytes each) : i32 id,
+                                  f32 ex, f32 ey, f32 ez,    (embedding[0:3])
+                                  f32 activation_norm,
+                                  f32 surprise_at_birth,
+                                  f32 affect_arousal_proxy
+        edges  (16 bytes each) : i32 source_idx, i32 target_idx,
+                                  f32 weight,
+                                  f32 type_idx_norm           (enum_index / 10)
+
+    `source_idx` / `target_idx` are positions in the node array (NOT
+    concept_ids). The frontend uses them directly as indices into the
+    position texture in the shader.
+    """
+    import struct
+    from fastapi.responses import Response
+    import numpy as np
+
+    async with state["lock"]:
+        loop: MainLoop = state["loop"]
+        g = loop.graph
+        nodes = list(g.nodes.values())
+        edges = list(g._edges.values())
+        node_count = len(nodes)
+        edge_count = len(edges)
+
+        # Build id → index map and the node payload in one pass.
+        node_buf = bytearray(node_count * 28)
+        node_index: dict[int, int] = {}
+        for i, n in enumerate(nodes):
+            node_index[n.concept_id] = i
+            emb = n.embedding
+            ex = float(emb[0]) if emb.shape[0] > 0 else 0.0
+            ey = float(emb[1]) if emb.shape[0] > 1 else 0.0
+            ez = float(emb[2]) if emb.shape[0] > 2 else 0.0
+            arousal_proxy = float(np.linalg.norm(n.affect_trace.running_state))
+            struct.pack_into(
+                "<i6f",
+                node_buf,
+                i * 28,
+                int(n.concept_id),
+                ex, ey, ez,
+                min(float(n.activation_count) / 100.0, 1.0),
+                float(n.surprise_at_birth),
+                arousal_proxy,
+            )
+
+        edge_buf = bytearray(edge_count * 16)
+        for i, e in enumerate(edges):
+            src_idx = node_index.get(int(e.source_id), 0)
+            tgt_idx = node_index.get(int(e.target_id), 0)
+            type_norm = _EDGE_TYPE_INDEX.get(e.type, 0) / 10.0
+            struct.pack_into(
+                "<iiff",
+                edge_buf,
+                i * 16,
+                src_idx,
+                tgt_idx,
+                float(e.weight),
+                float(type_norm),
+            )
+
+        header = struct.pack("<ii", node_count, edge_count)
+        payload = header + bytes(node_buf) + bytes(edge_buf)
+
+    return Response(content=payload, media_type="application/octet-stream")
 
 
 @app.post("/save")

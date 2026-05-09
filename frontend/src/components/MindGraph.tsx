@@ -1,82 +1,197 @@
-// Phase 7 perf rewrite: drops 3d-force-graph in favor of raw Three.js +
-// instanced primitives. ALL nodes render as one THREE.InstancedMesh (one
-// draw call regardless of count). ALL edges render as one
-// THREE.LineSegments with vertex colors (one draw call). d3-force-3d
-// drives positions directly. The scene tops out at ~3 GPU draw calls
-// total instead of ~10,000 — runs at 60 fps even at 10K+ nodes.
+// GPU-instanced graph render with state textures + Web Worker force sim.
 //
-// Same visual contract as before: lit 3D spheres (alignment hue, arousal
-// saturation), per-edge color by type, transient pulse rings on cycle
-// events, breathing modulation on recently-active concepts.
+// Per-frame work on the main thread is reduced to: nothing (the worker
+// drives layout, the GPU resolves positions in the vertex shader). The
+// only main-thread JS in the render loop is OrbitControls + a single
+// `posTex.needsUpdate = true` whenever the worker delivers a TICK.
+//
+// Architecture (one draw call for nodes, one for edges):
+//
+//   posTex     RGBA32F, one texel/node:    pos.xyz, _
+//   stateTex   RGBA32F, one texel/node:    activation, arousal, act_count, pinned
+//   edgeTex    RGBA32F, one texel/edge:    src_idx, tgt_idx, weight, type_norm
+//
+//   node draw  InstancedMesh(sphere, count=N), shader:
+//                idx = gl_InstanceID
+//                pos = texelFetch(posTex, idx2(idx))
+//                state = texelFetch(stateTex, idx2(idx))
+//                color/scale derived in shader from state + time
+//
+//   edge draw  LineSegments(count=2*E), shader:
+//                edgeIdx  = gl_VertexID >> 1
+//                endpoint = gl_VertexID & 1
+//                edge = texelFetch(edgeTex, idx2(edgeIdx))
+//                nodeIdx = endpoint == 0 ? edge.r : edge.g
+//                pos = texelFetch(posTex, idx2(nodeIdx))
+//
+// The CPU loops over 73K nodes and 416K edges that used to run every
+// frame are gone. Position updates cost one Float32Array copy + one
+// texture upload (~1 MB) per worker TICK, not per frame.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-// d3-force-3d arrived as a transitive dep of 3d-force-graph; we import
-// the slice we need directly.
-import {
-  forceSimulation,
-  forceManyBody,
-  forceLink,
-  forceCenter,
-} from "d3-force-3d";
-import type { GraphPayload, GraphNode, GraphEdge, CycleEvent } from "../lib/types";
+
+import type { BinaryGraph, BinaryNode } from "../lib/api";
+import type { CycleEvent } from "../lib/types";
+
+// Vite ?worker import — bundles + spawns the file as a Worker.
+import ForceWorker from "../workers/forceWorker.ts?worker";
 
 type Props = {
-  graph: GraphPayload | null;
+  graph: BinaryGraph | null;
   lastCycle: CycleEvent | null;
   consolidationActive: boolean;
 };
 
-// d3-force-3d mutates each node by attaching x/y/z (and vx/vy/vz) in
-// place. We mirror that here.
-type SimNode = GraphNode & {
-  x?: number; y?: number; z?: number;
-  vx?: number; vy?: number; vz?: number;
-};
-type SimLink = GraphEdge & {
-  source: number | SimNode;
-  target: number | SimNode;
-};
+// ---------------------------------------------------------------------
+// Shaders (GLSL ES 3.00 — uses gl_InstanceID, gl_VertexID, texelFetch).
+// ---------------------------------------------------------------------
 
-const EDGE_COLOR_BY_TYPE: Record<string, [number, number, number]> = {
-  is_a:         [0.65, 0.55, 0.98],
-  has_property: [0.38, 0.65, 0.98],
-  causes:       [0.97, 0.45, 0.45],
-  precedes:     [0.98, 0.57, 0.24],
-  similar_to:   [0.20, 0.83, 0.60],
-  opposite_of:  [0.96, 0.45, 0.71],
-  context_of:   [0.58, 0.64, 0.72],
-  refers_to:    [0.98, 0.75, 0.14],
-  expresses:    [0.13, 0.83, 0.93],
-  part_of:      [0.75, 0.52, 0.99],
-};
-const DEFAULT_EDGE_COLOR: [number, number, number] = [0.58, 0.64, 0.72];
+const NODE_VERT = /* glsl */ `
+precision highp float;
+precision highp sampler2D;
 
-// Color a single concept based on its alignment ([-1, 1]), arousal,
-// and abstraction-flag. Returns RGB in [0,1].
-function nodeRGB(d: GraphNode, isAbs: boolean): THREE.Color {
-  const a = Math.max(-1, Math.min(1, d.alignment));
-  const hue = (220 - 100 * a) / 360;            // 1.20 → 0.34, blue → orange
-  const arousalClamp = Math.min(1, d.arousal / 0.6);
-  const sat = 0.30 + 0.50 * arousalClamp;
-  const light = 0.50 + 0.20 * arousalClamp + (isAbs ? 0.08 : 0);
-  return new THREE.Color().setHSL(hue, sat, light);
+uniform sampler2D posTex;
+uniform sampler2D stateTex;
+uniform int       texW;          // shared width (posTex == stateTex grid)
+uniform float     time;
+
+out vec3  vColor;
+out float vActivation;
+out vec3  vWorldPos;
+
+vec3 hsl2rgb(vec3 hsl) {
+  float h = hsl.x; float s = hsl.y; float l = hsl.z;
+  vec3 rgb = clamp(abs(mod(h * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+  return l + s * (rgb - 0.5) * (1.0 - abs(2.0 * l - 1.0));
 }
 
-function nodeBaseScale(d: GraphNode, isAbs: boolean): number {
-  return 2 + Math.log1p(d.activation_count) * 1.6 + (isAbs ? 1.2 : 0);
+ivec2 idx2(int i) {
+  return ivec2(i % texW, i / texW);
 }
 
-// Pre-allocate instance buffers generously so node growth (graph grows
-// during ingestion) doesn't force a full rebuild on every poll.
-const INSTANCE_CAPACITY_GROWTH = 1.25;
-const MIN_INSTANCE_CAPACITY = 1024;
+void main() {
+  int  iid     = gl_InstanceID;
+  vec4 posTexel  = texelFetch(posTex,   idx2(iid), 0);
+  vec4 stateT    = texelFetch(stateTex, idx2(iid), 0);
+
+  float activation = stateT.r;     // [0,1], from active_set or breathing
+  float arousal    = stateT.g;     // affect proxy
+  float actCount   = stateT.b;     // total activations, log-normalized
+  float isPinned   = stateT.a;
+
+  // breathing: only "warm" recently-active nodes pulse fast
+  float breathFreq = 0.6 + activation * 2.0;
+  float breathAmp  = 0.04 + activation * 0.16;
+  float scale      = 1.0 + breathAmp * sin(time * breathFreq + float(iid) * 0.31);
+
+  // base radius — pinned dots are bigger; abstractions read activation
+  float baseR = (isPinned > 0.5)
+    ? 1.8
+    : (1.0 + actCount * 1.5 + activation * 0.8);
+  scale *= baseR;
+
+  // color: blue (cool) → orange (active)
+  float hue = (220.0 - 140.0 * activation) / 360.0;
+  float sat = 0.30 + 0.55 * arousal;
+  float lit = 0.45 + 0.25 * actCount + 0.10 * activation;
+  vColor       = hsl2rgb(vec3(hue, sat, lit));
+  vActivation  = activation;
+
+  vec3 worldPos = posTexel.xyz + position * scale;
+  vWorldPos = worldPos;
+  gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(worldPos, 1.0);
+}
+`;
+
+const NODE_FRAG = /* glsl */ `
+precision highp float;
+in vec3  vColor;
+in float vActivation;
+in vec3  vWorldPos;
+out vec4 fragColor;
+void main() {
+  // simple cheap shading: head-light from camera
+  float ndotL = clamp(0.55 + 0.55 * normalize(vWorldPos).z, 0.4, 1.0);
+  vec3 c = vColor * ndotL;
+  // a small emissive bump for active nodes
+  c += vColor * vActivation * 0.35;
+  fragColor = vec4(c, 1.0);
+}
+`;
+
+const EDGE_VERT = /* glsl */ `
+precision highp float;
+precision highp sampler2D;
+
+uniform sampler2D posTex;
+uniform sampler2D edgeTex;
+uniform sampler2D stateTex;
+uniform int posTexW;
+uniform int edgeTexW;
+
+flat out vec3  vColor;
+flat out float vAlpha;
+
+ivec2 idx2(int i, int w) { return ivec2(i % w, i / w); }
+
+// 10 edge types, 0..9 stored as type_norm = idx / 10
+const vec3 EDGE_PALETTE[10] = vec3[10](
+  vec3(0.65, 0.55, 0.98),  // 0 is_a
+  vec3(0.38, 0.65, 0.98),  // 1 has_property
+  vec3(0.97, 0.45, 0.45),  // 2 causes
+  vec3(0.98, 0.57, 0.24),  // 3 precedes
+  vec3(0.20, 0.83, 0.60),  // 4 similar_to
+  vec3(0.96, 0.45, 0.71),  // 5 opposite_of
+  vec3(0.58, 0.64, 0.72),  // 6 context_of
+  vec3(0.98, 0.75, 0.14),  // 7 refers_to
+  vec3(0.13, 0.83, 0.93),  // 8 expresses
+  vec3(0.75, 0.52, 0.99)   // 9 part_of
+);
+
+void main() {
+  int edgeIdx  = gl_VertexID / 2;
+  int endpoint = gl_VertexID & 1;
+
+  vec4 e = texelFetch(edgeTex, idx2(edgeIdx, edgeTexW), 0);
+  int nodeIdx = (endpoint == 0) ? int(e.r + 0.5) : int(e.g + 0.5);
+  vec4 nodePos = texelFetch(posTex, idx2(nodeIdx, posTexW), 0);
+
+  // edge alpha rises with edge weight; recently-active endpoints pop
+  float w = clamp(e.b, 0.0, 1.0);
+  vec4 ns = texelFetch(stateTex, idx2(nodeIdx, posTexW), 0);
+  float activation = ns.r;
+  vAlpha = clamp(0.10 + 0.55 * w + 0.40 * activation, 0.06, 0.95);
+
+  int t = clamp(int(e.a * 10.0 + 0.5), 0, 9);
+  vColor = EDGE_PALETTE[t];
+
+  gl_Position = projectionMatrix * viewMatrix * modelMatrix
+                * vec4(nodePos.xyz, 1.0);
+}
+`;
+
+const EDGE_FRAG = /* glsl */ `
+precision highp float;
+flat in vec3  vColor;
+flat in float vAlpha;
+out vec4 fragColor;
+void main() {
+  fragColor = vec4(vColor, vAlpha);
+}
+`;
+
+// ---------------------------------------------------------------------
+
+function sqW(n: number): number {
+  return Math.max(1, Math.ceil(Math.sqrt(n)));
+}
 
 export function MindGraph({ graph, lastCycle, consolidationActive }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [hoverInfo, setHoverInfo] = useState<{
-    x: number; y: number; node: GraphNode | null;
+    x: number; y: number; node: BinaryNode | null;
   } | null>(null);
 
   const sceneRef = useRef<{
@@ -84,24 +199,40 @@ export function MindGraph({ graph, lastCycle, consolidationActive }: Props) {
     scene: THREE.Scene;
     camera: THREE.PerspectiveCamera;
     controls: OrbitControls;
-    nodeMesh: THREE.InstancedMesh;
-    nodeCapacity: number;
-    edgeLines: THREE.LineSegments;
-    edgeCapacity: number;
-    pulseGroup: THREE.Group;
-    sim: ReturnType<typeof forceSimulation>;
-    nodes: SimNode[];
-    nodeIndex: Map<number, number>;          // concept_id → instance index
-    nodesByIdx: SimNode[];                   // index aligned with nodeMesh
-    links: SimLink[];
+
+    // node state
+    posData:  Float32Array;
+    posTex:   THREE.DataTexture;
+    stateData: Float32Array;
+    stateTex:  THREE.DataTexture;
+    nodeTexW: number;
+    nodeMesh: THREE.InstancedMesh | null;
+    nodeMat:  THREE.ShaderMaterial | null;
+
+    // edge state
+    edgeData: Float32Array;
+    edgeTex:  THREE.DataTexture;
+    edgeTexW: number;
+    edgeMesh: THREE.LineSegments | null;
+    edgeMat:  THREE.ShaderMaterial | null;
+
+    // graph contents (kept on main thread for hover only)
+    nodes:  BinaryNode[];
+    nodeIdById: Map<number, number>;
+
+    // worker
+    worker: Worker | null;
+
     raycaster: THREE.Raycaster;
     pointerNDC: THREE.Vector2;
     lastInteractionMs: number;
+
+    timeUniform: { value: number };
   } | null>(null);
 
-  const lastCycleRef = useRef<CycleEvent | null>(null);
-
-  // --- one-time scene init ---
+  // -----------------------------------------------------------------
+  // 1. one-time scene init
+  // -----------------------------------------------------------------
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -112,8 +243,8 @@ export function MindGraph({ graph, lastCycle, consolidationActive }: Props) {
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x000000);
 
-    const camera = new THREE.PerspectiveCamera(60, width / height, 0.5, 4000);
-    camera.position.set(0, 0, 320);
+    const camera = new THREE.PerspectiveCamera(60, width / height, 0.5, 8000);
+    camera.position.set(0, 0, 600);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -124,82 +255,33 @@ export function MindGraph({ graph, lastCycle, consolidationActive }: Props) {
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
 
-    // Lighting — MeshStandardMaterial needs at least one light to look 3D.
-    scene.add(new THREE.AmbientLight(0xffffff, 0.55));
-    const sun = new THREE.DirectionalLight(0xffffff, 0.85);
-    sun.position.set(160, 200, 100);
-    scene.add(sun);
-
-    // ---- nodes: one InstancedMesh shared by all concepts ----
-    const sphereGeom = new THREE.SphereGeometry(1, 12, 8);
-    const sphereMat = new THREE.MeshStandardMaterial({
-      roughness: 0.35,
-      metalness: 0.1,
-      // emissive will be modulated per-instance via instanceColor on a
-      // standard material; for true emissive instancing we'd need a
-      // custom shader. For now emissive comes through as base color,
-      // which is close enough at typical zoom.
-    });
-    let nodeCapacity = MIN_INSTANCE_CAPACITY;
-    const nodeMesh = new THREE.InstancedMesh(sphereGeom, sphereMat, nodeCapacity);
-    nodeMesh.count = 0;       // start empty until graph data arrives
-    nodeMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    // Allocate per-instance color attribute up front.
-    const colorBuf = new Float32Array(nodeCapacity * 3);
-    nodeMesh.instanceColor = new THREE.InstancedBufferAttribute(colorBuf, 3);
-    nodeMesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
-    scene.add(nodeMesh);
-
-    // ---- edges: one LineSegments shared by all edges ----
-    let edgeCapacity = 1024;
-    const edgePositions = new Float32Array(edgeCapacity * 6);
-    const edgeColors = new Float32Array(edgeCapacity * 6);
-    const edgeGeom = new THREE.BufferGeometry();
-    edgeGeom.setAttribute("position",
-      new THREE.Float32BufferAttribute(edgePositions, 3).setUsage(THREE.DynamicDrawUsage));
-    edgeGeom.setAttribute("color",
-      new THREE.Float32BufferAttribute(edgeColors, 3).setUsage(THREE.DynamicDrawUsage));
-    edgeGeom.setDrawRange(0, 0);
-    const edgeMat = new THREE.LineBasicMaterial({
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.32,
-      depthWrite: false,
-    });
-    const edgeLines = new THREE.LineSegments(edgeGeom, edgeMat);
-    scene.add(edgeLines);
-
-    // ---- transient pulse rings (small set, tracked individually) ----
-    const pulseGroup = new THREE.Group();
-    scene.add(pulseGroup);
-
-    // ---- d3-force-3d simulation ----
-    const sim = forceSimulation([] as SimNode[], 3)
-      .force("charge", forceManyBody().strength(-180))
-      .force("link", forceLink([]).id((n: any) => n.id).distance(70))
-      .force("center", forceCenter())
-      .alphaDecay(0.012)
-      .velocityDecay(0.4);
-    // We drive ticks ourselves from the render loop — turn off the
-    // built-in scheduler.
-    sim.stop();
+    const raycaster = new THREE.Raycaster();
+    const pointerNDC = new THREE.Vector2(2, 2);
 
     sceneRef.current = {
       renderer, scene, camera, controls,
-      nodeMesh, nodeCapacity,
-      edgeLines, edgeCapacity,
-      pulseGroup,
-      sim,
+      posData:  new Float32Array(0),
+      posTex:   new THREE.DataTexture(new Float32Array(4), 1, 1, THREE.RGBAFormat, THREE.FloatType),
+      stateData: new Float32Array(0),
+      stateTex: new THREE.DataTexture(new Float32Array(4), 1, 1, THREE.RGBAFormat, THREE.FloatType),
+      nodeTexW: 1,
+      nodeMesh: null,
+      nodeMat:  null,
+      edgeData: new Float32Array(0),
+      edgeTex:  new THREE.DataTexture(new Float32Array(4), 1, 1, THREE.RGBAFormat, THREE.FloatType),
+      edgeTexW: 1,
+      edgeMesh: null,
+      edgeMat:  null,
       nodes: [],
-      nodeIndex: new Map(),
-      nodesByIdx: [],
-      links: [],
-      raycaster: new THREE.Raycaster(),
-      pointerNDC: new THREE.Vector2(2, 2),
+      nodeIdById: new Map(),
+      worker: null,
+      raycaster,
+      pointerNDC,
       lastInteractionMs: performance.now(),
+      timeUniform: { value: 0 },
     };
 
-    // ---- hover (raycasting against InstancedMesh) ----
+    // ---- pointer hover ----
     const onPointerMove = (e: PointerEvent) => {
       const ref = sceneRef.current;
       if (!ref) return;
@@ -211,7 +293,6 @@ export function MindGraph({ graph, lastCycle, consolidationActive }: Props) {
       ref.lastInteractionMs = performance.now();
     };
     renderer.domElement.addEventListener("pointermove", onPointerMove);
-
     controls.addEventListener("change", () => {
       const ref = sceneRef.current;
       if (ref) ref.lastInteractionMs = performance.now();
@@ -228,25 +309,17 @@ export function MindGraph({ graph, lastCycle, consolidationActive }: Props) {
     const ro = new ResizeObserver(onResize);
     ro.observe(container);
 
-    // ---- main loop ----
-    const tmpMat = new THREE.Matrix4();
-    const tmpPos = new THREE.Vector3();
-    const tmpQuat = new THREE.Quaternion();
-    const tmpScale = new THREE.Vector3();
-    const tmpColor = new THREE.Color();
-    const ORBIT_IDLE_MS = 8000;
-    const BREATH_RECENCY_S = 30;
-
+    // ---- main render loop (pure GPU) ----
     let raf = 0;
+    const ORBIT_IDLE_MS = 8000;
     const tick = () => {
       const ref = sceneRef.current;
       if (!ref) return;
 
-      // d3 tick advances positions
-      ref.sim.tick();
-
-      // Camera idle orbit (matches old behavior)
       const nowMs = performance.now();
+      ref.timeUniform.value = nowMs / 1000;
+
+      // idle camera orbit (visual signature kept from old build)
       if (nowMs - ref.lastInteractionMs > ORBIT_IDLE_MS) {
         const cam = ref.camera;
         const r = Math.hypot(cam.position.x, cam.position.z);
@@ -256,113 +329,37 @@ export function MindGraph({ graph, lastCycle, consolidationActive }: Props) {
         cam.lookAt(0, 0, 0);
       }
 
-      // ---- update node instance matrices + colors ----
-      const nowS = Date.now() / 1000;
-      const mesh = ref.nodeMesh;
-      const arr = ref.nodesByIdx;
-      let needsColorUpdate = false;
-      for (let i = 0; i < mesh.count; i++) {
-        const d = arr[i];
-        if (!d || d.x === undefined) continue;
-
-        // breathing scale on recent activity
-        const sinceAct = d.last_activated > 0 ? nowS - d.last_activated : 1e9;
-        let breathe = 1;
-        if (sinceAct < BREATH_RECENCY_S) {
-          const recency = Math.exp(-sinceAct / 6);
-          const phase = ((d.id * 0.31) + nowS * (0.6 + 0.6 * recency)) % (Math.PI * 2);
-          breathe = 1 + 0.05 * Math.sin(phase) + 0.18 * recency;
-        }
-        const isAbs = d.name.startsWith("abstraction:");
-        const baseSize = nodeBaseScale(d, isAbs) * breathe;
-
-        tmpPos.set(d.x as number, d.y as number, d.z as number);
-        tmpScale.setScalar(baseSize);
-        tmpMat.compose(tmpPos, tmpQuat, tmpScale);
-        mesh.setMatrixAt(i, tmpMat);
-
-        // Color refresh once per second-ish for active nodes (reflects
-        // alignment / arousal evolution). For dormant ones the color
-        // stored at write time is fine.
-        if (sinceAct < BREATH_RECENCY_S) {
-          tmpColor.copy(nodeRGB(d, isAbs));
-          mesh.setColorAt(i, tmpColor);
-          needsColorUpdate = true;
-        }
-      }
-      mesh.instanceMatrix.needsUpdate = true;
-      if (needsColorUpdate && mesh.instanceColor) {
-        (mesh.instanceColor as THREE.InstancedBufferAttribute).needsUpdate = true;
-      }
-
-      // ---- update edge endpoints ----
-      // We write to the SAME offset i*6 the color buffer was filled at
-      // during the [graph] effect, so colors stay aligned with positions.
-      // Edges whose endpoints aren't yet in the nodeIndex collapse to a
-      // degenerate (0,0,0)->(0,0,0) segment and render as nothing.
-      const lines = ref.edgeLines;
-      const posAttr = lines.geometry.getAttribute("position") as THREE.BufferAttribute;
-      const positions = posAttr.array as Float32Array;
-      const links = ref.links;
-      for (let i = 0; i < links.length; i++) {
-        const link = links[i];
-        const sId = typeof link.source === "object" ? link.source.id : link.source;
-        const tId = typeof link.target === "object" ? link.target.id : link.target;
-        const sIdx = ref.nodeIndex.get(sId);
-        const tIdx = ref.nodeIndex.get(tId);
-        const off = i * 6;
-        if (sIdx === undefined || tIdx === undefined) {
-          positions[off] = positions[off+1] = positions[off+2] = 0;
-          positions[off+3] = positions[off+4] = positions[off+5] = 0;
-          continue;
-        }
-        const sNode = ref.nodesByIdx[sIdx];
-        const tNode = ref.nodesByIdx[tIdx];
-        positions[off]     = sNode.x as number;
-        positions[off + 1] = sNode.y as number;
-        positions[off + 2] = sNode.z as number;
-        positions[off + 3] = tNode.x as number;
-        positions[off + 4] = tNode.y as number;
-        positions[off + 5] = tNode.z as number;
-      }
-      lines.geometry.setDrawRange(0, links.length * 2);
-      posAttr.needsUpdate = true;
-
-      // ---- pulse ring lifecycle ----
-      const pg = ref.pulseGroup;
-      const removeList: THREE.Object3D[] = [];
-      pg.children.forEach((ring) => {
-        const meta = (ring as any).__meta as { start: number; duration: number } | undefined;
-        if (!meta) return;
-        const t = (nowMs - meta.start) / meta.duration;
-        if (t >= 1) { removeList.push(ring); return; }
-        const s = 1 + t * 4.5;
-        ring.scale.set(s, s, s);
-        const m = (ring as THREE.Mesh).material as THREE.MeshBasicMaterial;
-        m.opacity = 0.6 * (1 - t);
-      });
-      removeList.forEach((r) => pg.remove(r));
-
-      // ---- hover (raycast against InstancedMesh) ----
-      ref.raycaster.setFromCamera(ref.pointerNDC, ref.camera);
-      const hits = ref.raycaster.intersectObject(mesh, false);
-      if (hits.length > 0 && hits[0].instanceId !== undefined) {
-        const idx = hits[0].instanceId;
-        const node = ref.nodesByIdx[idx];
-        if (node) {
-          // project node world pos to screen for label placement
-          tmpPos.set(node.x as number, node.y as number, node.z as number).project(ref.camera);
-          const rect = renderer.domElement.getBoundingClientRect();
-          const sx = (tmpPos.x * 0.5 + 0.5) * rect.width + rect.left;
-          const sy = (-tmpPos.y * 0.5 + 0.5) * rect.height + rect.top;
-          setHoverInfo({ x: sx, y: sy, node });
-        }
-      } else {
-        setHoverInfo(null);
-      }
-
       controls.update();
-      renderer.render(scene, camera);
+
+      // Cheap hover. Only run a raycast every ~80 ms when the user
+      // is actively moving — the raycast against a 73K-instance mesh
+      // is the one main-thread cost we still pay.
+      if (
+        nowMs - ref.lastInteractionMs < 1500 &&
+        ref.nodeMesh && (nowMs % 80) < 16
+      ) {
+        ref.raycaster.setFromCamera(ref.pointerNDC, ref.camera);
+        const hits = ref.raycaster.intersectObject(ref.nodeMesh, false);
+        if (hits.length > 0 && hits[0].instanceId !== undefined) {
+          const idx = hits[0].instanceId;
+          const node = ref.nodes[idx];
+          if (node) {
+            const tmp = new THREE.Vector3(
+              ref.posData[idx * 4],
+              ref.posData[idx * 4 + 1],
+              ref.posData[idx * 4 + 2],
+            ).project(ref.camera);
+            const rect = renderer.domElement.getBoundingClientRect();
+            const sx = (tmp.x * 0.5 + 0.5) * rect.width + rect.left;
+            const sy = (-tmp.y * 0.5 + 0.5) * rect.height + rect.top;
+            setHoverInfo({ x: sx, y: sy, node });
+          }
+        } else {
+          setHoverInfo(null);
+        }
+      }
+
+      renderer.render(ref.scene, ref.camera);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -371,190 +368,217 @@ export function MindGraph({ graph, lastCycle, consolidationActive }: Props) {
       cancelAnimationFrame(raf);
       ro.disconnect();
       renderer.domElement.removeEventListener("pointermove", onPointerMove);
+      const ref = sceneRef.current;
+      if (ref?.worker) {
+        ref.worker.postMessage({ type: "STOP" });
+        ref.worker.terminate();
+      }
       try { container.removeChild(renderer.domElement); } catch {}
       renderer.dispose();
-      sphereGeom.dispose();
-      sphereMat.dispose();
-      edgeGeom.dispose();
-      edgeMat.dispose();
+      ref?.posTex.dispose();
+      ref?.stateTex.dispose();
+      ref?.edgeTex.dispose();
+      ref?.nodeMat?.dispose();
+      ref?.edgeMat?.dispose();
       sceneRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // --- push graph data updates ---
+  // -----------------------------------------------------------------
+  // 2. graph load — build textures + mesh + spawn worker
+  // -----------------------------------------------------------------
   useEffect(() => {
     const ref = sceneRef.current;
     if (!ref || !graph) return;
 
-    // Build / refresh the node array. Preserve x/y/z across updates so
-    // the simulation doesn't reset its layout when new nodes arrive.
-    const prev = new Map<number, SimNode>();
-    ref.nodes.forEach((n) => prev.set(n.id, n));
+    const N = graph.nodes.length;
+    const E = graph.edges.length;
+    const nodeTexW = sqW(N);
+    const nodeTexH = Math.max(1, Math.ceil(N / nodeTexW));
+    const edgeTexW = sqW(E);
+    const edgeTexH = Math.max(1, Math.ceil(E / edgeTexW));
 
-    const next: SimNode[] = graph.nodes.map((g) => {
-      const old = prev.get(g.id);
-      if (old) {
-        // Update mutable fields; keep position/velocity from old.
-        old.name = g.name;
-        old.activation_count = g.activation_count;
-        old.surprise_at_birth = g.surprise_at_birth;
-        old.alignment = g.alignment;
-        old.arousal = g.arousal;
-        old.is_pinned = g.is_pinned;
-        old.last_activated = g.last_activated;
-        old.created_at = g.created_at;
-        return old;
+    // -- POSITION texture (filled by worker TICKs) -----------------
+    const posData = new Float32Array(nodeTexW * nodeTexH * 4);
+    // seed from embedding[0..2] so the first frame isn't a black screen
+    for (let i = 0; i < N; i++) {
+      const n = graph.nodes[i];
+      posData[i * 4]     = n.ex * 200;
+      posData[i * 4 + 1] = n.ey * 200;
+      posData[i * 4 + 2] = n.ez * 200;
+      posData[i * 4 + 3] = 0;
+    }
+    const posTex = new THREE.DataTexture(
+      posData, nodeTexW, nodeTexH, THREE.RGBAFormat, THREE.FloatType,
+    );
+    posTex.minFilter = THREE.NearestFilter;
+    posTex.magFilter = THREE.NearestFilter;
+    posTex.wrapS = THREE.ClampToEdgeWrapping;
+    posTex.wrapT = THREE.ClampToEdgeWrapping;
+    posTex.internalFormat = "RGBA32F";
+    posTex.type = THREE.FloatType;
+    posTex.needsUpdate = true;
+
+    // -- STATE texture (activation, arousal, act_count, pinned) ----
+    const stateData = new Float32Array(nodeTexW * nodeTexH * 4);
+    for (let i = 0; i < N; i++) {
+      const n = graph.nodes[i];
+      stateData[i * 4]     = 0;             // current activation (filled on cycle event)
+      stateData[i * 4 + 1] = n.arousal;     // affect proxy
+      stateData[i * 4 + 2] = n.activation;  // historical activation_count, normalized
+      stateData[i * 4 + 3] = 0;             // pinned (no signal yet from binary)
+    }
+    const stateTex = new THREE.DataTexture(
+      stateData, nodeTexW, nodeTexH, THREE.RGBAFormat, THREE.FloatType,
+    );
+    stateTex.minFilter = THREE.NearestFilter;
+    stateTex.magFilter = THREE.NearestFilter;
+    stateTex.internalFormat = "RGBA32F";
+    stateTex.needsUpdate = true;
+
+    // -- EDGE texture (src_idx, tgt_idx, weight, type_norm) --------
+    const edgeData = new Float32Array(edgeTexW * edgeTexH * 4);
+    for (let i = 0; i < E; i++) {
+      const e = graph.edges[i];
+      edgeData[i * 4]     = e.sourceIdx;
+      edgeData[i * 4 + 1] = e.targetIdx;
+      edgeData[i * 4 + 2] = e.weight;
+      edgeData[i * 4 + 3] = e.typeNorm;
+    }
+    const edgeTex = new THREE.DataTexture(
+      edgeData, edgeTexW, edgeTexH, THREE.RGBAFormat, THREE.FloatType,
+    );
+    edgeTex.minFilter = THREE.NearestFilter;
+    edgeTex.magFilter = THREE.NearestFilter;
+    edgeTex.internalFormat = "RGBA32F";
+    edgeTex.needsUpdate = true;
+
+    // dispose any previous textures + meshes
+    ref.posTex.dispose();
+    ref.stateTex.dispose();
+    ref.edgeTex.dispose();
+    if (ref.nodeMesh) ref.scene.remove(ref.nodeMesh);
+    if (ref.edgeMesh) ref.scene.remove(ref.edgeMesh);
+    ref.nodeMat?.dispose();
+    ref.edgeMat?.dispose();
+
+    ref.posData   = posData;
+    ref.posTex    = posTex;
+    ref.stateData = stateData;
+    ref.stateTex  = stateTex;
+    ref.edgeData  = edgeData;
+    ref.edgeTex   = edgeTex;
+    ref.nodeTexW  = nodeTexW;
+    ref.edgeTexW  = edgeTexW;
+    ref.nodes     = graph.nodes;
+    ref.nodeIdById = new Map(graph.nodes.map((n, i) => [n.id, i] as const));
+
+    // -- node mesh: instanced low-poly sphere with custom shader ---
+    const sphereGeom = new THREE.SphereGeometry(1, 8, 6);
+    const nodeMat = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      vertexShader: NODE_VERT,
+      fragmentShader: NODE_FRAG,
+      uniforms: {
+        posTex:   { value: posTex },
+        stateTex: { value: stateTex },
+        texW:     { value: nodeTexW },
+        time:     ref.timeUniform,
+      },
+    });
+    const nodeMesh = new THREE.InstancedMesh(sphereGeom, nodeMat, N);
+    // we don't use instanceMatrix at all — shader reads pos from texture.
+    // But Three still wants a non-zero count to draw.
+    nodeMesh.frustumCulled = false;
+    ref.scene.add(nodeMesh);
+    ref.nodeMesh = nodeMesh;
+    ref.nodeMat  = nodeMat;
+
+    // -- edge mesh: LineSegments with dummy positions, shader-resolved
+    const edgeGeom = new THREE.BufferGeometry();
+    // 2 vertices per edge; gl_VertexID drives everything.
+    const dummyPos = new Float32Array(E * 2 * 3);
+    edgeGeom.setAttribute(
+      "position",
+      new THREE.BufferAttribute(dummyPos, 3),
+    );
+    edgeGeom.setDrawRange(0, E * 2);
+    const edgeMat = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      vertexShader: EDGE_VERT,
+      fragmentShader: EDGE_FRAG,
+      uniforms: {
+        posTex:    { value: posTex },
+        edgeTex:   { value: edgeTex },
+        stateTex:  { value: stateTex },
+        posTexW:   { value: nodeTexW },
+        edgeTexW:  { value: edgeTexW },
+      },
+      transparent: true,
+      depthWrite: false,
+    });
+    const edgeMesh = new THREE.LineSegments(edgeGeom, edgeMat);
+    edgeMesh.frustumCulled = false;
+    ref.scene.add(edgeMesh);
+    ref.edgeMesh = edgeMesh;
+    ref.edgeMat  = edgeMat;
+
+    // -- spawn worker ----------------------------------------------
+    if (ref.worker) ref.worker.terminate();
+    const worker = new ForceWorker();
+    ref.worker = worker;
+    worker.onmessage = (ev: MessageEvent) => {
+      const m = ev.data;
+      const r = sceneRef.current;
+      if (!r) return;
+      if (m.type === "TICK") {
+        const positions: Float32Array = m.positions;
+        // Copy N×3 → posData N×4 (RGBA pad).
+        const pd = r.posData;
+        for (let i = 0; i < N; i++) {
+          pd[i * 4]     = positions[i * 3];
+          pd[i * 4 + 1] = positions[i * 3 + 1];
+          pd[i * 4 + 2] = positions[i * 3 + 2];
+        }
+        r.posTex.needsUpdate = true;
       }
-      // New node — random initial position so charge/link forces have
-      // something to push against.
-      const r = 50;
-      return {
-        ...g,
-        x: (Math.random() - 0.5) * r,
-        y: (Math.random() - 0.5) * r,
-        z: (Math.random() - 0.5) * r,
-        vx: 0, vy: 0, vz: 0,
-      };
+    };
+    worker.postMessage({
+      type: "INIT",
+      data: {
+        nodes: graph.nodes.map((n) => ({
+          id: n.id, ex: n.ex, ey: n.ey, ez: n.ez,
+        })),
+        // d3-force-link expects {source, target} with the .id() accessor.
+        // We pass concept_ids; the worker resolves them through .id().
+        links: graph.edges.map((e) => ({
+          source: graph.nodes[e.sourceIdx].id,
+          target: graph.nodes[e.targetIdx].id,
+        })),
+      },
     });
-
-    // Resize the InstancedMesh capacity if needed.
-    if (next.length > ref.nodeCapacity) {
-      const newCapacity = Math.max(
-        Math.ceil(next.length * INSTANCE_CAPACITY_GROWTH),
-        MIN_INSTANCE_CAPACITY,
-      );
-      ref.scene.remove(ref.nodeMesh);
-      const newMesh = new THREE.InstancedMesh(
-        ref.nodeMesh.geometry,
-        ref.nodeMesh.material as THREE.Material,
-        newCapacity,
-      );
-      newMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      const newColors = new Float32Array(newCapacity * 3);
-      newMesh.instanceColor = new THREE.InstancedBufferAttribute(newColors, 3);
-      newMesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
-      ref.scene.add(newMesh);
-      ref.nodeMesh.dispose();
-      ref.nodeMesh = newMesh;
-      ref.nodeCapacity = newCapacity;
-    }
-
-    // Compose initial matrix + color for every instance.
-    const mesh = ref.nodeMesh;
-    mesh.count = next.length;
-    const tmpMat = new THREE.Matrix4();
-    const tmpPos = new THREE.Vector3();
-    const tmpQuat = new THREE.Quaternion();
-    const tmpScale = new THREE.Vector3();
-    const tmpColor = new THREE.Color();
-    next.forEach((d, i) => {
-      const isAbs = d.name.startsWith("abstraction:");
-      const baseSize = nodeBaseScale(d, isAbs);
-      tmpPos.set(d.x ?? 0, d.y ?? 0, d.z ?? 0);
-      tmpScale.setScalar(baseSize);
-      tmpMat.compose(tmpPos, tmpQuat, tmpScale);
-      mesh.setMatrixAt(i, tmpMat);
-      tmpColor.copy(nodeRGB(d, isAbs));
-      mesh.setColorAt(i, tmpColor);
-    });
-    mesh.instanceMatrix.needsUpdate = true;
-    if (mesh.instanceColor) {
-      (mesh.instanceColor as THREE.InstancedBufferAttribute).needsUpdate = true;
-    }
-
-    // Build node-id index for edge lookup.
-    const nodeIndex = new Map<number, number>();
-    next.forEach((n, i) => nodeIndex.set(n.id, i));
-
-    ref.nodes = next;
-    ref.nodesByIdx = next;
-    ref.nodeIndex = nodeIndex;
-
-    // ---- edges ----
-    // Resize edge buffer if needed.
-    const edges = graph.edges;
-    if (edges.length > ref.edgeCapacity) {
-      const newCap = Math.max(
-        Math.ceil(edges.length * INSTANCE_CAPACITY_GROWTH),
-        1024,
-      );
-      const newPositions = new Float32Array(newCap * 6);
-      const newColors = new Float32Array(newCap * 6);
-      const geom = new THREE.BufferGeometry();
-      geom.setAttribute("position",
-        new THREE.Float32BufferAttribute(newPositions, 3).setUsage(THREE.DynamicDrawUsage));
-      geom.setAttribute("color",
-        new THREE.Float32BufferAttribute(newColors, 3).setUsage(THREE.DynamicDrawUsage));
-      ref.edgeLines.geometry.dispose();
-      ref.edgeLines.geometry = geom;
-      ref.edgeCapacity = newCap;
-    }
-    // Fill the per-vertex color array. Endpoints share the edge's color.
-    const colorAttr = ref.edgeLines.geometry.getAttribute("color") as THREE.BufferAttribute;
-    const colorArr = colorAttr.array as Float32Array;
-    edges.forEach((e, i) => {
-      const c = EDGE_COLOR_BY_TYPE[e.type] ?? DEFAULT_EDGE_COLOR;
-      const off = i * 6;
-      colorArr[off]     = c[0];
-      colorArr[off + 1] = c[1];
-      colorArr[off + 2] = c[2];
-      colorArr[off + 3] = c[0];
-      colorArr[off + 4] = c[1];
-      colorArr[off + 5] = c[2];
-    });
-    colorAttr.needsUpdate = true;
-
-    ref.links = edges.map((e) => ({ ...e })) as SimLink[];
-
-    // Wire updated nodes + links into the simulation. We swap arrays
-    // rather than mutate so d3 sees a consistent view.
-    ref.sim.nodes(next as any);
-    (ref.sim.force("link") as any).links(ref.links as any);
-    // Heat the simulation back up so it relayouts.
-    ref.sim.alpha(0.6);
   }, [graph]);
 
-  // --- cycle event: pulse ring + breathing trigger ---
+  // -----------------------------------------------------------------
+  // 3. cycle event → bump active concepts in the state texture
+  // -----------------------------------------------------------------
   useEffect(() => {
     const ref = sceneRef.current;
-    if (!ref || !lastCycle || lastCycle === lastCycleRef.current) return;
-    lastCycleRef.current = lastCycle;
-
-    const tNow = Date.now() / 1000;
-    Object.keys(lastCycle.active_set).forEach((idStr) => {
-      const id = parseInt(idStr, 10);
-      const idx = ref.nodeIndex.get(id);
-      if (idx === undefined) return;
-      const d = ref.nodesByIdx[idx];
-      if (d) d.last_activated = tNow;
-    });
-
-    // Pulse ring at the strongest activated concept.
-    const strongest = Object.entries(lastCycle.active_set)
-      .map(([k, v]) => [parseInt(k, 10), v as number] as const)
-      .sort((a, b) => b[1] - a[1])[0];
-    if (strongest) {
-      const idx = ref.nodeIndex.get(strongest[0]);
-      if (idx !== undefined) {
-        const d = ref.nodesByIdx[idx];
-        if (d && d.x !== undefined) {
-          const ringGeom = new THREE.RingGeometry(2.5, 3.0, 48);
-          const ringMat = new THREE.MeshBasicMaterial({
-            color: 0xffffff,
-            transparent: true,
-            opacity: 0.6,
-            side: THREE.DoubleSide,
-            depthWrite: false,
-          });
-          const ring = new THREE.Mesh(ringGeom, ringMat);
-          ring.position.set(d.x, d.y as number, d.z as number);
-          ring.lookAt(ref.camera.position);
-          (ring as any).__meta = { start: performance.now(), duration: 1300 };
-          ref.pulseGroup.add(ring);
-        }
-      }
+    if (!ref || !lastCycle) return;
+    const sd = ref.stateData;
+    // decay all current activations slightly (so older highlights fade)
+    for (let i = 0; i < ref.nodes.length; i++) {
+      sd[i * 4] *= 0.85;
     }
+    Object.entries(lastCycle.active_set).forEach(([k, v]) => {
+      const id = parseInt(k, 10);
+      const idx = ref.nodeIdById.get(id);
+      if (idx === undefined) return;
+      sd[idx * 4] = Math.min(1, Math.max(sd[idx * 4], v as number));
+    });
+    ref.stateTex.needsUpdate = true;
+    if (ref.worker) ref.worker.postMessage({ type: "REHEAT" });
   }, [lastCycle]);
 
   return (
@@ -581,25 +605,15 @@ export function MindGraph({ graph, lastCycle, consolidationActive }: Props) {
           }}
         >
           <div>
-            <b>#{hoverInfo.node.id}</b>{" "}
-            {escapeHtml(hoverInfo.node.name) || <i>(unnamed)</i>}
+            <b>#{hoverInfo.node.id}</b>
           </div>
           <div style={{ color: "#aaa" }}>
-            activations: {hoverInfo.node.activation_count} · alignment:{" "}
-            {hoverInfo.node.alignment >= 0 ? "+" : "−"}
-            {Math.abs(hoverInfo.node.alignment).toFixed(2)}
+            act:{hoverInfo.node.activation.toFixed(2)} ·
+            surp:{hoverInfo.node.surprise.toFixed(2)} ·
+            arousal:{hoverInfo.node.arousal.toFixed(2)}
           </div>
-          {hoverInfo.node.is_pinned && (
-            <div style={{ color: "#facc15" }}>📌 pinned</div>
-          )}
         </div>
       )}
     </div>
   );
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => {
-    return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" } as any)[c];
-  });
 }
