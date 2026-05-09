@@ -161,8 +161,14 @@ def load_or_construct(paths: MindPaths, birth_seed: int) -> MainLoop:
         loop.expression._lm_vocab = None
         loop.expression._lm_load_attempted = False
         loop.expression._cd_load_attempted = False
+        # Phase 7: persistence no longer auto-builds the FAISS index.
+        # Curriculum needs it for the interleaved write+nearest hot
+        # loop (33× speedup over brute-force-with-rebuild). Build now.
+        loop.graph._rebuild_faiss_index()
         return loop
-    return construct_mind(birth_seed=birth_seed, paths=paths)
+    fresh = construct_mind(birth_seed=birth_seed, paths=paths)
+    fresh.graph._rebuild_faiss_index()
+    return fresh
 
 
 # ============================================================

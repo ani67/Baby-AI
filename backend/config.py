@@ -91,3 +91,19 @@ PROCESSING_MAX_ACTIVATION  = 0.5    # post-loop cap so the seed never dominates 
 # queue; writer consumes diffs and applies via find_or_match dedup.
 PARALLEL_INGESTION_SNAPSHOT_INTERVAL = 500    # writer pushes FAISS snapshot every N writes
 PARALLEL_INGESTION_LOCAL_DEDUP_WINDOW = 60.0  # seconds — reader-side dedup window
+
+# Concept-graph ceiling + post-prune target (synthesis "forgetting is
+# curation" finally in code). Without this every write_on_surprise
+# grew the graph unbounded — the v0.6 curriculum reached 75K+ nodes
+# with no curation. The forget loop is now sleep-triggered: when
+# node_count > CONCEPT_CEILING after abstraction formation, prune the
+# weakest non-pinned non-abstraction-incident concepts down to
+# PRUNE_TO. The headroom (CEILING - PRUNE_TO = 1000) lets new concepts
+# arrive between sleep cycles without immediately re-tripping the
+# threshold.
+#
+# Pinned concepts (E's narrative anchors, self/unknown, expression
+# templates) and concepts incident on any IS_A edge (abstraction
+# parents AND members) are immune.
+CONCEPT_CEILING = 5000
+PRUNE_TO        = 4000

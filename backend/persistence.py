@@ -656,10 +656,12 @@ class MindPersistence:
             )
             g.nodes[node.concept_id] = node
         g._matrix_dirty = True
-        # Phase 7: rebuild FAISS index over all restored nodes in one
-        # batch add. Hot-path writes (write_on_surprise) keep it in sync
-        # incrementally afterward.
-        g._rebuild_faiss_index()
+        # Phase 7 stability fix: do NOT auto-build the FAISS index here.
+        # api.py imports backend.graph transitively but must not co-load
+        # faiss-cpu's libomp alongside torch's libomp (kills the process
+        # during cd.generate). Caller (curriculum-side ingestion paths)
+        # explicitly invokes g._rebuild_faiss_index() after this load.
+        # When unbuilt, ConceptGraph.nearest falls back to brute force.
 
         for r in cur.execute("SELECT * FROM concept_edges"):
             edge = Edge(

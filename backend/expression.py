@@ -79,6 +79,23 @@ from backend.predict import PredictionEngine
 # failure so G can fall back to templates).
 try:
     import torch
+    # Phase 7 stability fix: pin torch's intra-op and inter-op thread
+    # pools to single-threaded BEFORE any tensor op runs. set_num_
+    # interop_threads must be called before the first parallel op or
+    # it raises RuntimeError; doing it at module import is the earliest
+    # safe moment. This is what actually quiets the libomp co-load
+    # crash at cd.generate() — the OMP_NUM_THREADS env var alone wasn't
+    # enough because torch's thread pools initialise on first use, not
+    # on import, and were initialising mid-forward against an already-
+    # warm faiss libomp pool.
+    try:
+        torch.set_num_threads(1)
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        # set_num_interop_threads can only be called once per process;
+        # if a prior import already called it, that's fine — the value
+        # we wanted is already in effect.
+        pass
     from backend.language_head import (
         CONDITIONED_DECODER_FILENAME,
         CONDITIONED_DECODER_V2_FILENAME,

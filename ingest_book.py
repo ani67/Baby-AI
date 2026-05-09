@@ -269,6 +269,11 @@ def main() -> int:
         print(f"constructing fresh mind '{args.mind}' …")
         loop = construct_mind()
 
+    # Phase 7 stability fix: persistence no longer auto-builds the FAISS
+    # index (so api can stay faiss-free); ingestion paths build it
+    # explicitly for the write+nearest hot loop speedup.
+    loop.graph._rebuild_faiss_index()
+
     persist = MindPersistence(paths.db)
 
     # Register the source as an agent so refers_to chains anchor cleanly.

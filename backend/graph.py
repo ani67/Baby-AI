@@ -38,10 +38,30 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 from dataclasses import dataclass
 from enum import Enum
 
-import faiss
 import numpy as np
 
-from backend.config import AUTO_LINK_K, AUTO_LINK_MIN_COSINE, D_REP, R_MATCH
+# Phase 7 stability fix — DO NOT import faiss at module level. The api
+# process imports backend.graph transitively; faiss-cpu's libomp then
+# co-loads with torch's libomp inside the same process and the kernel
+# kills the process during cd.generate() with no Python traceback. By
+# deferring the import to first use (curriculum-side ingestion paths
+# explicitly call _rebuild_faiss_index() on startup), the api process
+# never imports faiss and so never has both libraries co-resident.
+def _faiss_module():
+    """Lazy faiss accessor. Callers MUST tolerate ImportError if
+    faiss-cpu isn't installed; nearest() then falls back to brute force.
+    """
+    import faiss  # noqa: PLC0415
+    return faiss
+
+from backend.config import (
+    AUTO_LINK_K,
+    AUTO_LINK_MIN_COSINE,
+    CONCEPT_CEILING,
+    D_REP,
+    PRUNE_TO,
+    R_MATCH,
+)
 
 
 class EdgeType(Enum):
@@ -186,9 +206,16 @@ class ConceptGraph:
         # inner product equals cosine similarity, so IndexFlatIP gives
         # identical results to the brute-force matmul but in vectorized C.
         # Add-only — strengthen does not change embeddings, so the index
-        # stays in sync without invalidation. Rebuilt only at __init__ and
-        # after MindPersistence.load.
-        self._faiss_index = faiss.IndexFlatIP(D_REP)
+        # stays in sync without invalidation.
+        #
+        # Lazy-init: starts at None. Ingestion-heavy callers (run_curriculum,
+        # ingest_book, parallel_ingestion) call _rebuild_faiss_index() at
+        # startup which imports faiss and builds the index. The api
+        # process never calls that, so faiss never loads in api — keeping
+        # libomp single-vendor in that process and avoiding the GPT-2
+        # generate() crash. nearest()/nearest_k() check None and fall
+        # back to brute force when the index isn't built.
+        self._faiss_index = None
         self._faiss_id_map: list[int] = []
 
     @property
@@ -207,49 +234,65 @@ class ConceptGraph:
 
     def nearest(self, representation: np.ndarray) -> tuple[int, float] | None:
         """Return (concept_id, cosine_similarity) for the nearest node, or
-        None if the graph is empty. Caller decides whether the similarity
-        is good enough for their purpose.
+        None if the graph is empty.
 
-        Phase 7 perf fix: FAISS IndexFlatIP. On L2-normalized vectors this
-        is bit-exact equivalent to the prior brute-force `_cosine_to_all`
-        + argmax — same result, vectorized C kernel, sublinear in practice
-        once the SIMD path lights up.
+        Uses FAISS when the index has been built (curriculum-side hot
+        loop) and falls back to brute-force matmul when faiss isn't
+        loaded in this process (api process — see __init__ for why).
+        Both branches are bit-equivalent on L2-normalized vectors.
         """
-        if self._faiss_index.ntotal == 0:
+        if not self.nodes:
             return None
-        rep = representation.astype(np.float32, copy=False)
-        n = float(np.linalg.norm(rep))
-        if n < 1e-9:
+        if self._faiss_index is not None:
+            if self._faiss_index.ntotal == 0:
+                return None
+            rep = representation.astype(np.float32, copy=False)
+            n = float(np.linalg.norm(rep))
+            if n < 1e-9:
+                return None
+            rep_unit = (rep / n).reshape(1, -1).astype(np.float32, copy=False)
+            D, I = self._faiss_index.search(rep_unit, 1)
+            idx = int(I[0][0])
+            if idx < 0:
+                return None
+            return self._faiss_id_map[idx], float(D[0][0])
+        # Brute-force fallback. _cosine_to_all rebuilds the matrix lazily
+        # when _matrix_dirty; the api hits this path on first nearest()
+        # after MindPersistence.load and stays here.
+        sims = self._cosine_to_all(representation)
+        if sims.size == 0:
             return None
-        rep_unit = (rep / n).reshape(1, -1).astype(np.float32, copy=False)
-        D, I = self._faiss_index.search(rep_unit, 1)
-        idx = int(I[0][0])
-        if idx < 0:
-            return None
-        return self._faiss_id_map[idx], float(D[0][0])
+        idx = int(np.argmax(sims))
+        return self._matrix_ids[idx], float(sims[idx])
 
     def nearest_k(
         self, representation: np.ndarray, k: int,
     ) -> list[tuple[int, float]]:
-        """Return up to k (concept_id, cosine) pairs sorted descending.
-        Used by the auto-link hot path so it doesn't need a full
-        similarity vector — FAISS top-K is sublinear in N.
-        """
-        if self._faiss_index.ntotal == 0 or k <= 0:
+        """Return up to k (concept_id, cosine) pairs sorted descending."""
+        if not self.nodes or k <= 0:
             return []
-        rep = representation.astype(np.float32, copy=False)
-        n = float(np.linalg.norm(rep))
-        if n < 1e-9:
+        if self._faiss_index is not None:
+            if self._faiss_index.ntotal == 0:
+                return []
+            rep = representation.astype(np.float32, copy=False)
+            n = float(np.linalg.norm(rep))
+            if n < 1e-9:
+                return []
+            rep_unit = (rep / n).reshape(1, -1).astype(np.float32, copy=False)
+            kk = min(int(k), self._faiss_index.ntotal)
+            D, I = self._faiss_index.search(rep_unit, kk)
+            out: list[tuple[int, float]] = []
+            for d, i in zip(D[0].tolist(), I[0].tolist()):
+                if i < 0:
+                    continue
+                out.append((self._faiss_id_map[int(i)], float(d)))
+            return out
+        # Brute-force fallback for the api / no-faiss case.
+        sims = self._cosine_to_all(representation)
+        if sims.size == 0:
             return []
-        rep_unit = (rep / n).reshape(1, -1).astype(np.float32, copy=False)
-        kk = min(int(k), self._faiss_index.ntotal)
-        D, I = self._faiss_index.search(rep_unit, kk)
-        out: list[tuple[int, float]] = []
-        for d, i in zip(D[0].tolist(), I[0].tolist()):
-            if i < 0:
-                continue
-            out.append((self._faiss_id_map[int(i)], float(d)))
-        return out
+        order = np.argsort(-sims)[:int(k)]
+        return [(self._matrix_ids[int(i)], float(sims[int(i)])) for i in order]
 
     def find_or_match(self, representation: np.ndarray, threshold: float = R_MATCH) -> int | None:
         """Return concept_id of the nearest node with cosine ≥ threshold, else None."""
@@ -312,12 +355,14 @@ class ConceptGraph:
         self._matrix_dirty = True
         # Register in FAISS — kept in sync incrementally so nearest() never
         # needs to rebuild on the hot path. Strengthen path doesn't change
-        # the embedding, so it never invalidates.
-        n = float(np.linalg.norm(embedding))
-        if n >= 1e-9:
-            unit = (embedding / n).reshape(1, -1).astype(np.float32, copy=False)
-            self._faiss_index.add(unit)
-            self._faiss_id_map.append(cid)
+        # the embedding, so it never invalidates. Skipped entirely when
+        # the index hasn't been built (api process / no-faiss mode).
+        if self._faiss_index is not None:
+            n = float(np.linalg.norm(embedding))
+            if n >= 1e-9:
+                unit = (embedding / n).reshape(1, -1).astype(np.float32, copy=False)
+                self._faiss_index.add(unit)
+                self._faiss_id_map.append(cid)
         return cid, True
 
     # ---- edges ----
@@ -435,6 +480,121 @@ class ConceptGraph:
     def is_pinned(self, concept_id: int) -> bool:
         return concept_id in self._pins
 
+    # ---- forgetting / pruning (synthesis "forgetting is curation") ----
+
+    def prune_to_ceiling(self, now: float) -> int:
+        """Remove weakest concepts until node_count <= PRUNE_TO. Called
+        from MainLoop.sleep after _form_abstractions (post-merge so
+        abstraction parents are protected by their inbound IS_A edges).
+        Returns the number of nodes removed.
+
+        Pruning criteria (weakest first), multiplicative score:
+
+            score = activation_count
+                  * affect_trace_magnitude
+                  * max(edge_count, 1)
+                  * surprise_at_birth
+
+        A factor of zero anywhere collapses the score: a never-activated
+        concept (activation_count == 0 — but the write path sets it to
+        1, so this is mostly a guard), a flat-affect concept, an
+        edgeless concept, or a low-surprise birth all sink. The product
+        ranks "everything important" above "any one missing factor."
+
+        Immune from pruning:
+          - pinned concepts
+          - concepts incident on any IS_A edge (parents AND members of
+            abstractions; once clustered, the cluster is load-bearing)
+        """
+        if self.node_count <= CONCEPT_CEILING:
+            return 0
+
+        # ---- immunity sets ----
+        protected: set[int] = set(self._pins.keys())
+        for edge in self._edges.values():
+            if edge.type is EdgeType.IS_A:
+                protected.add(edge.source_id)   # member of an abstraction
+                protected.add(edge.target_id)   # abstraction parent
+
+        # ---- score remaining concepts ----
+        # Out + in degree per node, computed once.
+        out_deg: dict[int, int] = {}
+        in_deg: dict[int, int] = {}
+        for e in self._edges.values():
+            out_deg[e.source_id] = out_deg.get(e.source_id, 0) + 1
+            in_deg[e.target_id] = in_deg.get(e.target_id, 0) + 1
+
+        candidates: list[tuple[float, int]] = []
+        for cid, node in self.nodes.items():
+            if cid in protected:
+                continue
+            edge_count = out_deg.get(cid, 0) + in_deg.get(cid, 0)
+            affect_magnitude = float(np.linalg.norm(
+                node.affect_trace.running_state
+            ))
+            score = (
+                float(node.activation_count)
+                * affect_magnitude
+                * max(edge_count, 1)
+                * float(node.surprise_at_birth)
+            )
+            candidates.append((score, cid))
+
+        if not candidates:
+            return 0
+
+        # Ascending score — weakest first.
+        candidates.sort(key=lambda x: x[0])
+
+        # Drop until we hit PRUNE_TO. Never overflow into the immune set.
+        n_to_drop = min(self.node_count - PRUNE_TO, len(candidates))
+        drop_ids = [cid for _, cid in candidates[:n_to_drop]]
+
+        for cid in drop_ids:
+            self._remove_node(cid, rebuild_faiss=False)
+
+        # Rebuild FAISS once at the end (IndexFlatIP doesn't support
+        # in-place removal; doing this per-delete is O(N²) and tanks
+        # the prune from milliseconds to minutes at 70K nodes).
+        if self._faiss_index is not None:
+            self._rebuild_faiss_index()
+        # Dense matrix invalidated similarly.
+        self._matrix = None
+        self._matrix_ids = []
+        self._matrix_dirty = True
+
+        return len(drop_ids)
+
+    def _remove_node(self, cid: int, rebuild_faiss: bool = True) -> None:
+        """Remove a concept node and all its incident edges. By default
+        rebuilds the FAISS index — pass rebuild_faiss=False from a
+        bulk-prune loop and rebuild once at the end."""
+        if cid not in self.nodes:
+            return
+        del self.nodes[cid]
+
+        keys_to_remove = [
+            k for k in self._edges
+            if k[0] == cid or k[1] == cid
+        ]
+        for k in keys_to_remove:
+            del self._edges[k]
+        # Rebuild adjacency indexes by filtering survivors. Cheaper than
+        # tracking incremental removals against the existing lists.
+        self._out_edges = {}
+        self._in_edges = {}
+        for e in self._edges.values():
+            self._out_edges.setdefault(e.source_id, []).append(e)
+            self._in_edges.setdefault(e.target_id, []).append(e)
+
+        # Pin set: drop entry if present (defensive — protected concepts
+        # shouldn't reach _remove_node, but if they do don't leave a
+        # dangling pin to a missing cid).
+        self._pins.pop(cid, None)
+
+        if rebuild_faiss and self._faiss_index is not None:
+            self._rebuild_faiss_index()
+
     # ---- auto-linking (Phase 4 — densifies the graph as concepts arrive) ----
 
     def link_to_nearest_neighbors(
@@ -463,7 +623,14 @@ class ConceptGraph:
         """
         if concept_id not in self.nodes:
             return []
-        if self._faiss_index.ntotal <= 1:
+        # Skip if there's nothing else to link to. Use FAISS ntotal when
+        # available, fall back to len(nodes) for the no-faiss api path.
+        ntotal = (
+            self._faiss_index.ntotal
+            if self._faiss_index is not None
+            else len(self.nodes)
+        )
+        if ntotal <= 1:
             return []
 
         rep = self.nodes[concept_id].embedding
@@ -667,13 +834,14 @@ class ConceptGraph:
         self._matrix_dirty = False
 
     def _rebuild_faiss_index(self) -> None:
-        """Rebuild the FAISS index from scratch over all current nodes.
-
-        Called at __init__ (no-op on empty graph) and after
-        MindPersistence.load restores nodes in bulk. The hot path
-        (write_on_surprise) keeps the index in sync incrementally so
-        runtime never needs to call this.
+        """Build (or rebuild) the FAISS index over all current nodes.
+        Imports faiss lazily — the api process never calls this so it
+        never imports faiss, avoiding the libomp co-load that crashed
+        torch's GPT-2 forward pass. Curriculum-side ingestion paths
+        (run_curriculum, ingest_book, parallel_ingestion) call this
+        explicitly after MindPersistence.load.
         """
+        faiss = _faiss_module()
         index = faiss.IndexFlatIP(D_REP)
         id_map: list[int] = []
         if self.nodes:

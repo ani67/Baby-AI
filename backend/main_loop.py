@@ -518,6 +518,23 @@ class MainLoop:
             # Abstraction formation runs once per sleep, after consolidation
             # has had a chance to shape the running affect of each member.
             abstractions_formed = self._form_abstractions(replay_now)
+
+            # Forgetting is curation. After abstractions form (so their
+            # parents and members are protected by IS_A edges), drop the
+            # weakest non-protected concepts back to PRUNE_TO whenever
+            # we've blown past the ceiling. Without this the graph is
+            # unbounded — the v0.6 ingestion run reached 80K+ nodes.
+            from backend.config import CONCEPT_CEILING                 # noqa: PLC0415
+            pruned_count = 0
+            if self.graph.node_count > CONCEPT_CEILING:
+                pre = self.graph.node_count
+                pruned_count = self.graph.prune_to_ceiling(now=replay_now)
+                print(
+                    f"[prune] removed {pruned_count:,} concepts → "
+                    f"{self.graph.node_count:,} remaining "
+                    f"(was {pre:,})",
+                    flush=True,
+                )
         finally:
             self.affect.end_consolidation()
 
