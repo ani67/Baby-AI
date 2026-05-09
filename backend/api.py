@@ -59,6 +59,30 @@ PATHS.ensure_dirs()
 DB_PATH = os.environ.get("MIND_DB", PATHS.db)
 
 
+def _read_db_node_count(db_path: str) -> int:
+    """Read the current concept_nodes count straight from SQLite.
+
+    Used by the lifespan shutdown handler to detect stale-snapshot
+    saves: if our in-memory graph holds materially fewer nodes than
+    what's on disk *right now*, another process rewrote the DB while
+    we were running and saving here would silently roll back the
+    richer state. Returns 0 on any error so the guard fails open
+    (we still save when we can't read disk).
+    """
+    import sqlite3
+    try:
+        conn = sqlite3.connect(db_path, timeout=5.0)
+        try:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM concept_nodes"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        return int(count)
+    except Exception:
+        return 0
+
+
 def construct_mind(birth_seed: int = 42) -> MainLoop:
     now = time.time()
     a = AffectStack(birth_seed=birth_seed, t_birth=now)
@@ -129,8 +153,31 @@ async def lifespan(app: FastAPI):
     # Best-effort save on shutdown.
     try:
         os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
-        MindPersistence(DB_PATH).save(state["loop"], now=time.time())
-        print(f"[mind] saved to {DB_PATH} on shutdown")
+        # Stale-snapshot guard: if disk has materially more nodes than
+        # we hold in RAM, we loaded an old snapshot (or another process
+        # rewrote the DB while we were running). Saving here would
+        # silently roll back the richer state. Refuse instead.
+        #
+        # Real-world incident this prevents (v0.7 ingestion run): an old
+        # uvicorn process loaded mind 'first' at v0.5 baseline (6,474
+        # nodes) hours before the curriculum, held that snapshot in RAM
+        # the entire run, and on SIGTERM its shutdown save clobbered
+        # the freshly-trained 77K mind back to 6,475. Disk had 12×
+        # more nodes than RAM at that moment — this guard would have
+        # caught it.
+        in_mem_nodes = state["loop"].graph.node_count
+        on_disk_nodes = _read_db_node_count(DB_PATH)
+        if on_disk_nodes > 0 and in_mem_nodes < on_disk_nodes * 0.5:
+            print(
+                f"[mind] REFUSING SAVE — in-memory has {in_mem_nodes:,} "
+                f"nodes, disk has {on_disk_nodes:,}. Stale-snapshot "
+                f"protection: would shrink the on-disk graph by "
+                f">{100 - 100 * in_mem_nodes / max(on_disk_nodes, 1):.0f}%."
+            )
+        else:
+            MindPersistence(DB_PATH).save(state["loop"], now=time.time())
+            print(f"[mind] saved {in_mem_nodes:,} nodes to {DB_PATH} "
+                  f"on shutdown")
     except Exception as exc:
         print(f"[mind] save on shutdown failed: {exc}")
 
