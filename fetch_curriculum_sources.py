@@ -184,7 +184,11 @@ def fetch_wiki_category(
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--curriculum", default="curriculum.json")
-    ap.add_argument("--only", help="comma-separated step names to fetch (default: all book steps)")
+    ap.add_argument(
+        "--only",
+        nargs="+",
+        help="step names to fetch (space- or comma-separated). default: all book steps",
+    )
     ap.add_argument("--no-wiki", action="store_true")
     ap.add_argument("--no-gutenberg", action="store_true")
     ap.add_argument("--wiki-limit", type=int, default=DEFAULT_WIKI_LIMIT)
@@ -193,10 +197,25 @@ def main() -> int:
     with open(args.curriculum, "r", encoding="utf-8") as f:
         curriculum = json.load(f)
 
-    steps = [s for s in curriculum["sequence"] if s.get("type") == "book"]
+    # Two supported schemas:
+    #   curriculum.json            → top-level "sequence", entries tagged type:"book"
+    #   curriculum_interleaved.json → top-level "sources", no "type" field
+    if "sequence" in curriculum:
+        steps = [s for s in curriculum["sequence"] if s.get("type") == "book"]
+    elif "sources" in curriculum:
+        steps = list(curriculum["sources"])
+    else:
+        print(f"  [error] {args.curriculum} has neither 'sequence' nor 'sources' key")
+        return 2
 
     if args.only:
-        wanted = {n.strip() for n in args.only.split(",") if n.strip()}
+        # Accept space- or comma-separated tokens.
+        wanted: set[str] = set()
+        for tok in args.only:
+            for n in tok.split(","):
+                n = n.strip()
+                if n:
+                    wanted.add(n)
         steps = [s for s in steps if s["name"] in wanted]
 
     n_done = n_skip = n_fail = 0

@@ -782,6 +782,46 @@
       "source": "data/wiki/religion.txt",
       "domain": "mythology",
       "weight": 0.8
+    },
+    {
+      "name": "oscar_wilde_importance",
+      "source": "data/books/oscar_wilde.txt",
+      "gutenberg_id": 844,
+      "domain": "conversation",
+      "weight": 2.0,
+      "notes": "wit epigram social exchange — teaches casual intelligent register"
+    },
+    {
+      "name": "boswell_johnson",
+      "source": "data/books/boswell_johnson.txt",
+      "gutenberg_id": 1564,
+      "domain": "conversation",
+      "weight": 1.5,
+      "notes": "conversation as literature — how intelligent people actually talk"
+    },
+    {
+      "name": "letters_darwin",
+      "source": "data/books/letters_darwin.txt",
+      "gutenberg_id": 2089,
+      "domain": "conversation",
+      "weight": 1.5,
+      "notes": "Darwin letters — intimate intelligent first-person voice"
+    },
+    {
+      "name": "letters_lincoln",
+      "source": "data/books/letters_lincoln.txt",
+      "gutenberg_id": 2653,
+      "domain": "conversation",
+      "weight": 1.5,
+      "notes": "Lincoln letters — direct clear personal voice"
+    },
+    {
+      "name": "wiki_conversation",
+      "source": "data/wiki/conversation.txt",
+      "wiki_category": "Conversation",
+      "domain": "conversation",
+      "weight": 1.5,
+      "notes": "conversational norms and patterns"
     }
   ],
   "self_examination": [
