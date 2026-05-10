@@ -206,6 +206,13 @@ def train(
             ck_marker = "  [ckpt]"
         print(f"  epoch {epoch}/{epochs}  loss={avg:.4f}  ({elapsed:.1f}s){ck_marker}",
               flush=True)
+        # Inter-epoch cooldown — lets the M1 GPU drop temperature
+        # between epochs so a 150-epoch MPS run doesn't thermally
+        # throttle (or trigger a thermal shutdown). Adds ~5 min total
+        # to a 150-epoch run, in exchange for stable wall-clock and
+        # noticeably less heat.
+        if epoch < epochs:
+            time.sleep(2)
 
     return model
 

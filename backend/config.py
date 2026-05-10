@@ -84,7 +84,11 @@ AUTO_LINK_MIN_COSINE = 0.25
 # a full pass. 10000 drops that to ~28 runs, and the corpus-growth
 # guard further skips runs where the journal hasn't grown enough
 # since the last train to actually move the loss.
-TRAIN_LM_EVERY_N_SURPRISES   = 10000   # was 2000
+TRAIN_LM_EVERY_N_SURPRISES   = 10_000_000  # effectively-disabled while a
+                                            # long-form (150-epoch) train
+                                            # is in flight; 10000 is the
+                                            # operational default once the
+                                            # 150-epoch run completes.
 LM_TRAIN_MIN_CORPUS          = 500     # absolute floor — don't train at all under this
 MIN_CORPUS_GROWTH_TO_RETRAIN = 2000    # need this many new surprised
                                        # sentences since last train,

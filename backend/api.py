@@ -117,6 +117,21 @@ state: dict[str, Any] = {
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Cap MPS unified-memory usage on M1/M2 so a large mind (50K-60K
+    # nodes + the live language head + the cosine index + transient
+    # tensors) doesn't drive the GPU into the OOM-trigger zone where
+    # the API has crashed three times today on the question path.
+    # 0.4 leaves the system ~60% of unified memory for graph ops,
+    # fastapi workers, and the OS — proven safe on the 16 GB M1.
+    try:
+        import torch
+        if torch.backends.mps.is_available():
+            torch.mps.set_per_process_memory_fraction(0.4)
+            print("[api] MPS per-process memory fraction = 0.4", flush=True)
+    except Exception as exc:
+        print(f"[api] MPS memory cap skipped: {type(exc).__name__}: {exc}",
+              flush=True)
+
     state["lock"] = asyncio.Lock()
     if os.path.exists(DB_PATH):
         try:
