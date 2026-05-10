@@ -530,51 +530,37 @@ class ParallelIngestionManager:
         return items_processed
 
     def _process_batch(self, batch: list[ConceptDiff], now: float) -> None:
-        """Apply a batch of diffs to the loop. Single MPS prediction up
-        front via predict_engine.predict_batch (one matmul over all
-        rows of the batch); per-item state mutation still goes through
-        loop.cycle so find_or_match dedup, auto-link, F.attend, and
-        B.observe stay authoritative.
+        """Apply a batch of diffs to the loop. Per-item state mutation
+        goes through loop.cycle (find_or_match dedup, auto-link,
+        F.attend, B.observe).
 
-        Important: cycle internally calls predict_engine.predict() per
-        item via the input pipeline's _dispatch path. We do NOT plumb
-        the batched predictions into cycle today — doing so would
-        require extending IngestPipeline / cycle to accept a precomputed
-        Prediction. That refactor is the actual unlock; for now the
-        batched query is a redundant warm pass and the speedup is
-        modest. See report.
+        Note on predict_batch: the batched MPS query was tried as a
+        single up-front matmul plumbed through ingest_text(prediction=),
+        but it produced a *correctness* divergence: within-batch writes
+        invalidate the predictions other items in the same batch were
+        scored against. A 10K-item bench showed batch=64 yielding 4×
+        fewer nodes (46 vs 199) than batch=1 on identical input,
+        because surprise scoring diverged when later items in a batch
+        couldn't see earlier items' writes. The right place for
+        predict_batch is read-only paths (active inference, replay
+        scoring) — not the write path.
+
+        We keep the batch *collection* boundary (drains the queue in
+        chunks of WRITER_BATCH_SIZE) for cleaner snapshot/save
+        cadence, but each item still runs its own predict() inside
+        cycle. The actual hot-path speedup needs a different
+        architecture (e.g. a write-aware batching that re-queries
+        after each new write, or persistent index residency on MPS).
         """
         if not batch:
             return
-
-        # Build the (B, D_REP) representation matrix in one pass.
-        reps = np.empty((len(batch), config.D_REP), dtype=np.float32)
-        for i, diff in enumerate(batch):
-            row = np.frombuffer(diff.representation, dtype=np.float32)
-            reps[i] = row
-
-        # ONE MPS / numpy matmul over the whole batch. The predictions
-        # are not currently consumed by cycle — see method docstring.
-        # We still invoke it so the API path is exercised by the
-        # writer (regression coverage) and any future caller that
-        # plumbs the prediction into cycle gets the speedup for free.
-        try:
-            _ = self.loop.predict_engine.predict_batch(reps, layer="INPUT")
-        except Exception as exc:
-            # Predict_batch is best-effort warmup; if it fails the
-            # per-item cycle path still runs correctly. Log and move on.
-            print(
-                f"[parallel] predict_batch failed: "
-                f"{type(exc).__name__}: {exc}",
-                flush=True,
-            )
 
         # Per-item: cycle runs the authoritative observation path. We
         # advance `now` by a microsecond per item so each cycle's
         # last_observation_t / tick lands distinct (matches the
         # unbatched loop's now+1e-3 stamping).
         for i, diff in enumerate(batch):
-            row = reps[i].copy()  # writable copy for downstream code
+            row = np.frombuffer(diff.representation, dtype=np.float32).copy()
             t_item = now + i * 1e-6
 
             ingest = self.loop.input_pipeline.ingest_text(

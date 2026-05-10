@@ -438,12 +438,21 @@ class InputPipeline:
         agent_id: int | None = None,
         representation: np.ndarray | None = None,
         encoder_id: str | None = None,
+        prediction: "Prediction | None" = None,
     ) -> IngestResult:
         """Ingest a text. Phase 5: an optional pre-encoded representation
         can be passed in (from data/encoded_corpus.db) to skip encoding
         entirely. When supplied, encoder_id should also be supplied so
         the Stimulus carries the correct provenance; if omitted, the
         active text encoder's id is stamped.
+
+        Phase 8: an optional precomputed `prediction` can be passed in
+        (e.g. from PredictionEngine.predict_batch()) to skip the
+        per-item single-row MPS query. WARNING: not safe on write-heavy
+        paths — within-batch writes invalidate predictions other items
+        were scored against. Verified divergence (10K bench produced
+        4× fewer nodes when batched). Use only on read-only paths
+        (active inference, replay scoring).
         """
         if representation is None:
             encoder = self.encoders.active_for(Modality.TEXT)
@@ -464,6 +473,7 @@ class InputPipeline:
             agent_id=agent_id,
             now=now,
             origin="world",
+            prediction=prediction,
         )
 
     def ingest_image(
@@ -591,6 +601,7 @@ class InputPipeline:
         cycle_depth: int = 0,
         layer: str = "INPUT",
         replay_origin: bool = False,
+        prediction: "Prediction | None" = None,
     ) -> IngestResult:
         self._stimulus_id += 1
         self._tick += 1
@@ -618,7 +629,12 @@ class InputPipeline:
         # Predict → Observe through B. B routes side-effects to A
         # (always) and C (only on surprise), and auto-pushes to D's
         # replay buffer for non-replay surprises.
-        prediction = self.predict_engine.predict(representation, layer=layer)
+        # Phase 8: callers may pass in a precomputed Prediction so a
+        # batched upstream query (predict_batch) doesn't get redone
+        # per-item by predict(). Falls back to single-item predict()
+        # when not provided.
+        if prediction is None:
+            prediction = self.predict_engine.predict(representation, layer=layer)
         gap = self.predict_engine.observe(
             prediction=prediction,
             actual=representation,
