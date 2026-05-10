@@ -101,6 +101,29 @@ class ActiveInference:
                          filters and ran predict/observe on).
           new_writes   — subset of events where observe() ended up writing
                          a new concept (gap.was_new_write True).
+
+        Two-pass structure
+        ------------------
+        1. Pass 1 (sample): draw up to K_PAIRS bridges that pass the
+           eligibility + not-already-connected filters. Compose each
+           bridge representation up front. The bridges are independent —
+           composing one doesn't affect another's filter.
+        2. Pass 2 (predict+observe): one batched predict_batch call over
+           every bridge (one MPS matmul instead of K). Then observe each
+           with its precomputed Prediction.
+
+        Within-batch staleness
+        ----------------------
+        Predictions are computed against the graph state at the start of
+        pass 2. As observe() writes new bridge concepts, those new nodes
+        are NOT visible to predictions for later bridges in the same
+        cycle. This matches the un-batched semantics: the original loop
+        also called predict() before observe() per pair, and a write in
+        pair-N didn't retroactively re-score pair-N+1 either. Each pair's
+        prediction was always against the state at the moment of its own
+        predict() call. We collapse all those predict() calls to a single
+        batched one, which is equivalent up to the per-item ordering of
+        the predict step within the cycle.
         """
         eligible = self._eligible_endpoints()
         if len(eligible) < 2:
@@ -108,16 +131,16 @@ class ActiveInference:
 
         weights = self._weights_for(eligible)
 
-        events = 0
-        new_writes = 0
+        # ---- pass 1: sample pairs and compose bridges ----
         attempts = 0
         # Allow up to 3 × K_PAIRS draws so we don't loop forever when
         # the graph is dense (most pairs already connected) but also
         # don't sample for an unbounded time.
         max_attempts = K_PAIRS * 3
         seen_pairs: set[tuple[int, int]] = set()
+        pair_data: list[tuple[int, int, np.ndarray]] = []
 
-        while events < K_PAIRS and attempts < max_attempts:
+        while len(pair_data) < K_PAIRS and attempts < max_attempts:
             attempts += 1
             cid_a, cid_b = self._pick_pair(eligible, weights)
             if cid_a == cid_b:
@@ -134,12 +157,25 @@ class ActiveInference:
             if bridge is None:
                 continue
 
+            pair_data.append((cid_a, cid_b, bridge))
+
+        if not pair_data:
+            return 0, 0
+
+        # ---- pass 2: batched predict + per-item observe ----
+        bridges = np.stack([b for _, _, b in pair_data]).astype(
+            np.float32, copy=False
+        )
+        predictions = self.predict_engine.predict_batch(bridges, layer="INPUT")
+
+        events = 0
+        new_writes = 0
+        for (cid_a, cid_b, bridge), prediction in zip(pair_data, predictions):
             # The bridge IS the actual we observe — the prediction is
             # the graph's current best guess of what should be there
             # (top-1 nearest in rep space). If those agree, no surprise;
             # if they differ enough, observe() runs the standard
             # write/strengthen path including auto-link.
-            prediction = self.predict_engine.predict(bridge, layer="INPUT")
             name_hint = f"bridge:{cid_a}-{cid_b}"
             gap = self.predict_engine.observe(
                 prediction=prediction,

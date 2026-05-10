@@ -49,7 +49,7 @@ import numpy as np
 from backend.affect import AffectStack, InjectionPoint
 from backend.config import N_AFF
 from backend.graph import ConceptGraph
-from backend.predict import PredictionEngine, PredictionGap, SimulationFrame
+from backend.predict import Prediction, PredictionEngine, PredictionGap, SimulationFrame
 
 
 # Synthesis-locked constants (subset relevant to Phase 3 D minimal).
@@ -225,6 +225,16 @@ class SimulationReplay:
         Welford stats stay frozen (B honors the flag). The reaction layer
         feels the replay; the upper layers receive 30% nudge.
 
+        Batched predict
+        ---------------
+        The replay buffer is a fixed snapshot at the start of this call —
+        entries don't depend on each other (Welford stats are frozen for
+        replays, so write thresholds wouldn't move even if they did). We
+        stack all entry representations into one (B, D_REP) array and
+        call predict_batch once (a single MPS matmul) instead of one
+        predict() per entry. Observations then iterate per-entry with
+        the precomputed Prediction.
+
         Returns the list of replayed entries (mutated: replay_count, etc.).
         """
         if not self._buffer:
@@ -232,18 +242,44 @@ class SimulationReplay:
 
         # Pick the top-priority entries.
         ordered = sorted(self._buffer.values(), key=lambda e: -e.priority)
+        selected = ordered[:max_replays]
+        if not selected:
+            return []
+
+        # All replay entries currently use the INPUT layer (B sets layer
+        # at on_surprise time and Phase 3 only emits INPUT). Group by
+        # layer so the contract holds even when other layers start
+        # producing replay entries — predict_batch is per-layer.
         replayed: list[ReplayEntry] = []
-        for entry in ordered[:max_replays]:
-            self._replay_one(entry, now)
-            replayed.append(entry)
+        by_layer: dict[str, list[ReplayEntry]] = {}
+        for entry in selected:
+            by_layer.setdefault(entry.layer, []).append(entry)
+
+        for layer, group in by_layer.items():
+            reps = np.stack([e.actual_repr for e in group]).astype(
+                np.float32, copy=False
+            )
+            predictions = self.predict_engine.predict_batch(reps, layer=layer)
+            for entry, prediction in zip(group, predictions):
+                self._replay_one(entry, prediction, now)
+                replayed.append(entry)
+
         self.world_model.last_replay_run_t = float(now)
         self.world_model.replays_this_window += len(replayed)
         return replayed
 
-    def _replay_one(self, entry: ReplayEntry, now: float) -> None:
+    def _replay_one(
+        self,
+        entry: ReplayEntry,
+        prediction: Prediction,
+        now: float,
+    ) -> None:
+        # Affect nudge envelope wraps observe() only — the prediction was
+        # already computed (in batch) above and observe is the path that
+        # invokes A.inject. predict() does not touch A, so the multiplier
+        # placement is unchanged in semantics.
         self.affect.set_nudge_gain_multiplier(REPLAY_NUDGE_GAIN_MULTIPLIER)
         try:
-            prediction = self.predict_engine.predict(entry.actual_repr, layer=entry.layer)
             self.predict_engine.observe(
                 prediction=prediction,
                 actual=entry.actual_repr,
