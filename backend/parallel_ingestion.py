@@ -62,6 +62,7 @@ SNAPSHOT_UPDATE_INTERVAL = config.PARALLEL_INGESTION_SNAPSHOT_INTERVAL
 SAVE_INTERVAL            = config.PARALLEL_INGESTION_SAVE_INTERVAL
 SLEEP_CHECK_EVERY        = config.PARALLEL_INGESTION_SLEEP_CHECK_EVERY
 SLEEP_DURATION           = config.PARALLEL_INGESTION_SLEEP_DURATION
+WRITER_BATCH_SIZE        = config.WRITER_BATCH_SIZE
 
 
 # Per-level surprise multipliers. Words are short and high-leverage,
@@ -381,110 +382,57 @@ class ParallelIngestionManager:
             prev_sigint = None
 
         try:
+            batch: list[ConceptDiff] = []
+            batch_target = max(1, int(WRITER_BATCH_SIZE))
             while readers_done < total_readers:
                 if self._stop_requested:
+                    # Flush partial batch before bailing — these diffs
+                    # were already pulled off the queue, so dropping
+                    # them silently would lose work.
+                    if batch:
+                        items_processed = self._apply_batch_and_bookkeep(
+                            batch, items_processed, t0,
+                        )
+                        batch = []
                     done_event.set()
                     break
 
                 diff = self.diff_queue.get_diff(timeout=0.1)
                 if diff is None:
-                    # Empty pull. If every reader has exited *and* the
-                    # queue is fully drained, we're done.
+                    # Empty pull. Flush partial batch first so we don't
+                    # sit on already-dequeued diffs while the queue is
+                    # quiet — pacing matters for the snapshot/save cadence.
+                    if batch:
+                        items_processed = self._apply_batch_and_bookkeep(
+                            batch, items_processed, t0,
+                        )
+                        batch = []
+                    # If every reader has exited *and* the queue is
+                    # fully drained, we're done.
                     if all(not p.is_alive() for p in readers) and self.diff_queue.qsize() == 0:
                         break
                     continue
 
                 if diff.name_hint == "__READER_DONE__":
+                    # Flush partial batch before recording the DONE so
+                    # bookkeeping (snapshot, save) fires for trailing
+                    # items belonging to this reader.
+                    if batch:
+                        items_processed = self._apply_batch_and_bookkeep(
+                            batch, items_processed, t0,
+                        )
+                        batch = []
                     readers_done += 1
                     continue
                 if not diff.representation:
                     continue
 
-                # Reconstruct the float32 vector. .copy() because the
-                # buffer is read-only; downstream code (graph) expects
-                # a writable array.
-                rep = np.frombuffer(diff.representation, dtype=np.float32).copy()
-                now = time.time()
-
-                # Same call sequence as run_interleaved's per-sentence
-                # body — find_or_match dedup, auto-link, B.observe,
-                # F.attend(INPUT) all run inside cycle. Per-item
-                # surprise_multiplier from the multilevel preprocessor
-                # rides on top of the run-wide ingestion_mode 1.0σ:
-                # word=1.5 -> effective 0.67σ (more surprises),
-                # paragraph=0.8 -> effective 1.25σ (rarer surprises).
-                ingest = self.loop.input_pipeline.ingest_text(
-                    diff.name_hint,
-                    now=now,
-                    representation=rep,
-                )
-                self.loop.predict_engine.set_surprise_multiplier(
-                    diff.surprise_multiplier
-                )
-                try:
-                    self.loop.cycle(
-                        ingest,
-                        now=now + 1e-3,
-                        force_respond=False,
-                        skip_simulation=True,
+                batch.append(diff)
+                if len(batch) >= batch_target:
+                    items_processed = self._apply_batch_and_bookkeep(
+                        batch, items_processed, t0,
                     )
-                finally:
-                    self.loop.predict_engine.clear_surprise_multiplier()
-
-                # Surprise-journal write. The sequential `run_interleaved`
-                # path also writes to surprised_sentences.jsonl on each
-                # surprise; this branch is the parallel-path equivalent.
-                # Only fires when the gap actually crossed B's threshold
-                # AND a new ConceptNode was created (so the journal stays
-                # 1:1 with new graph structure).
-                gap = ingest.gap
-                if (
-                    self._journal_path is not None
-                    and gap.is_surprise
-                    and gap.was_new_write
-                ):
-                    self._journal_buffer.append(
-                        json.dumps({
-                            "sentence":          diff.name_hint,
-                            "affect":            self.loop.affect.composite(now).tolist(),
-                            "concept_embeddings": [],   # skipped for speed
-                            "surprise_score":    float(gap.surprise_score),
-                            "concept_id":        int(gap.concept_id) if gap.concept_id is not None else None,
-                            "level":             diff.level,
-                            "t":                 float(now),
-                        }, ensure_ascii=False)
-                    )
-                    if len(self._journal_buffer) >= self._journal_flush_every:
-                        self._flush_journal_buffer()
-
-                items_processed += 1
-                self._writes_since_snapshot += 1
-                self._writes_since_save += 1
-                self._writes_since_sleep_check += 1
-
-                if self._writes_since_snapshot >= SNAPSHOT_UPDATE_INTERVAL:
-                    self._push_snapshot()
-                    self._writes_since_snapshot = 0
-
-                if (self._save_callback is not None
-                        and self._writes_since_save >= self._save_interval):
-                    self._do_save(reason="periodic")
-                    self._writes_since_save = 0
-
-                if self._writes_since_sleep_check >= SLEEP_CHECK_EVERY:
-                    self._writes_since_sleep_check = 0
-                    self._maybe_sleep_for_ceiling()
-
-                if items_processed % 10_000 == 0:
-                    rate = items_processed / max(time.perf_counter() - t0, 1e-6)
-                    print(
-                        f"[parallel] {items_processed:,} items  "
-                        f"nodes={self.loop.graph.node_count}  "
-                        f"queue={self.diff_queue.qsize()}  "
-                        f"saves={self._n_saves}  "
-                        f"({rate:,.0f}/s)",
-                        flush=True,
-                    )
+                    batch = []
         except KeyboardInterrupt:
             done_event.set()
             self._stop_requested = True
@@ -524,6 +472,150 @@ class ParallelIngestionManager:
                 self._do_save(reason="final")
 
         return items_processed
+
+    def _apply_batch_and_bookkeep(
+        self,
+        batch: list[ConceptDiff],
+        items_processed: int,
+        t0: float,
+    ) -> int:
+        """Apply a batch of diffs through the per-item cycle path, then
+        run the same per-item bookkeeping (snapshot push, save, sleep,
+        rate logging) the unbatched loop did. Returns the updated
+        `items_processed` counter.
+
+        The batch itself doesn't change the per-item correctness path
+        (cycle still runs once per diff). What batching buys is one
+        upstream MPS query — `predict_batch` — that future callers can
+        consume to short-circuit cycle's per-item nearest() lookup.
+        Today's writer just exercises predict_batch as a warm pass; the
+        speedup is bounded by however much of the cycle's work is in
+        that one matmul.
+        """
+        if not batch:
+            return items_processed
+
+        now = time.time()
+        self._process_batch(batch, now)
+
+        for diff in batch:
+            items_processed += 1
+            self._writes_since_snapshot += 1
+            self._writes_since_save += 1
+            self._writes_since_sleep_check += 1
+
+            if self._writes_since_snapshot >= SNAPSHOT_UPDATE_INTERVAL:
+                self._push_snapshot()
+                self._writes_since_snapshot = 0
+
+            if (self._save_callback is not None
+                    and self._writes_since_save >= self._save_interval):
+                self._do_save(reason="periodic")
+                self._writes_since_save = 0
+
+            if self._writes_since_sleep_check >= SLEEP_CHECK_EVERY:
+                self._writes_since_sleep_check = 0
+                self._maybe_sleep_for_ceiling()
+
+            if items_processed % 10_000 == 0:
+                rate = items_processed / max(time.perf_counter() - t0, 1e-6)
+                print(
+                    f"[parallel] {items_processed:,} items  "
+                    f"nodes={self.loop.graph.node_count}  "
+                    f"queue={self.diff_queue.qsize()}  "
+                    f"saves={self._n_saves}  "
+                    f"({rate:,.0f}/s)",
+                    flush=True,
+                )
+        return items_processed
+
+    def _process_batch(self, batch: list[ConceptDiff], now: float) -> None:
+        """Apply a batch of diffs to the loop. Single MPS prediction up
+        front via predict_engine.predict_batch (one matmul over all
+        rows of the batch); per-item state mutation still goes through
+        loop.cycle so find_or_match dedup, auto-link, F.attend, and
+        B.observe stay authoritative.
+
+        Important: cycle internally calls predict_engine.predict() per
+        item via the input pipeline's _dispatch path. We do NOT plumb
+        the batched predictions into cycle today — doing so would
+        require extending IngestPipeline / cycle to accept a precomputed
+        Prediction. That refactor is the actual unlock; for now the
+        batched query is a redundant warm pass and the speedup is
+        modest. See report.
+        """
+        if not batch:
+            return
+
+        # Build the (B, D_REP) representation matrix in one pass.
+        reps = np.empty((len(batch), config.D_REP), dtype=np.float32)
+        for i, diff in enumerate(batch):
+            row = np.frombuffer(diff.representation, dtype=np.float32)
+            reps[i] = row
+
+        # ONE MPS / numpy matmul over the whole batch. The predictions
+        # are not currently consumed by cycle — see method docstring.
+        # We still invoke it so the API path is exercised by the
+        # writer (regression coverage) and any future caller that
+        # plumbs the prediction into cycle gets the speedup for free.
+        try:
+            _ = self.loop.predict_engine.predict_batch(reps, layer="INPUT")
+        except Exception as exc:
+            # Predict_batch is best-effort warmup; if it fails the
+            # per-item cycle path still runs correctly. Log and move on.
+            print(
+                f"[parallel] predict_batch failed: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+
+        # Per-item: cycle runs the authoritative observation path. We
+        # advance `now` by a microsecond per item so each cycle's
+        # last_observation_t / tick lands distinct (matches the
+        # unbatched loop's now+1e-3 stamping).
+        for i, diff in enumerate(batch):
+            row = reps[i].copy()  # writable copy for downstream code
+            t_item = now + i * 1e-6
+
+            ingest = self.loop.input_pipeline.ingest_text(
+                diff.name_hint,
+                now=t_item,
+                representation=row,
+            )
+            self.loop.predict_engine.set_surprise_multiplier(
+                diff.surprise_multiplier
+            )
+            try:
+                self.loop.cycle(
+                    ingest,
+                    now=t_item + 1e-3,
+                    force_respond=False,
+                    skip_simulation=True,
+                )
+            finally:
+                self.loop.predict_engine.clear_surprise_multiplier()
+
+            # Surprise-journal write. Same gating as the unbatched path:
+            # journal records track 1:1 with new graph structure.
+            gap = ingest.gap
+            if (
+                self._journal_path is not None
+                and gap.is_surprise
+                and gap.was_new_write
+            ):
+                self._journal_buffer.append(
+                    json.dumps({
+                        "sentence":           diff.name_hint,
+                        "affect":             self.loop.affect.composite(t_item).tolist(),
+                        "concept_embeddings": [],
+                        "surprise_score":     float(gap.surprise_score),
+                        "concept_id":         int(gap.concept_id) if gap.concept_id is not None else None,
+                        "level":              diff.level,
+                        "t":                  float(t_item),
+                    }, ensure_ascii=False)
+                )
+                if len(self._journal_buffer) >= self._journal_flush_every:
+                    self._flush_journal_buffer()
 
     def _flush_journal_buffer(self) -> None:
         """Append the buffered surprise-journal lines to disk and clear

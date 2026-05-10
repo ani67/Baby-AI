@@ -116,6 +116,12 @@ PARALLEL_INGESTION_SAVE_INTERVAL      = 10_000
 # this itself or the graph grows unbounded.
 PARALLEL_INGESTION_SLEEP_CHECK_EVERY  = 10_000
 PARALLEL_INGESTION_SLEEP_DURATION     = 10.0
+# Writer-side batch size for the parallel ingestion path. The writer
+# collects up to this many diffs from the queue, runs ONE batched
+# nearest-neighbor search (predict_batch) over the whole batch, then
+# applies per-item via loop.cycle. Set to 1 to disable batching and
+# fall back to per-item dequeue (used by benchmarks).
+WRITER_BATCH_SIZE                     = 64
 
 # Concept-graph ceiling + post-prune target (synthesis "forgetting is
 # curation" finally in code). Without this every write_on_surprise

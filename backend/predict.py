@@ -198,6 +198,87 @@ class PredictionEngine:
             is_degenerate=False,
         )
 
+    def predict_batch(
+        self,
+        representations: np.ndarray,
+        layer: str = "INPUT",
+    ) -> list[Prediction]:
+        """Batched nearest-neighbor prediction.
+
+        One MPS / numpy matmul over the whole batch via the graph's
+        `_index.search_batch`. Per-item semantics match `predict()`:
+          • empty graph → degenerate Prediction (zero mean, conf=0).
+          • zero-norm row → degenerate (mirrors graph.nearest's check).
+          • else → nearest concept's embedding, conf = clamped cosine.
+
+        ``self._tick`` is bumped once per item so each Prediction has a
+        unique tick — same convention as N consecutive predict() calls.
+        """
+        if representations.ndim != 2 or representations.shape[1] != D_REP:
+            raise ValueError(
+                f"representations must be (B, {D_REP}), got {representations.shape}"
+            )
+
+        B = int(representations.shape[0])
+        if B == 0:
+            return []
+
+        reps = representations.astype(np.float32, copy=False)
+
+        # Normalize each row, mark zero-norm rows as degenerate. We
+        # build the normalized batch in one pass so the whole search
+        # stays a single matmul. Zero-norm rows still feed into the
+        # search (their normalized form is zero), but we override
+        # them post-hoc with degenerate predictions to match
+        # graph.nearest's "n < 1e-9 → None" semantics.
+        norms = np.linalg.norm(reps, axis=1)
+        safe = np.maximum(norms, 1e-9).astype(np.float32)
+        reps_norm = reps / safe[:, None]
+        zero_mask = norms < 1e-9
+
+        # Empty graph: every prediction is degenerate.
+        if not self.graph.nodes or self.graph._index.ntotal == 0:
+            out: list[Prediction] = []
+            for _ in range(B):
+                self._tick += 1
+                out.append(Prediction(
+                    mean=np.zeros(D_REP, dtype=np.float32),
+                    confidence=0.0,
+                    layer=layer,
+                    tick=self._tick,
+                    is_degenerate=True,
+                ))
+            return out
+
+        # ONE MPS / numpy matmul for the whole batch.
+        results = self.graph._index.search_batch(reps_norm, k=1)
+
+        out_preds: list[Prediction] = []
+        for i in range(B):
+            self._tick += 1
+            sim, cid = results[i]
+            if zero_mask[i] or cid < 0:
+                out_preds.append(Prediction(
+                    mean=np.zeros(D_REP, dtype=np.float32),
+                    confidence=0.0,
+                    layer=layer,
+                    tick=self._tick,
+                    is_degenerate=True,
+                ))
+                continue
+            predicted_embedding = self.graph.nodes[cid].embedding.astype(
+                np.float32, copy=True
+            )
+            confidence = max(0.0, float(sim))
+            out_preds.append(Prediction(
+                mean=predicted_embedding,
+                confidence=confidence,
+                layer=layer,
+                tick=self._tick,
+                is_degenerate=False,
+            ))
+        return out_preds
+
     # ---- observe ----
 
     def observe(
