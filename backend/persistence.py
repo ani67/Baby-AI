@@ -586,6 +586,24 @@ class MindPersistence:
             )
             instance._restore_identity(cur, identity)
 
+            # 5b. Defensive sync of system anchors. The v0.9 prune fix
+            # (commit d5faced) made score-based pruning the primary
+            # path; the protection set is pinned-only + IS_A parents.
+            # If a previous run somehow left graph._pins missing the
+            # spine system anchors, a future prune can drop them — and
+            # ingest crashes with KeyError on the missing anchor cid
+            # (input.py:_dispatch). This sync re-pins both anchors on
+            # every load so the protection set always covers them.
+            spine = identity.spine
+            for cid, reason_label in (
+                (spine.self_concept_id,    "self_referent"),
+                (spine.unknown_concept_id, "other_agent"),
+            ):
+                if cid in graph.nodes and not graph.is_pinned(cid):
+                    graph.pin(cid, reason=reason_label)
+                    print(f"[persistence] re-pinned missing system anchor "
+                          f"cid={cid} ({reason_label})", flush=True)
+
             # 6. InputPipeline
             input_pipeline = InputPipeline(
                 affect=affect, graph=graph, predict_engine=predict, identity=identity,
