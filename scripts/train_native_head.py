@@ -87,6 +87,15 @@ def build_examples_from_journal(
             if not sentence:
                 skipped["no_sentence"] += 1
                 continue
+            # Soft word-length filter: skip only fragments under 3 words.
+            # Phase 8+ corpus is the unfiltered 163K-line journal; we
+            # want short phrases (3-7 words) to contribute vocabulary
+            # and pattern fragments, while still excluding the truly
+            # trivial (1-2 token) records that mostly tokenize back
+            # to a single word + punctuation.
+            if len(sentence.split()) < 3:
+                skipped["too_short"] += 1
+                continue
             tokens = tokenize(sentence)
             if len(tokens) < 2:
                 skipped["too_short"] += 1
@@ -211,8 +220,11 @@ def main() -> int:
     ap.add_argument("--mind", default="default",
                     help="mind name (paths under data/{mind}/)")
     ap.add_argument("--corpus", default=None,
-                    help="path to filtered jsonl. Default: "
-                         "data/{mind}/surprised_sentences_filtered.jsonl")
+                    help="path to surprised-sentence jsonl. Default: "
+                         "data/{mind}/surprised_sentences.jsonl "
+                         "(unfiltered 163K-line journal — pass "
+                         "surprised_sentences_filtered.jsonl to use the "
+                         "stale >=8-word v0.8 corpus)")
     ap.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
     ap.add_argument("--batch-size", type=int, default=DEFAULT_BATCH)
     ap.add_argument("--lr", type=float, default=DEFAULT_LR)
@@ -224,7 +236,7 @@ def main() -> int:
     if not os.path.isdir(mind_root):
         raise FileNotFoundError(f"mind dir not found: {mind_root}")
 
-    corpus_path = args.corpus or os.path.join(mind_root, "surprised_sentences_filtered.jsonl")
+    corpus_path = args.corpus or os.path.join(mind_root, "surprised_sentences.jsonl")
     vocab_path = os.path.join(mind_root, "language_head_vocab.json")
     save_path = os.path.join(mind_root, DEFAULT_V2_FILENAME)
 

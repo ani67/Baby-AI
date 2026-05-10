@@ -346,15 +346,9 @@ def run_sleep_step(loop: MainLoop, paths: MindPaths, step: dict) -> dict:
 def run_train_lm_step(paths: MindPaths, step: dict) -> dict:
     epochs = int(step.get("epochs", 50))
     print(f"  [train_lm] {step['name']}  epochs={epochs}  (subprocess)")
-    filtered = os.path.join(
-        os.path.dirname(paths.surprised_log),
-        "surprised_sentences_filtered.jsonl",
-    )
-    corpus = filtered if os.path.exists(filtered) else paths.surprised_log
     cmd = [
         sys.executable, "scripts/train_native_head.py",
         "--mind", paths.mind_name,
-        "--corpus", corpus,
         "--epochs", str(epochs),
     ]
     t0 = time.perf_counter()
@@ -432,18 +426,13 @@ def _train_lm_with_curve(paths: MindPaths, epochs: int) -> tuple[bool, list[floa
     Phase 8+: the active mouth is native_head_v2 (commit 6b6ed38),
     not the GPT-2 LM head. Train script is scripts/train_native_head.py
     which writes data/{mind}/native_head_v2.pt; expression.py prefers
-    that file when present. Filtered surprise journal is the corpus.
+    that file when present. Trainer defaults to the live unfiltered
+    surprise journal — no --corpus override here.
     """
     import re
-    filtered = os.path.join(
-        os.path.dirname(paths.surprised_log),
-        "surprised_sentences_filtered.jsonl",
-    )
-    corpus = filtered if os.path.exists(filtered) else paths.surprised_log
     cmd = [
         sys.executable, "scripts/train_native_head.py",
         "--mind", paths.mind_name,
-        "--corpus", corpus,
         "--epochs", str(epochs),
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -657,15 +646,13 @@ def run_interleaved(
     # training run. Initialized to current corpus size so the first
     # train fires only after MIN_CORPUS_GROWTH_TO_RETRAIN new lines.
     def _count_corpus_lines() -> int:
-        filtered = os.path.join(
-            os.path.dirname(paths.surprised_log),
-            "surprised_sentences_filtered.jsonl",
-        )
-        corpus = filtered if os.path.exists(filtered) else paths.surprised_log
-        if not os.path.exists(corpus):
+        # Counter for the corpus-growth guard. Phase 8+ trains on the
+        # unfiltered live journal (paths.surprised_log) — same source
+        # train_native_head.py reads by default.
+        if not os.path.exists(paths.surprised_log):
             return 0
         n = 0
-        with open(corpus, "r", encoding="utf-8") as f:
+        with open(paths.surprised_log, "r", encoding="utf-8") as f:
             for _ in f:
                 n += 1
         return n
@@ -949,16 +936,12 @@ def _train_lm_subprocess(paths: MindPaths, epochs: int) -> dict:
     """Helper: invoke native-head training in a subprocess so the
     torch/GloVe binaries can load fresh and don't leak memory across
     many train cycles inside the long-running interleaved runner.
-    Phase 8+: native_head_v2 is the active mouth, not GPT-2."""
-    filtered = os.path.join(
-        os.path.dirname(paths.surprised_log),
-        "surprised_sentences_filtered.jsonl",
-    )
-    corpus = filtered if os.path.exists(filtered) else paths.surprised_log
+    Phase 8+: native_head_v2 is the active mouth, not GPT-2.
+    Trainer defaults to the unfiltered surprise journal — no
+    --corpus override needed."""
     cmd = [
         sys.executable, "scripts/train_native_head.py",
         "--mind", paths.mind_name,
-        "--corpus", corpus,
         "--epochs", str(epochs),
     ]
     t0 = time.perf_counter()
