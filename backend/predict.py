@@ -77,6 +77,10 @@ class PredictionGap:
     # --- Phase 2 diagnostic fields (will move to D's replay log later) ---
     concept_id: int | None = None      # populated when a write/strengthen happened
     was_new_write: bool = False        # True iff a new ConceptNode was created
+    # Signed alignment between the rep-space gap direction and the
+    # current composite affect projected back into rep space. Computed
+    # in observe() and forwarded to A.inject for valence modulation.
+    valence: float = 0.0
 
 
 @dataclass
@@ -242,7 +246,19 @@ class PredictionEngine:
         # A owns W: project, inject, then learn from this delta.
         gap_signal, gap_magnitude = self.affect.project_gap(delta, magnitude)
         injection_point = _LAYER_TO_INJECTION_POINT[prediction.layer]
-        self.affect.inject(injection_point, gap_signal, gap_magnitude, now)
+
+        # Valence: alignment between the rep-space gap direction and the
+        # current composite affect, projected back into rep space. Sign
+        # tells inject whether the surprise is approach (+) or aversive
+        # (−); deadband-gated downstream so small alignments don't flip
+        # behavior. Forward it onto the gap for downstream loggers.
+        affect_in_rep = self.affect.affect_in_rep_space(now)
+        mag_for_unit = max(magnitude, 1e-9)
+        unit_delta = delta / mag_for_unit
+        valence = float(np.dot(unit_delta, affect_in_rep))
+        gap.valence = valence
+
+        self.affect.inject(injection_point, gap_signal, gap_magnitude, now, valence=valence)
         self.affect.learn_W(delta)
 
         # Route to C only on surprise.

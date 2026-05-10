@@ -193,6 +193,20 @@ class AffectStack:
             self._W_pinv_cache = np.linalg.pinv(self.W).astype(np.float32)
         return self._W_pinv_cache
 
+    def affect_in_rep_space(self, now: float) -> np.ndarray:
+        """Return the current composite-affect vector projected into the
+        D_REP-dimensional concept-rep space, unit-normalized. Used by
+        B.observe to score how well an incoming surprise's gap direction
+        aligns with the system's current affect (positive valence = the
+        surprise looks like 'more of what we currently feel'; negative
+        valence = it pulls against current affect).
+        """
+        composite = self.composite(now)            # (N_AFF,)
+        pinv_W = self.project_affect_to_repr()     # (D_REP, N_AFF)
+        result = pinv_W @ composite                # (D_REP,)
+        norm = float(np.linalg.norm(result))
+        return result / (norm + 1e-9)
+
     def learn_W(
         self,
         raw_delta: np.ndarray,
@@ -352,11 +366,21 @@ class AffectStack:
         gap_signal: np.ndarray,
         gap_magnitude: float,
         now: float,
+        valence: float = 0.0,
     ) -> np.ndarray:
         """B is the only legitimate caller (per synthesis).
 
         gap_signal is already in N_AFF dims — produced by `project_gap`.
         gap_magnitude is the rep-space norm used for tanh squashing.
+
+        valence (signed scalar in roughly [-1, 1]) is the alignment between
+        the rep-space gap direction and the current composite affect. Below
+        the deadband |valence| ≤ VALENCE_THRESHOLD the alignment is treated
+        as noise and ignored. Above it, sign decides direction:
+          • valence > 0 → approach: scale delta upward (amplified curiosity).
+          • valence < 0 → aversion: reverse delta (reaction moves AWAY from
+            the surprise direction in affect space).
+        Default 0.0 keeps all existing callers behavior-identical.
 
         Returns the new reaction vector (post-decay + delta), for callers
         that want to log the per-event movement.
@@ -369,6 +393,18 @@ class AffectStack:
         # outside its plausible band.
         squashed = float(np.tanh(gap_magnitude))
         delta = (g * squashed) * gap_signal.astype(np.float32)
+
+        # Valence modulation. Below the deadband threshold valence is
+        # treated as 0 (we don't react to noisy direction). Above it,
+        # negative valence reverses the delta (the surprise is aversive,
+        # so reaction moves AWAY from gap_signal); positive valence
+        # scales delta upward (approach / amplified curiosity).
+        from backend.config import VALENCE_THRESHOLD
+        if abs(valence) > VALENCE_THRESHOLD:
+            if valence < 0:
+                delta = -delta * abs(valence)
+            else:
+                delta = delta * valence
 
         decayed = _decayed(self.reaction, now)
         new_reaction = _clamp_norm(decayed + delta)

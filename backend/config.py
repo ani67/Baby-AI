@@ -41,6 +41,13 @@ COLD_START_N           = 30     # min observations before Welford z-scoring enga
 COLD_START_MAGNITUDE_FLOOR = 0.10  # raw-magnitude floor during cold-start
 STDDEV_FLOOR           = 1e-9   # guard against division by zero in z-score
 
+# Valence deadband. Below |valence| ≤ 0.3 the alignment between an incoming
+# gap and the current composite affect is treated as noise — modulation off.
+# Above it, sign decides direction (negative = aversive → inject reverses;
+# positive = approach → inject amplifies). Without the deadband, every tiny
+# correlation would flip behavior on every observation.
+VALENCE_THRESHOLD      = 0.3
+
 # Ingestion-mode surprise (B) — Phase 7 conditioning fix.
 # During curriculum/book ingestion the mind reads thousands of sentences in
 # bulk. The default 1.5σ threshold yields ~5% surprise rate which leaves the
