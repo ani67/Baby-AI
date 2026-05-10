@@ -586,11 +586,31 @@ class Expression:
 
         candidates: list[CandidateExpression] = []
         seen_text: set[str] = set()
-        # Sample slightly more than N_CANDIDATES_DEFAULT in case dedup or
-        # all-<unk> generations cull some.
-        attempts = max(N_CANDIDATES_DEFAULT, 6)
-        for _ in range(attempts):
-            ids = self._language_head.generate(cond_t)
+        # Sweep a temperature range so the candidate set has real
+        # variety — at single-temperature 0.7 the v0.7b head collapsed
+        # to "what is …" openings on every sample because that's the
+        # mode of its corpus distribution. E still picks the lowest-gap
+        # candidate, but a wider candidate fan gives more chances to
+        # find one that aligns with the internal state.
+        temperatures = [0.6, 0.75, 0.9, 1.05, 1.2, 1.35]
+
+        # Position-0 block list — overfit opening phrases from the
+        # surprise corpus that were dominating the first-token
+        # distribution. Mid-sequence these tokens are still allowed.
+        blocked_starts = ["what"]
+        blocked_ids: list[int] = []
+        if self._lm_vocab is not None:
+            for w in blocked_starts:
+                tid = self._lm_vocab.token_to_id.get(w)
+                if tid is not None:
+                    blocked_ids.append(tid)
+
+        for temp in temperatures:
+            ids = self._language_head.generate(
+                cond_t,
+                temperature=temp,
+                blocked_start_ids=blocked_ids,
+            )
             text = render_tokens(ids, self._lm_vocab).strip()
             if not text:
                 continue

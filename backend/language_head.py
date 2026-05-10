@@ -109,22 +109,55 @@ class LanguageHead(nn.Module):
         cond: torch.Tensor,
         max_len: int = GENERATION_MAX,
         temperature: float = GENERATION_TEMP,
+        repetition_penalty: float = 1.5,
+        blocked_start_ids: list[int] | None = None,
     ) -> list[int]:
         """Greedy-multinomial decode from <bos> until <eos> or max_len.
 
         cond: shape (1, COND_DIM) — single example only (no batched gen).
         Returns the list of generated ids (excludes the <bos> seed and
         the terminal <eos>).
+
+        repetition_penalty: divides logit value of any already-generated
+            token (clamped to a floor of 1.0). Was 1.0 (no penalty) in
+            the v0.5 LSTM era; bumped to 1.5 after v0.7b training showed
+            opening-phrase collapse ("what is …" repeated across all
+            candidates regardless of prompt).
+
+        blocked_start_ids: token ids whose logits are -inf at position 0
+            (only). Used to suppress overfit prefixes. Mid-sequence the
+            same tokens are allowed — only the *opening* is blocked.
         """
         self.eval()
         device = next(self.parameters()).device
         h = self.init_hidden(cond.to(device))
         x = torch.tensor([[BOS_ID]], device=device, dtype=torch.long)
         produced: list[int] = []
+        blocked_set = set(blocked_start_ids or [])
         for _ in range(max_len):
             emb = self.embed(x)
             out, h = self.gru(emb, h)
             logits = self.out(out[:, -1, :]) / max(temperature, 1e-6)
+
+            # Repetition penalty: divide previously-generated tokens'
+            # logits down (or multiply for negative logits, since dividing
+            # a negative number makes it less negative i.e. *more* likely
+            # — the standard fix is to multiply when logit < 0).
+            if repetition_penalty and repetition_penalty != 1.0 and produced:
+                seen = set(produced)
+                row = logits[0]
+                for tok in seen:
+                    v = row[tok].item()
+                    row[tok] = v / repetition_penalty if v > 0 else v * repetition_penalty
+                logits[0] = row
+
+            # Position-0 prefix block: zero out logits for overfit
+            # opening tokens. Only at the first decode step.
+            if not produced and blocked_set:
+                for tok in blocked_set:
+                    if 0 <= tok < logits.shape[-1]:
+                        logits[0, tok] = float("-inf")
+
             probs = torch.softmax(logits, dim=-1)
             tok = int(torch.multinomial(probs[0], num_samples=1).item())
             if tok in (EOS_ID, PAD_ID):
