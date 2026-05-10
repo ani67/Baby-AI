@@ -566,18 +566,36 @@ class MainLoop:
             # has had a chance to shape the running affect of each member.
             abstractions_formed = self._form_abstractions(replay_now)
 
-            # Forgetting is curation. After abstractions form (so their
-            # parents and members are protected by IS_A edges), drop the
-            # weakest non-protected concepts back to PRUNE_TO whenever
-            # we've blown past the ceiling. Without this the graph is
-            # unbounded — the v0.6 ingestion run reached 80K+ nodes.
-            from backend.config import CONCEPT_CEILING                 # noqa: PLC0415
+            # Forgetting is curation. The default path is now quality-based:
+            # drop concepts that have failed every weakness criterion
+            # (activation_count==1, edge_count<=1, affect<0.1, surprise
+            # below median). IS_A-incidence is no longer auto-protective —
+            # weak members go regardless of taxonomy membership. Pinned
+            # concepts remain immune.
+            #
+            # CONCEPT_CEILING is kept ONLY as an emergency brake: if the
+            # quality prune fails to keep the graph under control, fall
+            # back to size-based trim to PRUNE_TO.
+            from backend.config import (                                # noqa: PLC0415
+                CONCEPT_CEILING,
+                QUALITY_PRUNE_ON_SLEEP,
+            )
+            if QUALITY_PRUNE_ON_SLEEP:
+                pre = self.graph.node_count
+                weak_dropped = self.graph.prune_weak_concepts(now=replay_now)
+                print(
+                    f"[quality-prune] removed {weak_dropped:,} weak concepts → "
+                    f"{self.graph.node_count:,} remaining "
+                    f"(was {pre:,})",
+                    flush=True,
+                )
+
             pruned_count = 0
             if self.graph.node_count > CONCEPT_CEILING:
                 pre = self.graph.node_count
                 pruned_count = self.graph.prune_to_ceiling(now=replay_now)
                 print(
-                    f"[prune] removed {pruned_count:,} concepts → "
+                    f"[prune-emergency] removed {pruned_count:,} concepts → "
                     f"{self.graph.node_count:,} remaining "
                     f"(was {pre:,})",
                     flush=True,

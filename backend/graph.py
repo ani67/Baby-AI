@@ -674,6 +674,106 @@ class ConceptGraph:
 
         return len(drop_set)
 
+    def prune_weak_concepts(self, now: float) -> int:
+        """Quality-based pruning: drop concepts that haven't earned their
+        place. ALL nodes are candidates (no protection beyond pinned).
+        A concept is weak iff ALL of:
+
+            activation_count == 1     (never returned to)
+            edge_count       <= 1     (no real connections)
+            affect_magnitude < 0.1    (didn't move the mind)
+            surprise_at_birth < median surprise (wasn't remarkable)
+
+        IS_A membership is NOT auto-protective — once a member proves it's
+        weak by every quality criterion, the IS_A edge to its parent is
+        not enough to keep it. Pinned concepts (E's narrative anchors,
+        self/unknown, expression templates) remain immune; they encode
+        identity contracts the rest of the system depends on.
+
+        Returns the number of nodes removed.
+
+        Why this replaces size-based protection:
+          - The previous prune_to_ceiling protected every IS_A-incident
+            node. After a deep curriculum pass that yields ~88K members
+            against 2-3K parents, the protected set inflated to >99% of
+            the graph. Each sleep-cycle prune could only consider <1% of
+            nodes; the ceiling was unreachable. Throughput dropped while
+            the graph hovered well above its target.
+          - Quality-based pruning evaluates every node on the merit it
+            actually accrued (surprise + reactivation + connection +
+            affect). Weak nodes go regardless of taxonomy membership;
+            strong ones survive even if they're not in any cluster.
+        """
+        if not self.nodes:
+            return 0
+
+        # Build per-node degree from in/out adjacency dicts. get_edges with
+        # direction='both' deduplicates per call but doing 91K calls is
+        # quadratic — sweep edges once instead.
+        deg: dict[int, int] = {}
+        for e in self._edges.values():
+            deg[e.source_id] = deg.get(e.source_id, 0) + 1
+            deg[e.target_id] = deg.get(e.target_id, 0) + 1
+
+        # Median surprise across the live graph defines the "remarkable"
+        # cutoff. Computed each call so it tracks the current population.
+        surprises = [float(n.surprise_at_birth) for n in self.nodes.values()]
+        surprises.sort()
+        m = len(surprises)
+        if m == 0:
+            return 0
+        median_surprise = (
+            surprises[m // 2] if m % 2 == 1
+            else 0.5 * (surprises[m // 2 - 1] + surprises[m // 2])
+        )
+
+        pinned = self._pins.keys()
+        drop_set: set[int] = set()
+        for cid, node in self.nodes.items():
+            if cid in pinned:
+                continue
+            if node.activation_count != 1:
+                continue
+            if deg.get(cid, 0) > 1:
+                continue
+            affect_mag = float(np.linalg.norm(
+                node.affect_trace.running_state
+            ))
+            if affect_mag >= 0.1:
+                continue
+            if float(node.surprise_at_birth) >= median_surprise:
+                continue
+            drop_set.add(cid)
+
+        if not drop_set:
+            return 0
+
+        # Bulk-remove from the index in one pass (mirror prune_to_ceiling).
+        self._index.remove_many(drop_set)
+
+        # Drop nodes + their incident edges in one sweep.
+        for cid in drop_set:
+            self.nodes.pop(cid, None)
+            self._pins.pop(cid, None)
+        survived: dict[tuple[int, int, EdgeType], Edge] = {}
+        for k, e in self._edges.items():
+            if e.source_id in drop_set or e.target_id in drop_set:
+                continue
+            survived[k] = e
+        self._edges = survived
+        self._out_edges = {}
+        self._in_edges = {}
+        for e in self._edges.values():
+            self._out_edges.setdefault(e.source_id, []).append(e)
+            self._in_edges.setdefault(e.target_id, []).append(e)
+
+        # Dense matrix invalidated.
+        self._matrix = None
+        self._matrix_ids = []
+        self._matrix_dirty = True
+
+        return len(drop_set)
+
     def _remove_node(self, cid: int) -> None:
         """Remove one concept and its incident edges. Used in tests +
         single-cid removal paths. The bulk-prune path inside

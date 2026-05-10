@@ -147,8 +147,22 @@ WRITER_BATCH_SIZE                     = 64
 # Pinned concepts (E's narrative anchors, self/unknown, expression
 # templates) and concepts incident on any IS_A edge (abstraction
 # parents AND members) are immune.
-CONCEPT_CEILING = 50000
-PRUNE_TO        = 45000
+#
+# Phase 8 (post-v0.8) update — moved from size-based to quality-based
+# pruning at sleep. After a deep curriculum pass produced ~88K IS_A
+# members against 2.5K parents, the IS_A-incidence protection inflated
+# to 99% of the graph, leaving the ceiling-prune candidate set <1% of
+# nodes — sleep cycles could remove only a few hundred at a time
+# while ingestion was writing thousands per cycle. Quality-based
+# pruning (graph.prune_weak_concepts) evaluates every concept on its
+# own merit (activation_count, edge degree, affect magnitude,
+# surprise_at_birth) and drops those that fail every criterion.
+# CONCEPT_CEILING is kept only as an emergency brake — if the graph
+# blows past 200K despite quality pruning, fall back to size-based
+# trim to PRUNE_TO.
+CONCEPT_CEILING = 200_000   # emergency brake only
+PRUNE_TO        = 180_000   # if emergency fires
+QUALITY_PRUNE_ON_SLEEP = True
 
 # Attention arousal cap. F.attend feeds arousal into the spread gate;
 # at saturating arousal (0.9+) the gate collapses to a tiny top-k and
