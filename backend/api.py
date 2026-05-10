@@ -522,7 +522,9 @@ async def idle(req: IdleRequest = IdleRequest()):
         payload = {
             "type": "idle",
             "now":  result.now,
-            "replayed_count": result.replayed_count,
+            "replayed_count":   result.replayed_count,
+            "inference_events": result.inference_events,
+            "new_connections":  result.new_connections,
             "stats": serialize_state_lite(loop, now=result.now),
         }
     await broadcast(payload)

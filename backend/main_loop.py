@@ -40,6 +40,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from backend.active_inference import ActiveInference
 from backend.affect import AffectStack
 from backend.attention import Attention, AttentionFrame, AttentionPhase
 from backend.expression import Expression, ExpressionIntent
@@ -87,6 +88,16 @@ class CycleResult:
 class IdleResult:
     replayed_count: int
     now: float
+    # Phase 7+: counts emitted by ActiveInference.run_inference_cycle.
+    # `inference_events` is the number of pairs probed (passed
+    # eligibility + not-already-connected gating); `new_connections`
+    # is the subset where observe() actually wrote a fresh concept
+    # (was_new_write=True, which also auto-links it). Both default to
+    # 0 so existing call sites that don't run active inference (and
+    # the JSON shape of /idle when run_inference is disabled) stay
+    # behavior-identical.
+    inference_events: int = 0
+    new_connections: int = 0
 
 
 @dataclass
@@ -145,6 +156,17 @@ class MainLoop:
         # rather than in Expression's ctor so the existing Expression
         # constructor signature stays stable across persistence reload.
         self.expression.set_attention(self.attention)
+
+        # Active inference: the mind generates its own questions during
+        # idle by composing bridge representations between concepts that
+        # are currently in awareness (high activation_count). Constructed
+        # here rather than in the ctor signature so the existing wiring
+        # in tests, persistence, and run_curriculum stays unchanged.
+        self.active_inference = ActiveInference(
+            graph=self.graph,
+            predict_engine=self.predict_engine,
+            affect=self.affect,
+        )
 
     # ---- one cycle (run after each ingest) ----
 
@@ -455,14 +477,26 @@ class MainLoop:
 
     # ---- idle (run when nothing fresh has arrived) ----
 
-    def idle(self, now: float, max_replays: int = 1) -> IdleResult:
-        """Idle-window handling: D.replay_loop bounded.
+    def idle(
+        self,
+        now: float,
+        max_replays: int = 1,
+        *,
+        run_inference: bool = True,
+    ) -> IdleResult:
+        """Idle-window handling: D.replay_loop bounded + active inference.
 
         Synthesis idle conditions: no recent_observation_t in last 5 s
         AND arousal < 0.6 AND replays_this_window < PER_WINDOW_REPLAY_BUDGET.
         Phase 3 minimal MainLoop checks the time-since-last-observation
         and arousal; the per-window budget is honored by D.replay_loop's
         internal bookkeeping.
+
+        run_inference (default True): also run ActiveInference.run_inference_cycle
+        to give the mind a chance to compose its own bridge representations
+        between currently-active concepts. Disabling this preserves the
+        pre-active-inference IdleResult shape (counts default to 0). Replay
+        is independent — it always fires regardless of run_inference.
         """
         if (now - self.last_observation_t) < 5.0:
             return IdleResult(replayed_count=0, now=float(now))
@@ -470,7 +504,20 @@ class MainLoop:
             return IdleResult(replayed_count=0, now=float(now))
 
         replayed = self.simulation.replay_loop(now=now, max_replays=max_replays)
-        return IdleResult(replayed_count=len(replayed), now=float(now))
+
+        inference_events = 0
+        new_connections = 0
+        if run_inference:
+            inference_events, new_connections = (
+                self.active_inference.run_inference_cycle(now=now)
+            )
+
+        return IdleResult(
+            replayed_count=len(replayed),
+            now=float(now),
+            inference_events=inference_events,
+            new_connections=new_connections,
+        )
 
     # ---- sleep (Phase 4 — explicit consolidation pass) ----
 
