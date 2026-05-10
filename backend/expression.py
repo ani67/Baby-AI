@@ -275,7 +275,15 @@ class Expression:
     def _try_load_language_head(self) -> bool:
         """Idempotent: attempts to load on first call only. Returns True
         if a head is currently loaded. Silent failure on missing files
-        or torch issues — the template path remains as fallback."""
+        or torch issues — the template path remains as fallback.
+
+        Load priority:
+          1. <lm_dir>/native_head_v2.pt   (NativeHead — larger transformer,
+             trained on the >=8-word filtered corpus). Drop-in compatible
+             with LanguageHead.generate() so all downstream callers (incl.
+             generate_extended) work without modification.
+          2. self._lm_weights_path        (legacy GRU LanguageHead).
+        """
         if self._language_head is not None:
             return True
         if self._lm_load_attempted:
@@ -284,8 +292,28 @@ class Expression:
         if not _TORCH_OK:
             return False
         if not (self._lm_weights_path and self._lm_vocab_path
-                and os.path.exists(self._lm_weights_path)
                 and os.path.exists(self._lm_vocab_path)):
+            return False
+
+        # v2 native head check — same directory as the v1 weights, same
+        # vocab json. If present, it wins.
+        lm_dir = os.path.dirname(self._lm_weights_path) or "."
+        v2_path = os.path.join(lm_dir, "native_head_v2.pt")
+        if os.path.exists(v2_path):
+            try:
+                from backend.native_head import load_checkpoint_v2
+                self._language_head = load_checkpoint_v2(v2_path, device=self._lm_device)
+                self._lm_vocab = Vocab.load(self._lm_vocab_path)
+                print(f"[expression] native head v2 loaded from {v2_path} "
+                      f"(device={self._lm_device})")
+                return True
+            except Exception as exc:
+                print(f"[expression] native head v2 load failed: {exc}")
+                self._language_head = None
+                self._lm_vocab = None
+                # Fall through to v1.
+
+        if not os.path.exists(self._lm_weights_path):
             return False
         try:
             self._language_head = load_checkpoint(self._lm_weights_path, device=self._lm_device)
