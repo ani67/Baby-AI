@@ -41,6 +41,7 @@ Structure
 from __future__ import annotations
 
 import io
+import json
 import multiprocessing as mp
 import os
 import signal
@@ -266,6 +267,7 @@ class ParallelIngestionManager:
         n_readers: int = 4,
         save_callback: Optional[Callable[[], None]] = None,
         save_interval: int = SAVE_INTERVAL,
+        journal_path: Optional[str] = None,
     ) -> None:
         self.loop = loop
         self.n_readers = max(1, int(n_readers))
@@ -281,6 +283,14 @@ class ParallelIngestionManager:
         self._save_interval = max(1, int(save_interval))
         self._stop_requested = False
         self._n_saves = 0
+        # Surprise-journal writes. The sequential `run_interleaved`
+        # path appends to surprised_sentences.jsonl directly; the
+        # parallel writer needs to do the same so future training has
+        # an up-to-date corpus. Buffered so we don't fsync per item.
+        self._journal_path: Optional[str] = journal_path
+        self._journal_buffer: list[str] = []
+        self._journal_flush_every = 100
+        self._journal_records_written = 0
 
     def run(self, sources_by_domain: dict) -> int:
         """Spawn readers, drain diffs, apply through loop.cycle.
@@ -421,6 +431,32 @@ class ParallelIngestionManager:
                 finally:
                     self.loop.predict_engine.clear_surprise_multiplier()
 
+                # Surprise-journal write. The sequential `run_interleaved`
+                # path also writes to surprised_sentences.jsonl on each
+                # surprise; this branch is the parallel-path equivalent.
+                # Only fires when the gap actually crossed B's threshold
+                # AND a new ConceptNode was created (so the journal stays
+                # 1:1 with new graph structure).
+                gap = ingest.gap
+                if (
+                    self._journal_path is not None
+                    and gap.is_surprise
+                    and gap.was_new_write
+                ):
+                    self._journal_buffer.append(
+                        json.dumps({
+                            "sentence":          diff.name_hint,
+                            "affect":            self.loop.affect.composite(now).tolist(),
+                            "concept_embeddings": [],   # skipped for speed
+                            "surprise_score":    float(gap.surprise_score),
+                            "concept_id":        int(gap.concept_id) if gap.concept_id is not None else None,
+                            "level":             diff.level,
+                            "t":                 float(now),
+                        }, ensure_ascii=False)
+                    )
+                    if len(self._journal_buffer) >= self._journal_flush_every:
+                        self._flush_journal_buffer()
+
                 items_processed += 1
                 self._writes_since_snapshot += 1
                 self._writes_since_save += 1
@@ -477,6 +513,10 @@ class ParallelIngestionManager:
                     p.terminate()
                     p.join(timeout=2)
             self.diff_queue.close()
+            # Flush any remaining surprise-journal records so a SIGTERM
+            # mid-run doesn't drop the last <100 entries.
+            if self._journal_buffer:
+                self._flush_journal_buffer()
             # Final save after readers are gone so the on-disk state
             # matches the final in-memory graph. Idempotent if we just
             # saved a few items ago — but cheap insurance.
@@ -484,6 +524,29 @@ class ParallelIngestionManager:
                 self._do_save(reason="final")
 
         return items_processed
+
+    def _flush_journal_buffer(self) -> None:
+        """Append the buffered surprise-journal lines to disk and clear
+        the buffer. Best-effort — IO failure here only loses log
+        records, not graph state."""
+        if not self._journal_buffer or self._journal_path is None:
+            return
+        try:
+            os.makedirs(
+                os.path.dirname(self._journal_path) or ".", exist_ok=True
+            )
+            with open(self._journal_path, "a", encoding="utf-8") as f:
+                f.write("\n".join(self._journal_buffer))
+                f.write("\n")
+            self._journal_records_written += len(self._journal_buffer)
+        except OSError as exc:
+            print(
+                f"[parallel] journal flush failed: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+        finally:
+            self._journal_buffer.clear()
 
     # ---- internal: signal + save ----
 

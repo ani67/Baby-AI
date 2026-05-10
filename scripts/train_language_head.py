@@ -185,18 +185,21 @@ def train(
     vocab: Vocab,
     epochs: int,
     device: str,
+    batch_size: int = BATCH_SIZE,
+    lr: float = LEARNING_RATE,
 ) -> LanguageHead:
     if not examples:
         raise RuntimeError("no training examples — has the book been ingested yet?")
 
     dataset = SeqDataset(examples)
-    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=collate)
 
     model = LanguageHead(vocab_size=vocab.size).to(device)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"model: {n_params / 1e6:.2f} M params, vocab={vocab.size}, device={device}")
+    print(f"model: {n_params / 1e6:.2f} M params, vocab={vocab.size}, "
+          f"device={device}, batch={batch_size}, lr={lr:g}")
 
-    optim = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    optim = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.CrossEntropyLoss(ignore_index=PAD_ID, reduction="mean")
 
     for epoch in range(1, epochs + 1):
@@ -448,11 +451,19 @@ def run_training(
     epochs: int,
     device: str | None = None,
     vocab_limit: int = VOCAB_LIMIT,
+    batch_size: int = BATCH_SIZE,
+    lr: float = LEARNING_RATE,
 ) -> None:
     """Programmatic entry point used by run_curriculum.py's `train_lm` step."""
     device = device or ("mps" if torch.backends.mps.is_available() else "cpu")
+    if device == "mps":
+        # libomp conflict guard — torch + numpy on M1 each link their
+        # own libomp; >1 thread × >1 lib crashes mid-batch.
+        torch.set_num_threads(1)
+        os.environ["OMP_NUM_THREADS"] = "1"
 
-    print(f"[train_lm] mind={paths.mind_name}  device={device}")
+    print(f"[train_lm] mind={paths.mind_name}  device={device}  "
+          f"batch={batch_size}  lr={lr:g}")
     print("[train_lm] building vocab …")
     vocab = build_vocab(paths.book_text_log, limit=vocab_limit)
     print(f"  vocab size: {vocab.size} (incl. {len(SPECIAL_TOKENS)} special tokens)")
@@ -462,7 +473,10 @@ def run_training(
     examples = build_examples(paths.surprised_log, paths.db, vocab)
 
     print(f"[train_lm] training {epochs} epoch(s) on {len(examples):,} examples …")
-    model = train(examples, vocab, epochs=epochs, device=device)
+    model = train(
+        examples, vocab, epochs=epochs, device=device,
+        batch_size=batch_size, lr=lr,
+    )
 
     save_checkpoint(model, paths.language_head)
     size_mb = os.path.getsize(paths.language_head) / 1024 / 1024
@@ -481,8 +495,8 @@ def main() -> int:
     ap.add_argument("--gpt2", action="store_true",
                     help="train the GPT-2 conditioned decoder instead of the "
                          "Phase-5 LSTM head (Phase 7).")
-    ap.add_argument("--batch-size", type=int, default=CD_BATCH_SIZE,
-                    help="batch size for --gpt2 mode")
+    ap.add_argument("--batch-size", type=int, default=None,
+                    help="batch size. Default: 32 for LSTM, 8 for GPT-2.")
     ap.add_argument("--resume-from", default=None,
                     help="(--gpt2 only) load existing delta weights from this "
                          "path before training. Used by Phase 7 A3 to continue "
@@ -492,8 +506,7 @@ def main() -> int:
                          "(<mind_root>/language_head_gpt2.pt). Used by Phase 7 "
                          "A3 to write the v2 checkpoint to language_head_gpt2_v2.pt.")
     ap.add_argument("--lr", type=float, default=None,
-                    help="(--gpt2 only) override the default lr (CD_LR=2e-5). "
-                         "Phase 7 A3 uses 1e-5 for the second-pass continuation.")
+                    help="learning rate. Default: 1e-3 for LSTM, 2e-5 for GPT-2.")
     ap.add_argument("--skip-warmup", action="store_true",
                     help="(--gpt2 only) skip the linear-warmup schedule. "
                          "Used for second-pass continuation training where the "
@@ -508,7 +521,7 @@ def main() -> int:
             paths=paths,
             epochs=args.epochs or CD_EPOCHS,
             device=args.device,
-            batch_size=args.batch_size,
+            batch_size=args.batch_size if args.batch_size is not None else CD_BATCH_SIZE,
             resume_from=args.resume_from,
             save_to=args.save_to,
             lr_override=args.lr,
@@ -520,6 +533,8 @@ def main() -> int:
             epochs=args.epochs or DEFAULT_EPOCHS,
             device=args.device,
             vocab_limit=args.vocab_limit,
+            batch_size=args.batch_size if args.batch_size is not None else BATCH_SIZE,
+            lr=args.lr if args.lr is not None else LEARNING_RATE,
         )
     return 0
 

@@ -311,23 +311,12 @@ export function MindGraph({ graph, lastCycle, consolidationActive }: Props) {
 
     // ---- main render loop (pure GPU) ----
     let raf = 0;
-    const ORBIT_IDLE_MS = 8000;
     const tick = () => {
       const ref = sceneRef.current;
       if (!ref) return;
 
       const nowMs = performance.now();
       ref.timeUniform.value = nowMs / 1000;
-
-      // idle camera orbit (visual signature kept from old build)
-      if (nowMs - ref.lastInteractionMs > ORBIT_IDLE_MS) {
-        const cam = ref.camera;
-        const r = Math.hypot(cam.position.x, cam.position.z);
-        const a = Math.atan2(cam.position.z, cam.position.x) + 0.0008;
-        cam.position.x = Math.cos(a) * r;
-        cam.position.z = Math.sin(a) * r;
-        cam.lookAt(0, 0, 0);
-      }
 
       controls.update();
 
@@ -399,14 +388,21 @@ export function MindGraph({ graph, lastCycle, consolidationActive }: Props) {
     const edgeTexW = sqW(E);
     const edgeTexH = Math.max(1, Math.ceil(E / edgeTexW));
 
-    // -- POSITION texture (filled by worker TICKs) -----------------
+    // -- POSITION texture --------------------------------------------
+    // Seed from embedding[0..2] (±0.5 each axis from the GloVe-PCA
+    // encoder). Scale to a visible cluster — and crucially, this IS the
+    // layout: similar concepts in 256-d are similar in this 3-axis
+    // projection too, so we don't need to run a force sim to get
+    // meaningful structure. The worker is gated behind a
+    // user-triggered "REHEAT" message (cycle events bump it briefly,
+    // see effect 3 below).
     const posData = new Float32Array(nodeTexW * nodeTexH * 4);
-    // seed from embedding[0..2] so the first frame isn't a black screen
+    const SEED_SCALE = 600;
     for (let i = 0; i < N; i++) {
       const n = graph.nodes[i];
-      posData[i * 4]     = n.ex * 200;
-      posData[i * 4 + 1] = n.ey * 200;
-      posData[i * 4 + 2] = n.ez * 200;
+      posData[i * 4]     = n.ex * SEED_SCALE;
+      posData[i * 4 + 1] = n.ey * SEED_SCALE;
+      posData[i * 4 + 2] = n.ez * SEED_SCALE;
       posData[i * 4 + 3] = 0;
     }
     const posTex = new THREE.DataTexture(
@@ -524,8 +520,33 @@ export function MindGraph({ graph, lastCycle, consolidationActive }: Props) {
     ref.edgeMesh = edgeMesh;
     ref.edgeMat  = edgeMat;
 
-    // -- spawn worker ----------------------------------------------
-    if (ref.worker) ref.worker.terminate();
+    // -- worker on demand (NOT started here) ------------------------
+    // Spinning up d3 force on 73K nodes + 416K links takes ~5-10s of
+    // CPU and the postMessage serialization itself is ~0.5-1s. We
+    // skip it by default — the embedding seed already produces a
+    // semantically-clustered layout. Pressing "L" or invoking the
+    // global "mind:layout-relax" event spawns the worker for users
+    // who want a force-spread relayout.
+    if (ref.worker) {
+      ref.worker.terminate();
+      ref.worker = null;
+    }
+    const onRelaxRequest = () => spawnLayoutWorker(graph, N);
+    window.addEventListener("mind:layout-relax", onRelaxRequest);
+    return () => window.removeEventListener("mind:layout-relax", onRelaxRequest);
+  }, [graph]);
+
+  // -----------------------------------------------------------------
+  // worker spawn (lazy)
+  // -----------------------------------------------------------------
+  function spawnLayoutWorker(g: BinaryGraph, N: number) {
+    const ref = sceneRef.current;
+    if (!ref) return;
+    if (ref.worker) {
+      // already running — just reheat
+      ref.worker.postMessage({ type: "REHEAT" });
+      return;
+    }
     const worker = new ForceWorker();
     ref.worker = worker;
     worker.onmessage = (ev: MessageEvent) => {
@@ -534,7 +555,6 @@ export function MindGraph({ graph, lastCycle, consolidationActive }: Props) {
       if (!r) return;
       if (m.type === "TICK") {
         const positions: Float32Array = m.positions;
-        // Copy N×3 → posData N×4 (RGBA pad).
         const pd = r.posData;
         for (let i = 0; i < N; i++) {
           pd[i * 4]     = positions[i * 3];
@@ -547,18 +567,14 @@ export function MindGraph({ graph, lastCycle, consolidationActive }: Props) {
     worker.postMessage({
       type: "INIT",
       data: {
-        nodes: graph.nodes.map((n) => ({
-          id: n.id, ex: n.ex, ey: n.ey, ez: n.ez,
-        })),
-        // d3-force-link expects {source, target} with the .id() accessor.
-        // We pass concept_ids; the worker resolves them through .id().
-        links: graph.edges.map((e) => ({
-          source: graph.nodes[e.sourceIdx].id,
-          target: graph.nodes[e.targetIdx].id,
+        nodes: g.nodes.map((n) => ({ id: n.id, ex: n.ex, ey: n.ey, ez: n.ez })),
+        links: g.edges.map((e) => ({
+          source: g.nodes[e.sourceIdx].id,
+          target: g.nodes[e.targetIdx].id,
         })),
       },
     });
-  }, [graph]);
+  }
 
   // -----------------------------------------------------------------
   // 3. cycle event → bump active concepts in the state texture
@@ -580,6 +596,21 @@ export function MindGraph({ graph, lastCycle, consolidationActive }: Props) {
     ref.stateTex.needsUpdate = true;
     if (ref.worker) ref.worker.postMessage({ type: "REHEAT" });
   }, [lastCycle]);
+
+  // -----------------------------------------------------------------
+  // keyboard: press "L" to spawn / reheat the force-layout worker
+  // -----------------------------------------------------------------
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "l" && e.key !== "L") return;
+      // ignore when typing in an input
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+      window.dispatchEvent(new Event("mind:layout-relax"));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   return (
     <div
