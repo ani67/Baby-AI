@@ -1056,6 +1056,7 @@ def run_parallel_ingestion(
         n_readers=n_readers,
         save_callback=_save_now,
         journal_path=paths.surprised_log,
+        mind_name=paths.mind_name,
     )
     items_processed = mgr.run(sources_by_domain)
     duration = time.perf_counter() - t0

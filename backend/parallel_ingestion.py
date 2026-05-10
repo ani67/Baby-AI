@@ -45,6 +45,8 @@ import json
 import multiprocessing as mp
 import os
 import signal
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
@@ -269,6 +271,7 @@ class ParallelIngestionManager:
         save_callback: Optional[Callable[[], None]] = None,
         save_interval: int = SAVE_INTERVAL,
         journal_path: Optional[str] = None,
+        mind_name: Optional[str] = None,
     ) -> None:
         self.loop = loop
         self.n_readers = max(1, int(n_readers))
@@ -292,6 +295,14 @@ class ParallelIngestionManager:
         self._journal_buffer: list[str] = []
         self._journal_flush_every = 100
         self._journal_records_written = 0
+
+        # Native-head training trigger. Counts surprises since the last
+        # train and the journal-line count at last train. Both guards
+        # together prevent a wasted train on a mostly-static corpus.
+        # Initialised at first save (lazy — corpus may not exist yet).
+        self._surprises_at_last_train: Optional[int] = None
+        self._corpus_lines_at_last_train: Optional[int] = None
+        self._mind_name_for_train: Optional[str] = mind_name
 
     def run(self, sources_by_domain: dict) -> int:
         """Spawn readers, drain diffs, apply through loop.cycle.
@@ -512,6 +523,10 @@ class ParallelIngestionManager:
                     and self._writes_since_save >= self._save_interval):
                 self._do_save(reason="periodic")
                 self._writes_since_save = 0
+                # After each periodic save the mind on disk is
+                # consistent with the live loop — safe moment to fork
+                # a training subprocess that reads the disk state.
+                self._maybe_train_native_head()
 
             if self._writes_since_sleep_check >= SLEEP_CHECK_EVERY:
                 self._writes_since_sleep_check = 0
@@ -693,6 +708,124 @@ class ParallelIngestionManager:
             )
         finally:
             self.loop.predict_engine.set_ingestion_mode(True)
+
+    def _maybe_train_native_head(self) -> None:
+        """Fire native_head_v2 training when surprise count + corpus
+        growth + memory all clear. Cheap when not due — three int
+        compares. The interleaved path has the same logic in
+        run_curriculum.run_interleaved; this is the parallel-mode
+        port so an unattended parallel run also benefits from
+        periodic LM updates.
+
+        Trigger: surprises_since_last_train >= TRAIN_LM_EVERY_N_SURPRISES.
+        Guards: corpus floor (LM_TRAIN_MIN_CORPUS), corpus growth
+        (MIN_CORPUS_GROWTH_TO_RETRAIN). Memory check is best-effort.
+        """
+        if self._mind_name_for_train is None:
+            return  # caller didn't wire mind_name → cannot subprocess
+        if self._journal_path is None:
+            return  # no corpus to train on
+
+        surprise_count = self.loop.predict_engine.surprise_count
+        if self._surprises_at_last_train is None:
+            # First call after startup — initialise high-water marks
+            # so the first train requires fresh growth, not historical.
+            self._surprises_at_last_train = surprise_count
+            self._corpus_lines_at_last_train = self._count_corpus_lines()
+            return
+        if (surprise_count - self._surprises_at_last_train
+                < config.TRAIN_LM_EVERY_N_SURPRISES):
+            return
+
+        # Trigger threshold crossed — apply guards.
+        corpus_lines = self._count_corpus_lines()
+        if corpus_lines < config.LM_TRAIN_MIN_CORPUS:
+            print(
+                f"[parallel] train_lm SKIPPED — corpus has only "
+                f"{corpus_lines} lines (< {config.LM_TRAIN_MIN_CORPUS} "
+                f"floor); marker reset",
+                flush=True,
+            )
+            self._surprises_at_last_train = surprise_count
+            return
+
+        prev_lines = self._corpus_lines_at_last_train or 0
+        growth = corpus_lines - prev_lines
+        if growth < config.MIN_CORPUS_GROWTH_TO_RETRAIN:
+            print(
+                f"[parallel] train_lm SKIPPED — corpus grew only "
+                f"{growth} lines since last train "
+                f"(< {config.MIN_CORPUS_GROWTH_TO_RETRAIN} floor); "
+                f"marker reset, will retry next window",
+                flush=True,
+            )
+            self._surprises_at_last_train = surprise_count
+            return
+
+        print(
+            f"[parallel] train_lm @ surprises={surprise_count:,}  "
+            f"corpus_lines={corpus_lines:,}  growth={growth:,}",
+            flush=True,
+        )
+
+        # Pause ingestion mode for the subprocess so any concurrent
+        # save sees a consistent state. The subprocess loads from
+        # disk so the running loop is undisturbed; we just need a
+        # fresh checkpoint first.
+        self.loop.predict_engine.set_ingestion_mode(False)
+        try:
+            if self._save_callback is not None:
+                self._do_save(reason="pre-train")
+            t0 = time.perf_counter()
+            cmd = [
+                sys.executable,
+                os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    "scripts", "train_native_head.py",
+                ),
+                "--mind", self._mind_name_for_train,
+                "--epochs", "10",
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            dur = time.perf_counter() - t0
+            if proc.returncode != 0:
+                print(
+                    f"[parallel] train_lm FAILED in {dur:.1f}s",
+                    flush=True,
+                )
+                # Don't reset markers on failure — try again next
+                # window (memory might have freed up, etc.)
+                return
+            # Print final loss line if present.
+            for line in proc.stdout.strip().splitlines()[-3:]:
+                print(f"  [train_lm] {line}", flush=True)
+            print(
+                f"[parallel] train_lm OK in {dur:.1f}s",
+                flush=True,
+            )
+            # Reload the live expression head so subsequent generation
+            # in this process uses the freshly-trained weights.
+            try:
+                self.loop.expression.reload_language_head()
+            except Exception as exc:
+                print(
+                    f"[parallel] reload_language_head failed: "
+                    f"{type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+            self._surprises_at_last_train = surprise_count
+            self._corpus_lines_at_last_train = corpus_lines
+        finally:
+            self.loop.predict_engine.set_ingestion_mode(True)
+
+    def _count_corpus_lines(self) -> int:
+        if self._journal_path is None or not os.path.exists(self._journal_path):
+            return 0
+        n = 0
+        with open(self._journal_path, "r", encoding="utf-8") as f:
+            for _ in f:
+                n += 1
+        return n
 
     def _do_save(self, *, reason: str) -> None:
         if self._save_callback is None:
