@@ -75,15 +75,20 @@ R_MATCH = 0.92  # cosine similarity threshold for find_or_match dedup
 AUTO_LINK_K          = 3
 AUTO_LINK_MIN_COSINE = 0.25
 
-# LM training cadence during interleaved ingestion (Phase 7 perf fix).
-# v0.4 fired GPT-2 retraining every 500 surprises which at the 25%
-# ingestion-mode rate is every ~2,000 sentences — too frequent. Each
-# train spends 5-10 minutes that doesn't earn enough delta to justify
-# the interruption. 2000 surprises means trains land at every ~8K
-# ingested sentences instead, plus a hard floor: don't train until at
-# least LM_TRAIN_MIN_CORPUS surprised sentences exist on disk.
-TRAIN_LM_EVERY_N_SURPRISES = 2000
-LM_TRAIN_MIN_CORPUS        = 500
+# LM training cadence during interleaved ingestion.
+# Phase 7 set this at 2000 (~8K ingested sentences between trains)
+# back when training the GPT-2 head took 5-10 min.
+# Phase 8+: native_head_v2 is the active mouth (commit 6b6ed38).
+# 2000 means ~140 training runs over a 280K-surprise curriculum, each
+# blocking ingestion for 10-20 min — total ~35h of blocked time on
+# a full pass. 10000 drops that to ~28 runs, and the corpus-growth
+# guard further skips runs where the journal hasn't grown enough
+# since the last train to actually move the loss.
+TRAIN_LM_EVERY_N_SURPRISES   = 10000   # was 2000
+LM_TRAIN_MIN_CORPUS          = 500     # absolute floor — don't train at all under this
+MIN_CORPUS_GROWTH_TO_RETRAIN = 2000    # need this many new surprised
+                                       # sentences since last train,
+                                       # else skip this train window
 
 # Processing loop (F) — Phase 5
 # Between INPUT attend and action selection, F runs PROCESSING_TICKS

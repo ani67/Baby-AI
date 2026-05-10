@@ -346,9 +346,15 @@ def run_sleep_step(loop: MainLoop, paths: MindPaths, step: dict) -> dict:
 def run_train_lm_step(paths: MindPaths, step: dict) -> dict:
     epochs = int(step.get("epochs", 50))
     print(f"  [train_lm] {step['name']}  epochs={epochs}  (subprocess)")
+    filtered = os.path.join(
+        os.path.dirname(paths.surprised_log),
+        "surprised_sentences_filtered.jsonl",
+    )
+    corpus = filtered if os.path.exists(filtered) else paths.surprised_log
     cmd = [
-        sys.executable, "scripts/train_language_head.py",
+        sys.executable, "scripts/train_native_head.py",
         "--mind", paths.mind_name,
+        "--corpus", corpus,
         "--epochs", str(epochs),
     ]
     t0 = time.perf_counter()
@@ -420,12 +426,25 @@ def _milestone_report(
 
 
 def _train_lm_with_curve(paths: MindPaths, epochs: int) -> tuple[bool, list[float]]:
-    """Wrap _train_lm_subprocess and parse out the per-epoch loss line.
-    Returns (ok, [losses])."""
+    """Train the native head as a subprocess; parse the per-epoch loss line.
+    Returns (ok, [losses]).
+
+    Phase 8+: the active mouth is native_head_v2 (commit 6b6ed38),
+    not the GPT-2 LM head. Train script is scripts/train_native_head.py
+    which writes data/{mind}/native_head_v2.pt; expression.py prefers
+    that file when present. Filtered surprise journal is the corpus.
+    """
     import re
+    filtered = os.path.join(
+        os.path.dirname(paths.surprised_log),
+        "surprised_sentences_filtered.jsonl",
+    )
+    corpus = filtered if os.path.exists(filtered) else paths.surprised_log
     cmd = [
-        sys.executable, "scripts/train_language_head.py",
-        "--mind", paths.mind_name, "--gpt2", "--epochs", str(epochs),
+        sys.executable, "scripts/train_native_head.py",
+        "--mind", paths.mind_name,
+        "--corpus", corpus,
+        "--epochs", str(epochs),
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     losses: list[float] = []
@@ -561,6 +580,7 @@ def run_interleaved(
 
     from backend.config import (                                    # noqa: E402
         LM_TRAIN_MIN_CORPUS,
+        MIN_CORPUS_GROWTH_TO_RETRAIN,
         TRAIN_LM_EVERY_N_SURPRISES,
     )
     sleep_every  = int(curr.get("sleep_every_n_sentences", 8000))
@@ -631,6 +651,25 @@ def run_interleaved(
     n_done = 0
     t0 = time.perf_counter()
     pending_train = False
+
+    # Corpus-growth gate: skip training if the surprise journal hasn't
+    # grown by at least MIN_CORPUS_GROWTH_TO_RETRAIN since the last
+    # training run. Initialized to current corpus size so the first
+    # train fires only after MIN_CORPUS_GROWTH_TO_RETRAIN new lines.
+    def _count_corpus_lines() -> int:
+        filtered = os.path.join(
+            os.path.dirname(paths.surprised_log),
+            "surprised_sentences_filtered.jsonl",
+        )
+        corpus = filtered if os.path.exists(filtered) else paths.surprised_log
+        if not os.path.exists(corpus):
+            return 0
+        n = 0
+        with open(corpus, "r", encoding="utf-8") as f:
+            for _ in f:
+                n += 1
+        return n
+    corpus_size_at_last_train = _count_corpus_lines()
 
     domain_distribution: dict[str, int] = {}
     domain_window: deque = deque(maxlen=1000)
@@ -778,7 +817,26 @@ def run_interleaved(
                         train_log = open(paths.surprised_log, "a", encoding="utf-8")
                         bt_log = open(paths.book_text_log, "a", encoding="utf-8")
                         continue
-                    # Memory guard — don't fire the GPT-2 trainer when the
+                    # Corpus-growth guard — if the journal hasn't grown
+                    # by MIN_CORPUS_GROWTH_TO_RETRAIN since the last
+                    # training run, skip. The native head can't move
+                    # meaningfully on <2K new examples; better to wait
+                    # and let surprise accumulate than burn a 10-min
+                    # subprocess on noise-level delta.
+                    current_corpus_size = _count_corpus_lines()
+                    growth = current_corpus_size - corpus_size_at_last_train
+                    if growth < MIN_CORPUS_GROWTH_TO_RETRAIN:
+                        print(f"    [train_lm @ {n_pulled:,}]  SKIPPED — "
+                              f"corpus grew only {growth} lines since last "
+                              f"train (< {MIN_CORPUS_GROWTH_TO_RETRAIN} floor); "
+                              f"counter reset, will retry next window",
+                              flush=True)
+                        surprises_since_train = 0
+                        pending_train = False
+                        train_log = open(paths.surprised_log, "a", encoding="utf-8")
+                        bt_log = open(paths.book_text_log, "a", encoding="utf-8")
+                        continue
+                    # Memory guard — don't fire the trainer when the
                     # machine is already pressured. Loading GPT-2 (~500 MB)
                     # + optimizer state on top of an already-tight system
                     # is the documented crash mode on 16 GB M1 / Phase 7.
@@ -818,6 +876,7 @@ def run_interleaved(
                             print(f"      [probe failed: {exc}]", flush=True)
                     surprises_since_train = 0
                     pending_train = False
+                    corpus_size_at_last_train = current_corpus_size
                 # Re-open the logs after the subprocess completes.
                 train_log = open(paths.surprised_log, "a", encoding="utf-8")
                 bt_log = open(paths.book_text_log, "a", encoding="utf-8")
@@ -887,13 +946,20 @@ def run_interleaved(
 
 
 def _train_lm_subprocess(paths: MindPaths, epochs: int) -> dict:
-    """Helper: invoke training in a subprocess so the GPT-2 base + GloVe
-    binary can load fresh and don't leak memory across many train
-    cycles inside the long-running interleaved runner."""
+    """Helper: invoke native-head training in a subprocess so the
+    torch/GloVe binaries can load fresh and don't leak memory across
+    many train cycles inside the long-running interleaved runner.
+    Phase 8+: native_head_v2 is the active mouth, not GPT-2."""
+    filtered = os.path.join(
+        os.path.dirname(paths.surprised_log),
+        "surprised_sentences_filtered.jsonl",
+    )
+    corpus = filtered if os.path.exists(filtered) else paths.surprised_log
     cmd = [
-        sys.executable, "scripts/train_language_head.py",
+        sys.executable, "scripts/train_native_head.py",
         "--mind", paths.mind_name,
-        "--gpt2", "--epochs", str(epochs),
+        "--corpus", corpus,
+        "--epochs", str(epochs),
     ]
     t0 = time.perf_counter()
     proc = subprocess.run(cmd, capture_output=True, text=True)
