@@ -99,6 +99,22 @@ test_s6_parallel_ceiling · test_valence · test_active_inference —
   match; if true amplification is the intent, the formula should be
   `delta *= (1 + valence)`. Filed but not changed pending product
   decision.
+- **Drifting nodes drift-rate formula** — when latent-space drift
+  ships, the per-node nudge during a 0.7-cosine update should scale
+  with surprise *and* affect alignment, not surprise alone:
+  ```python
+  # write_or_update — nudge magnitude
+  learning_rate = surprise * max(valence, 0.1) * 0.01
+  # high surprise + affect-aligned → strong drift
+  # high surprise + affect-opposed → weak drift (don't distort
+  #                                  the latent space against the grain)
+  # low surprise → minimal drift regardless
+  ```
+  This connects valenced surprise (already in PredictionGap.valence)
+  to latent-space deformation: the valence tells you which direction
+  matters, the drift uses that direction. Captured before the
+  drifting-nodes implementation begins so the two pieces ship as one
+  coherent design rather than two bolted-together halves.
 - Curriculum pass-2's external termination at 210K items is suspected
   OOM-killer or external SIGTERM — log shows clean shutdown handling
   but no Traceback. Worth keeping the same disk available for the next

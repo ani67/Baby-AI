@@ -567,15 +567,14 @@ class MainLoop:
             abstractions_formed = self._form_abstractions(replay_now)
 
             # Forgetting is curation. The default path is now quality-based:
-            # drop concepts that have failed every weakness criterion
-            # (activation_count==1, edge_count<=1, affect<0.1, surprise
-            # below median). IS_A-incidence is no longer auto-protective —
-            # weak members go regardless of taxonomy membership. Pinned
-            # concepts remain immune.
-            #
-            # CONCEPT_CEILING is kept ONLY as an emergency brake: if the
-            # quality prune fails to keep the graph under control, fall
-            # back to size-based trim to PRUNE_TO.
+            # Score-based prune to ceiling (multiplicative score:
+            # activation × affect × edges × surprise). Pinned concepts
+            # and abstraction parents are immune; IS_A members are
+            # scored normally (the v0.7 design protected them too,
+            # which collapsed the candidate pool to <1% on a mature
+            # graph). The strict-AND prune_weak_concepts heuristic
+            # from earlier in Phase 8 is gated off by default — see
+            # config.QUALITY_PRUNE_ON_SLEEP.
             from backend.config import (                                # noqa: PLC0415
                 CONCEPT_CEILING,
                 QUALITY_PRUNE_ON_SLEEP,
@@ -595,7 +594,7 @@ class MainLoop:
                 pre = self.graph.node_count
                 pruned_count = self.graph.prune_to_ceiling(now=replay_now)
                 print(
-                    f"[prune-emergency] removed {pruned_count:,} concepts → "
+                    f"[prune] removed {pruned_count:,} concepts → "
                     f"{self.graph.node_count:,} remaining "
                     f"(was {pre:,})",
                     flush=True,

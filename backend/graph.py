@@ -577,7 +577,9 @@ class ConceptGraph:
 
     # ---- forgetting / pruning (synthesis "forgetting is curation") ----
 
-    def prune_to_ceiling(self, now: float) -> int:
+    def prune_to_ceiling(
+        self, now: float, *, protect_is_a_members: bool = False,
+    ) -> int:
         """Remove weakest concepts until node_count <= PRUNE_TO. Called
         from MainLoop.sleep after _form_abstractions (post-merge so
         abstraction parents are protected by their inbound IS_A edges).
@@ -596,10 +598,20 @@ class ConceptGraph:
         edgeless concept, or a low-surprise birth all sink. The product
         ranks "everything important" above "any one missing factor."
 
-        Immune from pruning:
+        Always immune:
           - pinned concepts
-          - concepts incident on any IS_A edge (parents AND members of
-            abstractions; once clustered, the cluster is load-bearing)
+          - abstraction parents (IS_A target_id)
+
+        Optionally immune via `protect_is_a_members=True`:
+          - IS_A members (default False as of v0.8 fix). The original
+            v0.7 design protected members on the theory that "once
+            clustered, the cluster is load-bearing." But on the v0.8
+            mature graph this set grew to 88K of 91K nodes (96%),
+            collapsing the candidate pool to almost nothing. Members
+            are now scored along with everyone else; if a member is
+            weak (low activation × edges × affect × surprise) it
+            gets pruned and the abstraction loses one leaf, which is
+            fine — the parent and its other members still hold.
         """
         if self.node_count <= CONCEPT_CEILING:
             return 0
@@ -608,8 +620,9 @@ class ConceptGraph:
         protected: set[int] = set(self._pins.keys())
         for edge in self._edges.values():
             if edge.type is EdgeType.IS_A:
-                protected.add(edge.source_id)   # member of an abstraction
-                protected.add(edge.target_id)   # abstraction parent
+                if protect_is_a_members:
+                    protected.add(edge.source_id)   # member of an abstraction
+                protected.add(edge.target_id)       # abstraction parent (always)
 
         # ---- score remaining concepts ----
         # Out + in degree per node, computed once.

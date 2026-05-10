@@ -148,21 +148,25 @@ WRITER_BATCH_SIZE                     = 64
 # templates) and concepts incident on any IS_A edge (abstraction
 # parents AND members) are immune.
 #
-# Phase 8 (post-v0.8) update — moved from size-based to quality-based
-# pruning at sleep. After a deep curriculum pass produced ~88K IS_A
-# members against 2.5K parents, the IS_A-incidence protection inflated
-# to 99% of the graph, leaving the ceiling-prune candidate set <1% of
-# nodes — sleep cycles could remove only a few hundred at a time
-# while ingestion was writing thousands per cycle. Quality-based
-# pruning (graph.prune_weak_concepts) evaluates every concept on its
-# own merit (activation_count, edge degree, affect magnitude,
-# surprise_at_birth) and drops those that fail every criterion.
-# CONCEPT_CEILING is kept only as an emergency brake — if the graph
-# blows past 200K despite quality pruning, fall back to size-based
-# trim to PRUNE_TO.
-CONCEPT_CEILING = 200_000   # emergency brake only
-PRUNE_TO        = 180_000   # if emergency fires
-QUALITY_PRUNE_ON_SLEEP = True
+# Phase 8 (post-v0.8) update — the v0.7 pruner protected anything
+# incident on an IS_A edge (parents AND members). On the deep
+# curriculum graph (~88K members vs 2.5K parents) that set saturated
+# to 99% of nodes, leaving the candidate pool <1% — sleep cycles
+# could only remove hundreds while ingestion was writing thousands.
+#
+# Two changes:
+#   1. prune_to_ceiling now defaults to protect_is_a_members=False;
+#      members are scored along with everyone else. Parents and pinned
+#      concepts are still always immune.
+#   2. The strict-AND prune_weak_concepts heuristic from earlier in
+#      Phase 8 (activation_count==1 AND edge_count<=1 AND affect<0.1
+#      AND surprise<median) is disabled by default: AUTO_LINK_K=3
+#      defeats edge_count<=1 and composite-affect saturates near 10
+#      so affect<0.1 is never true. Score-based prune_to_ceiling does
+#      the actual work.
+CONCEPT_CEILING = 60_000    # primary trigger — sleep prunes above this
+PRUNE_TO        = 55_000    # target after sleep prune
+QUALITY_PRUNE_ON_SLEEP = False
 
 # Attention arousal cap. F.attend feeds arousal into the spread gate;
 # at saturating arousal (0.9+) the gate collapses to a tiny top-k and
