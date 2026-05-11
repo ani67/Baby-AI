@@ -178,26 +178,90 @@ class PersistentMemoryBank(nn.Module):
                                           .to(self.affect_traces.device)
                                           .float())
 
+        # experience_slots was mutated; bump the cache version
+        self.invalidate_slot_cache()
         return best_slot, drift
+
+    def invalidate_slot_cache(self) -> None:
+        """Drop the cached normalized slots. Call after soft_write or any
+        explicit write to bank tensors."""
+        self._cached_slots_norm = None
+        self._cache_bump = getattr(self, '_cache_bump', 0) + 1
+
+    @torch.no_grad()
+    def _get_slots_norm(self, dtype: torch.dtype) -> torch.Tensor:
+        """Cached normalized slots.
+
+        Invalidated by `invalidate_slot_cache()` AND by any in-place change
+        to `trained_slots` / `experience_slots` via PyTorch's tensor
+        `_version` attribute. Optimizer.step() bumps the trained_slots
+        version, so we pick it up automatically; soft_write bumps
+        `_cache_bump` explicitly.
+
+        Plain integer comparison — no `.item()` on a CUDA/MPS tensor.
+        """
+        version = (
+            self.trained_slots._version,
+            self.experience_slots._version,
+            self.alpha_logit._version,
+            getattr(self, '_cache_bump', 0),
+            dtype,
+        )
+        cached_norm = getattr(self, '_cached_slots_norm', None)
+        cached_ver = getattr(self, '_cached_slots_norm_cache_ver', None)
+        if cached_norm is not None and cached_ver == version:
+            return cached_norm
+        norm = F.normalize(self.slots.to(dtype), dim=-1)
+        self._cached_slots_norm = norm
+        self._cached_slots_norm_cache_ver = version
+        return norm
 
     @torch.no_grad()
     def search(
         self,
         queries: torch.Tensor,   # (B, D)
         k: int = TOP_K_NBR,
-        q_chunk: int = 1024,     # **CORRECTION 3**: chunk Q too
-        m_chunk: int = 4096,
+        q_chunk: int = 1024,     # chunk Q
+        m_chunk: int = 4096,     # chunk M
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Top-k cosine-similarity search. Chunked over BOTH queries and
-        memory to avoid (B, M) tensor allocation when B is large."""
+        """Top-k cosine-similarity search.
+
+        Two fast-paths short-circuit the streaming-topk machinery, which
+        otherwise dominates runtime when called many times per training
+        step (the memory_transformer calls search per layer per chunk):
+
+          - m_slots <= m_chunk  → one-shot topk over the full bank.
+          - B <= q_chunk        → no outer Q loop.
+
+        slots_norm is cached on the bank so we don't re-normalize the
+        full (M, D) tensor on every call.
+        """
         if queries.dim() == 1:
             queries = queries.unsqueeze(0)
-        slots = self.slots  # (M, D)
-        slots_norm = F.normalize(slots, dim=-1)
+        slots_norm = self._get_slots_norm(queries.dtype)
         q_norm = F.normalize(queries.to(slots_norm.dtype), dim=-1)
         B = q_norm.shape[0]
         k = min(k, self.m_slots)
 
+        # fast path: single M-chunk, single Q-chunk
+        if self.m_slots <= m_chunk and B <= q_chunk:
+            sims = q_norm @ slots_norm.T          # (B, M)
+            top_v, top_i = sims.topk(k, dim=-1)   # (B, k)
+            return top_v, top_i
+
+        # fast path: single M-chunk, multiple Q-chunks
+        if self.m_slots <= m_chunk:
+            all_v = torch.empty(B, k, device=self.device, dtype=q_norm.dtype)
+            all_i = torch.empty(B, k, device=self.device, dtype=torch.long)
+            for qs in range(0, B, q_chunk):
+                qe = min(qs + q_chunk, B)
+                sims = q_norm[qs:qe] @ slots_norm.T
+                tv, ti = sims.topk(k, dim=-1)
+                all_v[qs:qe] = tv
+                all_i[qs:qe] = ti
+            return all_v, all_i
+
+        # general path: streaming-topk over both dims
         all_top_sims = torch.empty(
             B, k, device=self.device, dtype=q_norm.dtype)
         all_top_idx = torch.empty(
@@ -205,8 +269,7 @@ class PersistentMemoryBank(nn.Module):
 
         for qs in range(0, B, q_chunk):
             qe = min(qs + q_chunk, B)
-            q_part = q_norm[qs:qe]  # (q_chunk, D)
-            # collect topk across m_chunks in a streaming heap-like fashion
+            q_part = q_norm[qs:qe]
             running_sims = torch.full(
                 (qe - qs, k), -1.0,
                 device=self.device, dtype=q_norm.dtype)
@@ -214,8 +277,7 @@ class PersistentMemoryBank(nn.Module):
                 (qe - qs, k), device=self.device, dtype=torch.long)
             for ms in range(0, self.m_slots, m_chunk):
                 me = min(ms + m_chunk, self.m_slots)
-                sims = q_part @ slots_norm[ms:me].T  # (q_chunk, m_chunk)
-                # combine with running
+                sims = q_part @ slots_norm[ms:me].T
                 combined_sims = torch.cat([running_sims, sims], dim=-1)
                 combined_idx = torch.cat([
                     running_idx,

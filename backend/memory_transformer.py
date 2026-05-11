@@ -1,8 +1,13 @@
-"""SparseMemoryTransformer: sparse self-attn over the memory bank.
+"""SparseMemoryTransformer: self-attn over the memory bank.
 
-Replaces WaveField. Each transformer layer = one wave step.
-Sparse attention: each slot attends to top-K=64 neighbors via gather-scatter.
-Affect bias added to attention scores per head.
+Replaces WaveField. Each transformer layer = one wave step. Affect bias
+added to attention scores per head.
+
+Two attention modes, selected by M_SLOTS vs. SPARSE_ATTENTION_THRESHOLD:
+  - Dense: single (H, M, M) matmul. Fast on M1 for M ≤ 16384 because
+    one MPS kernel launch beats 32 gather-scatter launches.
+  - Sparse: top-K=64 gather-scatter via memory_bank.search(). Required
+    when M is too large for the (H, M, M) tensor to fit.
 """
 import torch
 import torch.nn as nn
@@ -15,6 +20,7 @@ from backend.unified_config import (
     N_HEADS,
     N_MEM_LAYERS,
     TOP_K_NBR,
+    SPARSE_ATTENTION_THRESHOLD,
 )
 
 # spec § 4.4 declares DROPOUT here (the spec's import-line walrus is invalid
@@ -40,11 +46,47 @@ class SparseSelfAttention(nn.Module):
     def forward(
         self,
         x: torch.Tensor,                       # (M, D) full memory state
-        memory_bank: PersistentMemoryBank,     # for neighbor search
+        memory_bank: PersistentMemoryBank,     # for neighbor search (sparse only)
         affect_bias: torch.Tensor = None,      # (n_heads,)
         chunk_size: int = 4096,
     ) -> torch.Tensor:
         M, D = x.shape
+
+        # Dense path: chunked over Q rows. Per chunk peak is
+        # (H, q_chunk, M) bf16 ≈ 128MB at q_chunk=1024, H=8, M=8192.
+        # Manual chunked is needed because PyTorch's MPS SDPA backend
+        # falls back to the naïve (H, M, M) materialization which OOMs.
+        # Kernel-launch count: M / q_chunk per matmul phase, ~8 for
+        # M=8192 — far less than the ~32 launches the sparse gather-
+        # scatter path issues.
+        if M <= SPARSE_ATTENTION_THRESHOLD:
+            Q = (self.q_proj(x).view(M, self.n_heads, self.d_head)
+                 .transpose(0, 1))                # (H, M, d_head)
+            K = (self.k_proj(x).view(M, self.n_heads, self.d_head)
+                 .transpose(0, 1))                # (H, M, d_head)
+            V = (self.v_proj(x).view(M, self.n_heads, self.d_head)
+                 .transpose(0, 1))                # (H, M, d_head)
+            K_T = K.transpose(-2, -1)             # (H, d_head, M)
+
+            out_h = torch.empty(self.n_heads, M, self.d_head,
+                                device=x.device, dtype=x.dtype)
+            q_chunk = 1024
+            for s in range(0, M, q_chunk):
+                e = min(s + q_chunk, M)
+                # (H, chunk, d_head) @ (H, d_head, M) → (H, chunk, M)
+                scores = (Q[:, s:e] @ K_T) * self.scale
+                if affect_bias is not None:
+                    scores = scores + affect_bias.view(self.n_heads, 1, 1)
+                attn = F.softmax(scores, dim=-1)
+                attn = self.dropout(attn)
+                # (H, chunk, M) @ (H, M, d_head) → (H, chunk, d_head)
+                out_h[:, s:e] = attn @ V
+
+            out = out_h.transpose(0, 1).reshape(M, D).contiguous()
+            return self.out_proj(out)
+
+        # Sparse path: top-K=64 gather-scatter. Used when the (H, M, M)
+        # tensor would exceed budget. Chunked over Q to bound peak memory.
         Q = self.q_proj(x).view(M, self.n_heads, self.d_head)
         K = self.k_proj(x).view(M, self.n_heads, self.d_head)
         V = self.v_proj(x).view(M, self.n_heads, self.d_head)
@@ -55,28 +97,23 @@ class SparseSelfAttention(nn.Module):
             q_c = Q[s:e]                       # (chunk, H, d_head)
             chunk_len = e - s
 
-            # neighbor search: query with the raw x[s:e], not projected.
-            # we want geometric neighbors in representation space.
             with torch.no_grad():
                 _, top_idx = memory_bank.search(
                     x[s:e].detach(), k=self.top_k,
-                    q_chunk=min(chunk_len, 1024))
-            # top_idx: (chunk, K)
+                    q_chunk=min(chunk_len, 1024),
+                    m_chunk=memory_bank.m_slots)
 
-            flat = top_idx.reshape(-1)              # (chunk*K,)
+            flat = top_idx.reshape(-1)
             k_g = K[flat].view(chunk_len, self.top_k, self.n_heads,
                                self.d_head)
             v_g = V[flat].view(chunk_len, self.top_k, self.n_heads,
                                self.d_head)
 
-            # scores: (chunk, H, K)
-            # q_c: (chunk, H, d_head); k_g: (chunk, K, H, d_head)
             scores = torch.einsum('chd,ckhd->chk', q_c, k_g) * self.scale
             if affect_bias is not None:
                 scores = scores + affect_bias.view(1, -1, 1)
             attn = F.softmax(scores, dim=-1)
             attn = self.dropout(attn)
-            # weighted sum: (chunk, H, K) × (chunk, K, H, d_head) → (chunk, H, d_head)
             o = torch.einsum('chk,ckhd->chd', attn, v_g)
             out[s:e] = o.reshape(chunk_len, D)
 

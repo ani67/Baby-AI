@@ -15,12 +15,25 @@ D_REP        = 512
 N_HEADS      = 8
 D_HEAD       = D_REP // N_HEADS  # 64
 
-# memory bank — halved from 65536 after the M1 OOM incident (2026-05-11).
-# initialize_from_concept_graph now slices top-M_SLOTS by activation count,
-# so all 56K concepts are still considered; only the most-activated are kept.
-M_SLOTS      = 32768
+# memory bank — initially halved from 65536 to 32768 after the first M1
+# OOM (2026-05-11). 32768 then 16384 still OOM'd at step 1: with the
+# 0.6 MPS fraction the process ends up with ~7.1GB usable, and ~5GB
+# is permanently held by bank slots + AdamW state + transformer
+# activations + memory-bank index tensor (q_chunk=1024 × m_chunk=4096
+# × int64 = 32MB per chunk × cached). Dropped to 8192 — small enough
+# that search needs only 2 m-chunks and the index tensor stays modest.
+# initialize_from_concept_graph slices top-M_SLOTS by activation count,
+# so all 56K concepts are still considered; only the most-activated kept.
+M_SLOTS      = 8192
 TOP_K_NBR    = 64       # sparse attention neighborhood
 TOP_K_ACTIVE = 256      # decoder cross-attention pool
+
+# Attention mode in SparseSelfAttention: dense when M_SLOTS ≤ threshold
+# (single matmul, no kernel-launch overhead from gather-scatter), sparse
+# (top-K=64 gather-scatter) when M_SLOTS exceeds it. Dense at M=8192:
+# (H=8, M=8192, M=8192) bf16 ≈ 128MB transient — fits on M1 with current
+# fraction cap. Past 16384 the (M, M) matrix becomes prohibitive.
+SPARSE_ATTENTION_THRESHOLD = 16384
 
 # affect
 N_AFF        = 12
