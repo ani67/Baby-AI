@@ -46,16 +46,29 @@ class GraphTraversalExpression:
         self.wave_field = wave_field
 
         self.max_words = 40
-        self.repetition_penalty = 1.5
+        # v1.0 tuning: bumped from 1.5 → 2.5 with cubic application
+        # for back-to-back repeats. The pinned self-concept and other
+        # high-activation anchors otherwise lock the walker onto a
+        # single word and the output collapses to "self self self...".
+        self.repetition_penalty = 2.5
         self.min_activation_threshold = 0.01
 
         self._identify_word_nodes()
 
     def _identify_word_nodes(self):
-        """Find graph concepts whose name is a single alphabetic word > 2 chars."""
+        """Find graph concepts whose name is a single alphabetic word > 2 chars.
+        v1.0 tuning: exclude pinned concepts. Pins (self, unknown, narrative
+        anchors, expression templates) are persistently high-activation and
+        dominate the walker; the walker should reach for content words, not
+        identity anchors."""
+        pinned = set(self.graph._pins.keys())
         self.word_nodes: dict[str, int] = {}
         self.word_node_ids: set[int] = set()
+        skipped_pinned = 0
         for cid, node in self.graph.nodes.items():
+            if cid in pinned:
+                skipped_pinned += 1
+                continue
             name = (node.name or '').strip().lower()
             tokens = _tokenize(name)
             if len(tokens) == 1 and len(tokens[0]) > 2 and tokens[0].isalpha():
@@ -64,7 +77,7 @@ class GraphTraversalExpression:
                     self.word_nodes[word] = cid
                     self.word_node_ids.add(cid)
         print(f"[graph_expression] {len(self.word_nodes)} word-concept nodes "
-              f"identified", flush=True)
+              f"identified ({skipped_pinned} pinned excluded)", flush=True)
 
     def _read_word_activations(self) -> dict[str, float]:
         """Snapshot current wave-field activation over word nodes only."""
@@ -97,11 +110,18 @@ class GraphTraversalExpression:
 
         for step in range(max_words):
             scored: dict[str, float] = {}
+            last_id = generated_ids[-1] if generated_ids else None
             for word, activation in word_activations.items():
                 penalty = 1.0
                 cid = self.word_nodes.get(word)
                 if cid is not None and cid in generated_ids:
-                    penalty = self.repetition_penalty ** 2
+                    # back-to-back repeat is much worse than scattered repeats:
+                    # cubic when the previous emission was this same cid,
+                    # squared otherwise.
+                    if cid == last_id:
+                        penalty = self.repetition_penalty ** 3
+                    else:
+                        penalty = self.repetition_penalty ** 2
                 if word in self.STOP_WORDS and step > 0:
                     penalty *= 2.0
                 scored[word] = activation / penalty

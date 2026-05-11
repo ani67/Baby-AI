@@ -73,10 +73,31 @@ class WaveField:
         )
 
         self._build_adjacency_matrices()
+        self._compute_edge_counts()
         self.total_steps = 0
         self.last_inject_t = 0.0
         self._last_settle_steps = 0
         self._adj_dirty = False
+
+    def _compute_edge_counts(self):
+        """Per-node total degree (in + out) for structural-bias correction
+        in inject_representation. Front-of-curriculum nodes accumulated
+        an order of magnitude more edges than late-curriculum ones; without
+        this correction the wave field routes to them regardless of query
+        topic. Cheap to recompute when graph changes."""
+        N = self.N
+        if N == 0:
+            self._node_edge_counts = torch.zeros(0, device=self.device)
+            return
+        counts = np.zeros(N, dtype=np.float32)
+        for (src, dst, _etype) in self.graph._edges:
+            si = self._node_to_idx.get(src)
+            di = self._node_to_idx.get(dst)
+            if si is not None:
+                counts[si] += 1
+            if di is not None:
+                counts[di] += 1
+        self._node_edge_counts = torch.tensor(counts, device=self.device)
 
     def _build_adjacency_matrices(self):
         from backend.graph import EdgeType
@@ -114,14 +135,33 @@ class WaveField:
                 rows.append(di); cols.append(si); weights.append(effective_w * 0.6)
 
         def make_sparse(rows, cols, weights):
+            """Row-normalized sparse adjacency.
+
+            On this graph one node has 23,342 in-edges and most have 0-10
+            (front-of-curriculum grammar entries vs late-curriculum
+            philosophy concepts). Without row-normalization the wave
+            routes to the high-in-degree hubs regardless of query topic
+            — the structural-bias-damping in inject_representation
+            (0.3 max attenuation) can't counter a 23,342:1 imbalance.
+            Row-normalization makes (A @ activation) a weighted *average*
+            of each node's neighbors so in-degree no longer biases
+            propagation; only edge *weights* do.
+            """
             if not rows:
                 return torch.sparse_coo_tensor(
                     torch.zeros((2, 0), dtype=torch.long),
                     torch.zeros(0, dtype=torch.float32),
                     (N, N), device=self.device,
                 ).coalesce()
+            row_arr = np.asarray(rows, dtype=np.int64)
+            w_arr = np.asarray(weights, dtype=np.float32)
+            row_sums = np.zeros(N, dtype=np.float32)
+            np.add.at(row_sums, row_arr, w_arr)
+            divisor = row_sums[row_arr]
+            divisor = np.where(divisor < 1e-9, 1.0, divisor)
+            w_norm = w_arr / divisor
             indices = torch.tensor([rows, cols], dtype=torch.long)
-            values = torch.tensor(weights, dtype=torch.float32)
+            values = torch.tensor(w_norm, dtype=torch.float32)
             return torch.sparse_coo_tensor(
                 indices, values, (N, N), device=self.device,
             ).coalesce()
@@ -144,7 +184,27 @@ class WaveField:
         self.last_inject_t = time.time()
 
     def inject_representation(self, representation: np.ndarray,
-                              strength: float = 1.0):
+                              strength: float = 1.0,
+                              top_k: int = 20,
+                              min_sim: float = 0.3):
+        """Stronger initial seeding + structural-bias correction.
+
+        v1.0.1 tuning: the previous top_k=5 with velocity-only injection
+        was overwhelmed by high-edge-count front-of-curriculum nodes
+        (grammar + Alice) that drew the wave regardless of query topic.
+        Three changes:
+          1. top_k 5 → 20 — wider initial wavefront so query-relevant
+             concepts have more anchors to amplify each other.
+          2. min_sim floor — only inject at concepts with cosine ≥ 0.3
+             to the query (skip the long tail of weak alignments).
+          3. Activation injection in addition to velocity — gives the
+             query-anchored concepts an immediate presence the wave
+             can amplify, rather than waiting for momentum to build.
+          4. Structural-bias correction — multiplicatively dampen
+             activation by per-node edge count after seeding, so a
+             1000-edge grammar entry gets 70% of the wave a 10-edge
+             philosophy concept gets.
+        """
         if self.N == 0:
             return
         rep = torch.tensor(representation, dtype=torch.float32, device=self.device)
@@ -152,10 +212,26 @@ class WaveField:
         if n > 0:
             rep = rep / n
         sims = (self.node_matrix @ rep).clamp(0.0, 1.0)
-        top_k = min(5, self.N)
-        top_sims, top_idx = sims.topk(top_k)
+        k = min(top_k, self.N)
+        top_sims, top_idx = sims.topk(k)
         for sim, idx in zip(top_sims, top_idx):
-            self.velocity[idx] += strength * float(sim)
+            s = float(sim)
+            if s < min_sim:
+                break
+            # activation gives immediate presence; velocity gives momentum.
+            self.activation[idx] += strength * s * 2.0
+            self.velocity[idx] += strength * s
+
+        # Structural-bias correction. Front-of-curriculum nodes have up to
+        # 10× more edges than late-curriculum nodes; without this,
+        # propagation routes to them regardless of query. Suppress in
+        # proportion to normalized edge count (max ~30% damping).
+        if (hasattr(self, '_node_edge_counts')
+                and self._node_edge_counts.numel() == self.N):
+            max_edges = float(self._node_edge_counts.max().item())
+            if max_edges > 0:
+                structural_bias = self._node_edge_counts / max_edges
+                self.activation = self.activation * (1.0 - 0.3 * structural_bias)
 
     def update_affect_gate(self, affect_vector: np.ndarray):
         """Project N_AFF affect vector via affect.W into D_REP space, then
