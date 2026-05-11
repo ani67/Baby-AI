@@ -94,19 +94,45 @@ class GraphTraversalExpression:
 
     def generate(self, wave_field_activation: Optional[torch.Tensor] = None,
                  affect: Optional[np.ndarray] = None,
-                 max_words: Optional[int] = None) -> str:
-        """Walk word-nodes following wave activation; inject each chosen
-        word back into the field to shift the active set; next word
-        follows from the new state."""
+                 max_words: Optional[int] = None,
+                 mutate_field: bool = False) -> str:
+        """Walk word-nodes following wave activation.
+
+        ``mutate_field=True`` (single-threaded use): inject each chosen
+        word back into the field as a velocity perturbation and step
+        the field 5 times — the next word follows from the shifted
+        state. This is the "the act of choosing shifts perception"
+        dynamic.
+
+        ``mutate_field=False`` (multi-threaded runtime, default): take
+        a tensor snapshot of word-node activations once at the start
+        and walk it as a frozen vector. The main runtime thread keeps
+        stepping the live wave field concurrently; this walker only
+        reads. No torch-tensor write-write race.
+        """
         max_words = max_words or self.max_words
         if not self.word_nodes:
             return ""
 
         generated_words: list[str] = []
         generated_ids: list[int] = []
+
+        # Snapshot read of word activations. Even in mutate_field=True
+        # mode we hold the initial vector; we re-read after each
+        # injected step.
         word_activations = self._read_word_activations()
         if not word_activations:
             return ""
+
+        # Adaptive threshold: when the live field's word-node peak is
+        # very low (e.g. wave has propagated to mostly non-word
+        # concepts), the absolute 0.01 floor would reject everything.
+        # Scale to 1% of the field's word peak so we always emit if
+        # there's any signal at all to walk.
+        peak_word_act = max(word_activations.values()) if word_activations else 0.0
+        effective_threshold = max(
+            self.min_activation_threshold * 0.01, peak_word_act * 0.01,
+        )
 
         for step in range(max_words):
             scored: dict[str, float] = {}
@@ -115,9 +141,6 @@ class GraphTraversalExpression:
                 penalty = 1.0
                 cid = self.word_nodes.get(word)
                 if cid is not None and cid in generated_ids:
-                    # back-to-back repeat is much worse than scattered repeats:
-                    # cubic when the previous emission was this same cid,
-                    # squared otherwise.
                     if cid == last_id:
                         penalty = self.repetition_penalty ** 3
                     else:
@@ -129,7 +152,7 @@ class GraphTraversalExpression:
             if not scored:
                 break
             best_word, best_score = max(scored.items(), key=lambda kv: kv[1])
-            if best_score < self.min_activation_threshold:
+            if best_score < effective_threshold:
                 break
 
             if best_word in self.EOS_WORDS and len(generated_words) > 3:
@@ -140,16 +163,20 @@ class GraphTraversalExpression:
             best_cid = self.word_nodes[best_word]
             generated_ids.append(best_cid)
 
-            # Inject the chosen word back: the act of choosing shifts the
-            # active set; next word follows from the shifted state.
-            try:
-                self.wave_field.inject([best_cid], strength=0.3,
-                                       mode='velocity')
-                self.wave_field.step_n(5)
-            except Exception:
-                pass
-
-            word_activations = self._read_word_activations()
+            if mutate_field:
+                try:
+                    self.wave_field.inject([best_cid], strength=0.3,
+                                           mode='velocity')
+                    self.wave_field.step_n(5)
+                except Exception:
+                    pass
+                word_activations = self._read_word_activations()
+            else:
+                # Read-only mode: simulate the active-set shift purely
+                # in the local word_activations dict by damping the
+                # chosen word's activation in the working set, so the
+                # walker doesn't immediately re-pick it next iteration.
+                word_activations[best_word] = word_activations[best_word] * 0.2
 
         return ' '.join(generated_words)
 

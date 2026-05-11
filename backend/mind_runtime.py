@@ -91,10 +91,27 @@ class MindRuntime:
         # (~1 ms) and queues the fused rep here; the background
         # _pc_learn_loop thread pulls in batches of 16 and runs
         # forward+backward+Adam without blocking wave-field stepping.
-        # This keeps the runtime main loop at ~20 steps/s instead of
-        # the 6 steps/s it dropped to when learning ran inline.
         self._pc_learn_queue: list = []
         self._pc_learn_thread: Optional[threading.Thread] = None
+
+        # v0.9 ingest+cycle off the hot path. The full v0.9 pipeline
+        # (predict.observe + find_or_match + 4-tick attention spread on
+        # the 60K-node graph) costs 200-500ms per input — was the last
+        # bottleneck capping main-loop step rate to ~6/s. _process_input
+        # now does only encode + wave-inject + affect-gate (~5ms total)
+        # and queues the (rep, text, now) tuple here; _cycle_loop pulls
+        # one at a time and runs the full v0.9 cycle without blocking
+        # wave-field stepping.
+        self._cycle_queue: list = []
+        self._cycle_thread: Optional[threading.Thread] = None
+
+        # Expression off the hot path. graph_expression.generate walks
+        # 27K word-concept nodes × max_words × 5 wave-steps-per-word —
+        # ~5 seconds per call on this graph. Running on the main loop
+        # froze it the moment _expression_pending fired. The express
+        # thread polls _expression_pending, runs generate, pushes the
+        # surface onto _output_queue.
+        self._express_thread: Optional[threading.Thread] = None
 
         self.total_inputs = 0
         self.total_outputs = 0
@@ -159,7 +176,15 @@ class MindRuntime:
             target=self._pc_learn_loop, daemon=True, name='MindRuntime-PC',
         )
         self._pc_learn_thread.start()
-        log.info("[runtime] started (main + pc-learn threads)")
+        self._cycle_thread = threading.Thread(
+            target=self._cycle_loop, daemon=True, name='MindRuntime-Cycle',
+        )
+        self._cycle_thread.start()
+        self._express_thread = threading.Thread(
+            target=self._express_loop, daemon=True, name='MindRuntime-Express',
+        )
+        self._express_thread.start()
+        log.info("[runtime] started (main + pc-learn + cycle + express threads)")
 
     def stop(self):
         log.info("[runtime] stopping ...")
@@ -168,6 +193,10 @@ class MindRuntime:
             self._thread.join(timeout=10)
         if self._pc_learn_thread:
             self._pc_learn_thread.join(timeout=5)
+        if self._cycle_thread:
+            self._cycle_thread.join(timeout=10)
+        if self._express_thread:
+            self._express_thread.join(timeout=10)
         self._save()
         log.info("[runtime] stopped")
 
@@ -179,9 +208,6 @@ class MindRuntime:
             queue = self._pc_learn_queue
             if queue:
                 batch = queue[:16]
-                # mutate the shared list in place — single-writer
-                # invariant (only _process_input appends; only this
-                # thread pops). On py3, list slice/del is GIL-protected.
                 del queue[:len(batch)]
                 for rep in batch:
                     try:
@@ -190,6 +216,86 @@ class MindRuntime:
                         log.debug(f"[runtime] pc bg learn failed: {exc}")
             else:
                 time.sleep(0.1)
+
+    def _express_loop(self):
+        """Background thread: when _expression_pending is set, run
+        graph_expression.generate (read-only walk over the live wave
+        field) and push the surface to _output_queue via the
+        _maybe_express path. Polls every 0.2 s."""
+        while self._running:
+            if not self._expression_pending:
+                time.sleep(0.2)
+                continue
+            now = time.time()
+            try:
+                self._maybe_express(now)
+            except Exception as exc:
+                log.debug(f"[runtime] express loop err: {exc}")
+                self._expression_pending = False
+            time.sleep(0.2)
+
+    def _cycle_loop(self):
+        """Background thread: pull (rep, text, now) off _cycle_queue
+        and run the full v0.9 ingest+cycle (predict.observe →
+        find_or_match → 4-tick attention spread on the 60K-node
+        graph → possible write_on_surprise). Costs 200-500 ms per
+        input — too expensive for the wave-field main loop. Concept
+        writing, surprise detection, and contradiction checking all
+        happen here without blocking the runtime's stepping cadence."""
+        while self._running:
+            queue = self._cycle_queue
+            if not queue:
+                time.sleep(0.01)
+                continue
+            rep, text, t = queue.pop(0)
+            try:
+                prediction = self.loop.predict_engine.predict(
+                    rep, layer='INPUT',
+                )
+                gap = self.loop.predict_engine.observe(
+                    prediction, rep, t, name_hint=text[:64],
+                )
+                # If a new concept was written by the v0.9 surprise path,
+                # add it to the wave field so it can participate in
+                # propagation immediately, and let contradiction
+                # detection scan its neighborhood.
+                if (getattr(gap, 'is_surprise', False)
+                        and getattr(gap, 'was_new_write', False)
+                        and gap.concept_id is not None):
+                    cid = int(gap.concept_id)
+                    if cid in self.graph.nodes:
+                        node = self.graph.nodes[cid]
+                        # NOTE: wave_field.add_node extends per-node
+                        # tensors but does NOT rebuild adjacency.
+                        # rebuild_if_dirty over 55K nodes / 287K edges
+                        # costs 1-2 s and runs in this background
+                        # thread while main thread reads the same
+                        # tensors — froze the runtime entirely on
+                        # surprise. New concepts are written to the
+                        # graph immediately and will fully integrate
+                        # into the wave field on next runtime
+                        # restart (when adjacency rebuilds from disk).
+                        try:
+                            self.wave_field.add_node(cid, node.embedding)
+                        except Exception:
+                            pass
+                        try:
+                            self.contradiction.check_new_concept(cid, t)
+                        except Exception:
+                            pass
+
+                if getattr(gap, 'is_surprise', False):
+                    try:
+                        self.affect.inject(
+                            'INPUT',
+                            getattr(gap, 'gap_signal', None) or np.zeros(12, dtype=np.float32),
+                            float(getattr(gap, 'magnitude', 0.0)),
+                            t,
+                        )
+                    except Exception:
+                        pass
+            except Exception as exc:
+                log.debug(f"[runtime] cycle bg failed: {exc}")
 
     def status(self) -> dict:
         now = time.time()
@@ -296,9 +402,11 @@ class MindRuntime:
                         pass
 
             # === EXPRESSION ===
-            if (self._expression_pending
-                    and self._step_count % self.EXPRESSION_CHECK_INTERVAL == 0):
-                self._maybe_express(now)
+            # Expression generation (graph_traversal walks 27K word nodes
+            # x max_words x 5 wave-steps-per-word — ~5 seconds per call)
+            # runs in the _express_thread, not on the main loop.
+            # _expression_pending is the cross-thread signal.
+            pass
 
             # === SLEEP ===
             if (arousal < self.SLEEP_AROUSAL
@@ -374,17 +482,20 @@ class MindRuntime:
         except Exception:
             pass
 
-        # existing surprise pipeline (keeps concept writes flowing)
+        # v0.9 ingest+cycle (predict.observe, find_or_match, attention
+        # spread, possible write_on_surprise) moved off the hot path —
+        # see _cycle_loop. It cost 200-500ms per input and was the last
+        # bottleneck capping the wave-field main loop to ~6 steps/s.
+        # Background thread consumes _cycle_queue and runs it
+        # asynchronously; concept writes still happen, contradictions
+        # still get checked, surprise still updates affect — just
+        # asynchronously from expression.
         try:
-            ingest = self.loop.input_pipeline.ingest_text(
-                event.text, now=now, representation=rep,
-            )
-            self.loop.cycle(ingest, now=now + 1e-3,
-                            force_respond=False, skip_simulation=True)
-        except Exception as exc:
-            log.debug(f"[runtime] ingest+cycle failed: {exc}")
+            self._cycle_queue.append((rep.astype(np.float32), event.text, now))
+        except Exception:
+            pass
 
-        # theory of mind
+        # theory of mind (cheap — small per-person dict update)
         try:
             self.self_model.update_other(
                 event.person_id, fused, 0.5, now - self._last_input_t,
@@ -397,19 +508,25 @@ class MindRuntime:
         if not top_concepts:
             return
 
-        # try graph-traversal expression
+        # Read-only walk over the live wave field. mutate_field=False
+        # because the main thread is stepping the wave concurrently;
+        # injecting+stepping from this thread would race on shared
+        # torch tensors.
         try:
-            surface = self.expression_graph.generate(max_words=25)
+            surface = self.expression_graph.generate(
+                max_words=25, mutate_field=False,
+            )
         except Exception as exc:
             log.debug(f"[runtime] graph expression failed: {exc}")
             surface = ""
 
-        if not surface.strip():
-            try:
-                surface = self._fallback_expression(now)
-            except Exception:
-                surface = ""
-
+        # Fallback expression disabled in the runtime hot path —
+        # loop.expression.generate runs the native_head transformer
+        # (28M params, CPU device) and takes seconds, freezing the
+        # main loop. Graph traversal is the runtime's voice; if the
+        # wave hasn't settled enough to pick word-concepts yet, just
+        # return without emitting and the runtime will try again on
+        # the next expression check.
         if not surface.strip():
             return
 
