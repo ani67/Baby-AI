@@ -157,7 +157,9 @@ class PersistentMemoryBank(nn.Module):
             if affect_vector is not None:
                 self.affect_traces[idx] = (
                     0.9 * self.affect_traces[idx]
-                    + 0.1 * affect_vector.detach().cpu().float())
+                    + 0.1 * affect_vector.detach()
+                                          .to(self.affect_traces.device)
+                                          .float())
 
         return best_slot, drift
 
