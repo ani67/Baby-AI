@@ -25,7 +25,7 @@ import asyncio
 import os
 import time
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -177,7 +177,30 @@ async def lifespan(app: FastAPI):
     else:
         state["loop"] = construct_mind()
         print(f"[mind:{MIND_NAME}] new mind constructed (no save at {DB_PATH})")
+
+    # v1.0 — wire continuous runtime alongside existing pipeline.
+    # ADDITIVE: existing /ingest etc. continue to work; new endpoints
+    # /ingest_runtime and /runtime_status use the new runtime.
+    try:
+        from backend.mind_runtime import MindRuntime
+        runtime = MindRuntime.load(MIND_NAME)
+        runtime.start()
+        state["runtime"] = runtime
+        print("[api] v1.0 runtime started", flush=True)
+    except Exception as exc:
+        print(f"[api] runtime startup skipped: "
+              f"{type(exc).__name__}: {exc}", flush=True)
+
     yield
+
+    # shutdown — stop runtime first so its save runs before our save
+    rt = state.get("runtime")
+    if rt is not None:
+        try:
+            rt.stop()
+        except Exception as exc:
+            print(f"[api] runtime stop failed: {exc}", flush=True)
+
     # Best-effort save on shutdown.
     try:
         os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
@@ -676,3 +699,40 @@ async def load():
     async with state["lock"]:
         state["loop"] = MindPersistence.load(DB_PATH)
     return {"loaded_from": DB_PATH}
+
+
+# ----------------------------------------------------------------------
+# v1.0 continuous runtime endpoints (additive — existing endpoints stay)
+# ----------------------------------------------------------------------
+
+class RuntimeIngestRequest(BaseModel):
+    text: str
+    person_id: Optional[str] = "default"
+
+
+@app.post("/ingest_runtime")
+async def ingest_runtime(req: RuntimeIngestRequest):
+    rt = state.get("runtime")
+    if rt is None:
+        raise HTTPException(503, "runtime not available")
+    rt.send(req.text, person_id=req.person_id or "default")
+    resp = rt.receive(timeout=3.0)
+    if resp is None:
+        return {"status": "thinking", "response": None}
+    return {
+        "status": "ok",
+        "response": resp.text,
+        "gap": resp.gap,
+        "active_concepts": resp.active_concept_count,
+        "arousal": resp.arousal,
+    }
+
+
+@app.get("/runtime_status")
+async def runtime_status():
+    rt = state.get("runtime")
+    if rt is None:
+        return {"available": False}
+    s = rt.status()
+    s["available"] = True
+    return s
