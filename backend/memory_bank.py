@@ -97,8 +97,25 @@ class PersistentMemoryBank(nn.Module):
         concept_affect_traces: np.ndarray = None,  # (N, 12)
         concept_activation_counts: np.ndarray = None,  # (N,)
     ) -> int:
-        """Populate first N slots from existing concepts. Both trained and
-        experience start from these embeddings."""
+        """Populate first N slots from existing concepts.
+
+        If the corpus has more concepts than M_SLOTS, we keep the most-
+        activated ones (the slots that defined the mind's character). When
+        no activation counts are given, fall back to insertion order.
+        Both trained and experience start from these embeddings.
+        """
+        if len(concept_embeddings) > self.m_slots:
+            if concept_activation_counts is not None:
+                # top-M_SLOTS by activation count
+                top_idx = np.argsort(concept_activation_counts)[-self.m_slots:]
+            else:
+                top_idx = np.arange(self.m_slots)
+            concept_embeddings = concept_embeddings[top_idx]
+            if concept_affect_traces is not None:
+                concept_affect_traces = concept_affect_traces[top_idx]
+            if concept_activation_counts is not None:
+                concept_activation_counts = concept_activation_counts[top_idx]
+
         N = min(len(concept_embeddings), self.m_slots)
         emb = torch.tensor(concept_embeddings[:N], dtype=torch.bfloat16,
                            device=self.device)
