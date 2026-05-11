@@ -191,6 +191,26 @@ async def lifespan(app: FastAPI):
         print(f"[api] runtime startup skipped: "
               f"{type(exc).__name__}: {exc}", flush=True)
 
+    # v2.0 — wire the unified mind alongside the legacy stack.
+    # ADDITIVE: existing /ingest, /ingest_runtime continue to work; new
+    # /unified/* endpoints route through UnifiedMind. Failure here (missing
+    # tokenizer, malformed concept graph, etc.) is non-fatal — we just leave
+    # state["unified"] = None so the /unified/* endpoints return 503 while
+    # the rest of the API stays healthy.
+    state["unified"] = None
+    state["unified_lock"] = asyncio.Lock()
+    try:
+        from backend.unified_mind import UnifiedMind
+        t0 = time.time()
+        state["unified"] = UnifiedMind.load_or_create(MIND_NAME)
+        dt = time.time() - t0
+        print(f"[api] v2.0 UnifiedMind loaded "
+              f"(n_written={int(state['unified'].bank.n_written.item()):,}, "
+              f"{dt:.1f}s)", flush=True)
+    except Exception as exc:
+        print(f"[api] v2.0 UnifiedMind startup skipped: "
+              f"{type(exc).__name__}: {exc}", flush=True)
+
     yield
 
     # shutdown — stop runtime first so its save runs before our save
@@ -777,3 +797,87 @@ async def runtime_status():
     s = rt.status()
     s["available"] = True
     return s
+
+
+# ----------------------------------------------------------------------
+# v2.0 unified-mind endpoints (additive — legacy /ingest stays)
+# ----------------------------------------------------------------------
+
+@app.post("/unified/ingest")
+async def unified_ingest(req: IngestRequest):
+    """Run one forward pass through the v2.0 unified mind.
+
+    Same request schema as the legacy /ingest endpoint, so existing
+    clients can A/B test by switching the path. Returns the unified
+    MindResponse fields plus a status string.
+    """
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text must be non-empty")
+    um = state.get("unified")
+    if um is None:
+        raise HTTPException(status_code=503, detail="unified mind not available")
+
+    force = (
+        req.force_respond
+        if req.force_respond is not None
+        else bool(req.agent_handle)
+    )
+
+    # process() is itself thread-safe (RLock); the async lock here just
+    # serializes the API surface and matches the legacy /ingest contract.
+    async with state["unified_lock"]:
+        # run the (blocking, no_grad, ~hundreds of ms) forward pass in a
+        # worker thread so we don't peg the event loop.
+        resp = await asyncio.to_thread(
+            um.process,
+            text,
+            None,                    # image
+            None,                    # audio
+            req.agent_handle or "default",
+            force,
+        )
+
+    return {
+        "response": resp.text,
+        "gap": resp.gap,
+        "arousal": resp.arousal,
+        "active_slots": resp.active_memory_slots,
+        "suppressed": resp.suppressed,
+        "generator": resp.generator,
+        "affect_vector": resp.affect_vector,
+        "status": "suppressed" if resp.suppressed else "ok",
+    }
+
+
+@app.get("/unified/status")
+async def unified_status():
+    um = state.get("unified")
+    if um is None:
+        return {"available": False}
+    s = um.status()
+    s["available"] = True
+    return s
+
+
+@app.post("/unified/reset")
+async def unified_reset():
+    """Reload the unified mind from disk. Development convenience — re-runs
+    the full load_or_create path (memory bank seeding, tokenizer reload,
+    fresh component init). Returns the new status snapshot."""
+    async with state["unified_lock"]:
+        try:
+            from backend.unified_mind import UnifiedMind
+            t0 = time.time()
+            state["unified"] = UnifiedMind.load_or_create(MIND_NAME)
+            dt = time.time() - t0
+        except Exception as exc:
+            state["unified"] = None
+            raise HTTPException(
+                status_code=500,
+                detail=f"unified reset failed: {type(exc).__name__}: {exc}",
+            )
+        s = state["unified"].status()
+        s["available"] = True
+        s["reload_seconds"] = dt
+        return s
