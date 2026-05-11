@@ -458,6 +458,14 @@ class ConceptGraph:
             self._index.add(
                 (embedding / n).astype(np.float32, copy=False), cid,
             )
+        # Contradiction detection (v1.0 — additive). If a ContradictionDetector
+        # was attached via graph._contradiction_detector, run it on this new
+        # write. Guarded with hasattr so the graph runs fine without it.
+        if getattr(self, '_contradiction_detector', None) is not None:
+            try:
+                self._contradiction_detector.check_new_concept(cid, now)
+            except Exception:
+                pass
         return cid, True
 
     # ---- edges ----
