@@ -10,7 +10,6 @@ export type ConversationEntry = {
   reason: string | null;      // why revised / suppressed
   gap: number | null;
   generator?: "native_head" | "wave_field";
-  topConcepts?: string[];
 };
 
 type Props = {
@@ -46,30 +45,38 @@ export function ConversationLog({ entries }: Props) {
   );
 }
 
+/** Filter wave-field surface words: drop anything > 20 chars or
+ *  containing digits / special chars. The walker can pick up
+ *  artifacts from the underlying corpus (footnote markers, citation
+ *  fragments, OCR noise). Keep letters, internal apostrophes, and
+ *  internal hyphens only; allow trailing simple punctuation. */
+function cleanSurface(text: string | null): string {
+  if (!text) return "";
+  const allowed = /^[A-Za-z][A-Za-z'-]{0,19}[.,!?;:]?$/;
+  return text
+    .split(/\s+/)
+    .filter((w) => w.length > 0 && w.length <= 20 && allowed.test(w))
+    .join(" ");
+}
+
 function Outcome({ e }: { e: ConversationEntry }) {
   if (e.decisionType === "chosen") {
     const label = e.generator === "wave_field" ? "wave" : "mind";
     const labelColor = e.generator === "wave_field"
       ? "text-sky-300"
       : "text-emerald-400";
+    // Wave-field outputs go through cleanSurface to strip corpus
+    // artifacts (numbers, OCR noise, long fragments). Native-head
+    // outputs are already templated text and pass through unchanged.
+    const display = e.generator === "wave_field"
+      ? cleanSurface(e.surface)
+      : (e.surface ?? "");
     return (
       <div className="text-[11px] mt-0.5">
         <span className={labelColor}>{label} · </span>
-        <span className="text-zinc-100">"{e.surface}"</span>
+        <span className="text-zinc-100">"{display}"</span>
         {e.gap !== null && (
           <span className="text-zinc-600 ml-1">· gap {e.gap.toFixed(3)}</span>
-        )}
-        {e.topConcepts && e.topConcepts.length > 0 && (
-          <div className="mt-1 flex flex-wrap gap-1">
-            {e.topConcepts.slice(0, 6).map((c, i) => (
-              <span
-                key={i}
-                className="px-1.5 py-0.5 text-[10px] rounded bg-sky-500/10 border border-sky-400/20 text-sky-200 font-mono"
-              >
-                {c}
-              </span>
-            ))}
-          </div>
         )}
       </div>
     );
@@ -123,7 +130,6 @@ export function entryFromWaveResponse(
     reason: null,
     gap: typeof res.gap === "number" ? res.gap : null,
     generator: "wave_field",
-    topConcepts: res.top_concepts ?? [],
   };
 }
 
