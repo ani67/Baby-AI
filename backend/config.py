@@ -6,7 +6,9 @@ Constants not used in Phase 1 are not declared here.
 
 # Dimensions
 N_AFF = 12      # affect-vector dim
-D_REP = 256     # representation-space dim
+D_REP = 512  # was 256 — migrated 2026-05 in v1.0 wave-field rollout
+              # all new concepts written at 512-dim
+              # existing concepts migrated via scripts/migrate_to_512.py
 
 # Affect timescales (half-life seconds)
 HALF_LIFE_REACTION    = 2.0
