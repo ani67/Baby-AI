@@ -23,16 +23,25 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend.graph import MPSConceptIndex
-from backend.mind_paths import MindPaths
-from backend.persistence import MindPersistence
+# IMPORTANT: backend.persistence._blob_to_vec enforces expected_len=D_REP
+# at load time. config.D_REP is now 512 but the on-disk mind is at 256;
+# MindPersistence.load would reject every embedding. Patch persistence's
+# local D_REP to 256 for the load pass, do the projection in memory,
+# then flip back to 512 so save uses the new dim.
+from backend import persistence as _pers_mod
+_pers_mod.D_REP = 256
+
+from backend.graph import MPSConceptIndex                       # noqa: E402
+from backend.mind_paths import MindPaths                        # noqa: E402
+from backend.persistence import MindPersistence                 # noqa: E402
 
 
 def main() -> int:
     mind_name = os.environ.get('MIND_NAME', 'first')
     paths = MindPaths(mind_name=mind_name)
-    print(f"[migrate] loading {paths.db}")
+    print(f"[migrate] loading {paths.db} (persistence.D_REP forced to 256 for load)")
     loop = MindPersistence.load(paths.db)
+    _pers_mod.D_REP = 512   # post-load: flip back so save uses the new dim
     g = loop.graph
 
     n_nodes = g.node_count
@@ -75,6 +84,26 @@ def main() -> int:
     new_W[:, 256:] = rng.standard_normal((12, 256)).astype(np.float32) * 0.001
     loop.affect.W = new_W
     loop.affect._W_pinv_cache = None  # invalidate cached inverse
+
+    # Simulation replay buffer entries hold D_REP-shaped actual_repr.
+    # Apply the same projection so a post-migration load doesn't choke
+    # on a 256-dim blob in the simulation_replay table.
+    sim_buf = getattr(loop.simulation, '_buffer', None) or {}
+    if sim_buf:
+        print(f"[migrate] projecting {len(sim_buf)} simulation replay entries ...")
+        n_sim = 0
+        for entry_id, entry in sim_buf.items():
+            if entry.actual_repr is None:
+                continue
+            if entry.actual_repr.shape[0] != 256:
+                continue
+            new_rep = W_proj @ entry.actual_repr
+            nrm = float(np.linalg.norm(new_rep))
+            if nrm > 1e-9:
+                new_rep = new_rep / nrm
+            entry.actual_repr = new_rep.astype(np.float32, copy=False)
+            n_sim += 1
+        print(f"  migrated {n_sim} replay entries")
 
     print("[migrate] rebuilding MPS index at 512-dim ...")
     g._index = MPSConceptIndex()

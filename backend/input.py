@@ -142,17 +142,34 @@ def encode_text_batch(texts: list[str], dim: int = D_REP) -> np.ndarray:
 
 
 def encode_image(image: np.ndarray, dim: int = D_REP) -> np.ndarray:
-    """Patch-stats encoder: mean-pool to 16×16, flatten, L2-normalize.
+    """Patch-stats encoder: mean-pool to side×side, flatten, L2-normalize.
 
     Accepts grayscale (H, W) or RGB (H, W, 3). RGB is converted to
-    luminance first (standard 0.299/0.587/0.114). The resulting 256-d
-    unit vector is deterministic per input. dim must be a perfect square
-    so the mean-pool grid divides evenly; D_REP=256 = 16×16 is the
-    canonical case.
+    luminance first (standard 0.299/0.587/0.114). dim must be a
+    perfect square (canonical: 256=16×16). For D_REP=512 (post v1.0
+    migration), the encoder pools to the nearest perfect-square below
+    or equal to dim, then projects 256 → dim using the same
+    deterministic top-half-identity matrix used in
+    scripts/migrate_to_512.py (seed=42). This keeps the patch-stats
+    encoder usable without requiring a 512-dim pooling grid (which
+    doesn't exist for sqrt(512) ≈ 22.6).
     """
-    side = int(round(dim ** 0.5))
-    if side * side != dim:
-        raise ValueError(f"encode_image needs dim = perfect square, got {dim}")
+    # v1.0 special case: D_REP=512 isn't a perfect square. Pool to 256
+    # (=16×16, the canonical perfect square) then project to 512 with
+    # the same deterministic top-half-identity matrix used in
+    # scripts/migrate_to_512.py (seed=42). Returns directly; no
+    # recursive call into encode_image (the recursion guard would
+    # raise here on the 512-dim).
+    if dim == 512:
+        side = 16  # 16×16 = 256
+        pool_dim = 256
+        _project_to_512 = True
+    else:
+        side = int(round(dim ** 0.5))
+        pool_dim = dim
+        _project_to_512 = False
+        if side * side != dim:
+            raise ValueError(f"encode_image needs dim = perfect square, got {dim}")
 
     arr = np.asarray(image, dtype=np.float32)
     if arr.ndim == 3 and arr.shape[2] == 3:
@@ -172,7 +189,19 @@ def encode_image(image: np.ndarray, dim: int = D_REP) -> np.ndarray:
     arr = arr.reshape(side, bh, side, bw).mean(axis=(1, 3))
     vec = arr.flatten().astype(np.float32)
     norm = float(np.linalg.norm(vec))
-    return vec / norm if norm >= 1e-12 else vec
+    vec = vec / norm if norm >= 1e-12 else vec
+
+    if _project_to_512:
+        rng = np.random.default_rng(seed=42)
+        W_proj = np.zeros((512, 256), dtype=np.float32)
+        W_proj[:256, :256] = np.eye(256, dtype=np.float32)
+        W_proj[256:, :] = (
+            rng.standard_normal((256, 256)).astype(np.float32) * 0.01
+        )
+        projected = W_proj @ vec
+        n = float(np.linalg.norm(projected))
+        return (projected / n).astype(np.float32) if n > 1e-12 else projected
+    return vec
 
 
 def encode_audio(waveform: np.ndarray, dim: int = D_REP) -> np.ndarray:

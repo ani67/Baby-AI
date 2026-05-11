@@ -79,9 +79,28 @@ class _GloveStore:
         words = data["words"]
         vectors = data["vectors"].astype(np.float32, copy=False)
         if vectors.shape[1] != D_REP:
-            raise RuntimeError(
-                f"glove binary dim {vectors.shape[1]} != D_REP {D_REP}"
-            )
+            # v1.0 — auto-project a 256-dim GloVe binary into the
+            # migrated 512-dim space using the SAME deterministic
+            # top-half-identity projection scripts/migrate_to_512.py
+            # used on the concept graph. seed=42 reproduces W_proj
+            # exactly. This keeps fresh encodings in the same
+            # coordinate system as the migrated concepts without
+            # forcing a binary re-build.
+            if vectors.shape[1] == 256 and D_REP == 512:
+                rng = np.random.default_rng(seed=42)
+                W_proj = np.zeros((512, 256), dtype=np.float32)
+                W_proj[:256, :256] = np.eye(256, dtype=np.float32)
+                W_proj[256:, :] = (
+                    rng.standard_normal((256, 256)).astype(np.float32) * 0.01
+                )
+                projected = vectors @ W_proj.T                # (V, 512)
+                norms = np.linalg.norm(projected, axis=1, keepdims=True)
+                norms = np.where(norms < 1e-9, 1.0, norms)
+                vectors = (projected / norms).astype(np.float32, copy=False)
+            else:
+                raise RuntimeError(
+                    f"glove binary dim {vectors.shape[1]} != D_REP {D_REP}"
+                )
         self.vectors = vectors                                # (V, D_REP)
         self.index: dict[str, int] = {
             str(w): i for i, w in enumerate(words)

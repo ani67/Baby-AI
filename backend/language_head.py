@@ -188,8 +188,16 @@ def build_conditioning_vector(
     out = np.zeros(COND_DIM, dtype=np.float32)
     out[:12] = affect_composite.astype(np.float32, copy=False)
     for i, emb in enumerate(concept_embeddings[:TOP_K_CONCEPTS]):
-        if emb.shape != (256,):
-            raise ValueError(f"concept embedding must be (256,), got {emb.shape}")
+        # v1.0 migration: the GPT-2 / native v2 conditioning was trained
+        # at 256-dim. The post-migration graph is 512-dim but the
+        # migration's top-half-identity projection preserves the
+        # original 256 dims exactly — so truncating 512 → 256 gives
+        # the LM head the same vector it was trained on. Strict 256
+        # is still accepted unchanged.
+        if emb.shape == (512,):
+            emb = emb[:256]
+        elif emb.shape != (256,):
+            raise ValueError(f"concept embedding must be (256,) or (512,), got {emb.shape}")
         out[12 + i * 256: 12 + (i + 1) * 256] = emb.astype(np.float32, copy=False)
     return out
 
