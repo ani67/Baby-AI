@@ -87,6 +87,15 @@ class MindRuntime:
         self._last_expression_t = time.time()
         self._expression_pending = False
 
+        # PC learning off the hot path. _process_input does forward-only
+        # (~1 ms) and queues the fused rep here; the background
+        # _pc_learn_loop thread pulls in batches of 16 and runs
+        # forward+backward+Adam without blocking wave-field stepping.
+        # This keeps the runtime main loop at ~20 steps/s instead of
+        # the 6 steps/s it dropped to when learning ran inline.
+        self._pc_learn_queue: list = []
+        self._pc_learn_thread: Optional[threading.Thread] = None
+
         self.total_inputs = 0
         self.total_outputs = 0
         self.total_steps = 0
@@ -146,15 +155,41 @@ class MindRuntime:
             target=self._main_loop, daemon=True, name='MindRuntime',
         )
         self._thread.start()
-        log.info("[runtime] started")
+        self._pc_learn_thread = threading.Thread(
+            target=self._pc_learn_loop, daemon=True, name='MindRuntime-PC',
+        )
+        self._pc_learn_thread.start()
+        log.info("[runtime] started (main + pc-learn threads)")
 
     def stop(self):
         log.info("[runtime] stopping ...")
         self._running = False
         if self._thread:
             self._thread.join(timeout=10)
+        if self._pc_learn_thread:
+            self._pc_learn_thread.join(timeout=5)
         self._save()
         log.info("[runtime] stopped")
+
+    def _pc_learn_loop(self):
+        """Background thread: pull fused reps off the learn queue in
+        batches of 16 and run pc.process(learn=True). Decouples the
+        28M-param forward+backward+Adam from the wave-field main loop."""
+        while self._running:
+            queue = self._pc_learn_queue
+            if queue:
+                batch = queue[:16]
+                # mutate the shared list in place — single-writer
+                # invariant (only _process_input appends; only this
+                # thread pops). On py3, list slice/del is GIL-protected.
+                del queue[:len(batch)]
+                for rep in batch:
+                    try:
+                        self.pc.process(rep, learn=True)
+                    except Exception as exc:
+                        log.debug(f"[runtime] pc bg learn failed: {exc}")
+            else:
+                time.sleep(0.1)
 
     def status(self) -> dict:
         now = time.time()
@@ -199,13 +234,25 @@ class MindRuntime:
             except Exception as exc:
                 log.warning(f"[runtime] wave step failed: {exc}")
 
-            if self._step_count % 10 == 0:
-                try:
-                    td = self.pc.get_top_down_for_wave_field(self.wave_field)
-                    if td is not None:
-                        self.wave_field.set_top_down(td)
-                except Exception:
-                    pass
+            # PC top-down disabled until PC is trained. An untrained PC
+            # emits a near-uniform softmax over 60K concepts (each
+            # entry ~1.67e-5); wave_step computes
+            #   top_down_strength * (top_down - activation)
+            # which, with activation ~1.0 and top_down ~1e-5, evaluates
+            # to roughly -0.3 * activation — i.e. it pulls every
+            # active node back toward zero. The wave can't build a
+            # peak above 0.01 while this is active. Re-enable once
+            # PC has been trained for enough steps that its softmax
+            # actually concentrates around relevant concepts. Until
+            # then it's pure damping.
+            #
+            # if self._step_count % 10 == 0:
+            #     try:
+            #         td = self.pc.get_top_down_for_wave_field(self.wave_field)
+            #         if td is not None:
+            #             self.wave_field.set_top_down(td)
+            #     except Exception:
+            #         pass
 
             # === FEEL ===
             if self._step_count % 5 == 0:
@@ -292,11 +339,17 @@ class MindRuntime:
 
         fused = self.fusion.fuse(rep.astype(np.float32))
 
-        # update PC
+        # update PC — forward only on hot path. Queue for background
+        # learning so the 28M-param backward + Adam step doesn't block
+        # the wave-field main loop.
         try:
-            self.pc.process(fused, learn=True)
+            self.pc.process(fused, learn=False)
         except Exception as exc:
-            log.debug(f"[runtime] pc failed: {exc}")
+            log.debug(f"[runtime] pc forward failed: {exc}")
+        try:
+            self._pc_learn_queue.append(fused.copy())
+        except Exception:
+            pass
 
         # inject into wave field
         inject_strength = 1.0
@@ -308,7 +361,16 @@ class MindRuntime:
             inject_strength = 0.3 * resonance
 
         try:
-            self.wave_field.inject_representation(fused, strength=inject_strength)
+            # Inject the RAW encoded text rep, not the fusion output.
+            # MultimodalFusion is randomly initialised (no training yet);
+            # passing rep through it produces a near-random projection
+            # with ~0 cosine to every concept in the graph, which the
+            # min_sim threshold then rejects entirely. Until fusion is
+            # trained, the raw GloVe-PCA-projected rep is the
+            # representation that lives in the same space as the
+            # concept embeddings.
+            self.wave_field.inject_representation(rep.astype(np.float32),
+                                                  strength=inject_strength)
         except Exception:
             pass
 
