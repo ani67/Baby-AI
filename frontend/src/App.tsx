@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { fetchGraphBinary, fetchState, idle, subscribe } from "./lib/api";
-import type { BinaryGraph } from "./lib/api";
+import {
+  fetchGraphBinary,
+  fetchState,
+  getRuntimeStatus,
+  idle,
+  subscribe,
+} from "./lib/api";
+import type { BinaryGraph, RuntimeStatus } from "./lib/api";
 import type {
   AnyEvent,
   CycleEvent,
@@ -8,7 +14,12 @@ import type {
   StateSnapshot,
 } from "./lib/types";
 import { AffectBars } from "./components/AffectBars";
-import { ConversationEntry, ConversationLog, entryFromCycle } from "./components/ConversationLog";
+import {
+  ConversationEntry,
+  ConversationLog,
+  entryFromCycle,
+  entryFromWaveResponse,
+} from "./components/ConversationLog";
 import { Controls } from "./components/Controls";
 import { InputPanel } from "./components/InputPanel";
 import { MindGraph } from "./components/MindGraph";
@@ -27,6 +38,7 @@ export function App() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [lastCycle, setLastCycle] = useState<CycleEvent | null>(null);
   const [conversation, setConversation] = useState<ConversationEntry[]>([]);
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null);
   const lastInteractionRef = useRef<number>(Date.now());
   const lastNodeCountRef = useRef<number>(0);
 
@@ -94,6 +106,24 @@ export function App() {
     };
   }, []);
 
+  // v1.1 — poll /runtime_status every 2 s so the StatsPanel can show
+  // wave energy, peak activation, and step count alongside the v0.9
+  // stats. Cheap call: just reads fields off the runtime object.
+  useEffect(() => {
+    let alive = true;
+    function tick() {
+      getRuntimeStatus()
+        .then((s) => { if (alive) setRuntimeStatus(s); })
+        .catch(() => {});
+    }
+    tick();
+    const id = window.setInterval(tick, 2000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, []);
+
   // Auto-idle every 10s when no manual input. Toggle is broadcast from Controls
   // via a custom event so this doesn't need prop-drilling.
   useEffect(() => {
@@ -123,7 +153,11 @@ export function App() {
 
       {/* Top-left: stats */}
       <div className="absolute top-4 left-4 z-10">
-        <StatsPanel stats={stats ?? defaultStats()} full={state} />
+        <StatsPanel
+          stats={stats ?? defaultStats()}
+          full={state}
+          runtimeStatus={runtimeStatus}
+        />
       </div>
 
       {/* Top-right: controls */}
@@ -146,6 +180,11 @@ export function App() {
           lastCycle={lastCycle}
           onResponse={(prompt, cycle) => {
             setConversation((prev) => [...prev, entryFromCycle(prompt, cycle)]);
+            lastInteractionRef.current = Date.now();
+          }}
+          onWaveResponse={(prompt, res) => {
+            setConversation((prev) => [...prev, entryFromWaveResponse(prompt, res)]);
+            lastInteractionRef.current = Date.now();
           }}
         />
       </div>

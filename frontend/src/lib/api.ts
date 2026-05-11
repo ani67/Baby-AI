@@ -12,6 +12,52 @@ export async function ingest(text: string, agent_handle?: string) {
   return res.json();
 }
 
+/** v1.1 wave-field path. Returns the runtime's emitted surface text
+ *  (or `null` + status="thinking" if the wave hasn't settled enough
+ *  to pick word-concepts within the 15 s receive timeout). */
+export type RuntimeResponse = {
+  status: "ok" | "thinking";
+  response: string | null;
+  gap?: number;
+  active_concepts?: number;
+  arousal?: number;
+  top_concepts?: string[];
+  generator?: string;
+};
+
+export async function ingestRuntime(
+  text: string, person_id?: string,
+): Promise<RuntimeResponse> {
+  const res = await fetch("/ingest_runtime", {
+    method: "POST",
+    headers: json,
+    body: JSON.stringify({ text, person_id }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export type RuntimeStatus = {
+  available: boolean;
+  running?: boolean;
+  step_count?: number;
+  total_inputs?: number;
+  total_outputs?: number;
+  wave_energy?: number;
+  peak_activation?: number;
+  arousal?: number;
+  active_concepts?: number;
+  node_count?: number;
+  contradiction_buffer?: number;
+  self_prediction_loss?: number;
+};
+
+export async function getRuntimeStatus(): Promise<RuntimeStatus> {
+  const res = await fetch("/runtime_status");
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export async function idle(max_replays = 1) {
   const res = await fetch("/idle", {
     method: "POST",
@@ -47,7 +93,8 @@ export async function fetchGraph(): Promise<GraphPayload> {
 /** Compact binary representation of the graph used by the GPU
  *  renderer. Layout matches backend.api.get_graph_binary:
  *    header:   i32 node_count, i32 edge_count
- *    node:     i32 id, f32 ex, f32 ey, f32 ez, f32 act, f32 surp, f32 arousal
+ *    node:     i32 id, f32 ex, f32 ey, f32 ez, f32 act, f32 surp, f32 arousal,
+ *              f32 wave_activation        (v1.1 — live wave field activation)
  *    edge:     i32 src_idx, i32 tgt_idx, f32 weight, f32 type_idx_norm
  *  source/target on edges are *indices into the node array*, not
  *  concept_ids. The caller can use them directly as texture coordinates.
@@ -55,9 +102,10 @@ export async function fetchGraph(): Promise<GraphPayload> {
 export type BinaryNode = {
   id: number;
   ex: number; ey: number; ez: number;   // embedding[0..2]
-  activation: number;                    // [0,1] normalized
+  activation: number;                    // [0,1] normalized historical
   surprise: number;
   arousal: number;
+  waveActivation: number;                // v1.1 — live wave-field activation
 };
 export type BinaryEdge = {
   sourceIdx: number;
@@ -79,21 +127,32 @@ export async function fetchGraphBinary(): Promise<BinaryGraph> {
   const nodeCount = view.getInt32(0, true);
   const edgeCount = view.getInt32(4, true);
 
+  // Per-node stride: 7×i32/f32 = 28 bytes (v1.0) + 1 f32 wave_activation
+  // (v1.1) = 32 bytes. Backend writes 32 when runtime is wired;
+  // gracefully falls back to 28 if header indicates the legacy layout.
+  // We detect by checking total buffer size.
+  const totalBytes = buf.byteLength - 8;            // minus header
+  const edgeBytes  = 16;                            // unchanged
+  const stride28   = 28 * nodeCount + edgeBytes * edgeCount;
+  const isV11Layout = totalBytes !== stride28;      // assume new layout if not legacy
+  const nodeStride = isV11Layout ? 32 : 28;
+
   const nodes: BinaryNode[] = new Array(nodeCount);
   for (let i = 0; i < nodeCount; i++) {
-    const o = 8 + i * 28;
+    const o = 8 + i * nodeStride;
     nodes[i] = {
-      id:         view.getInt32(o, true),
-      ex:         view.getFloat32(o + 4, true),
-      ey:         view.getFloat32(o + 8, true),
-      ez:         view.getFloat32(o + 12, true),
-      activation: view.getFloat32(o + 16, true),
-      surprise:   view.getFloat32(o + 20, true),
-      arousal:    view.getFloat32(o + 24, true),
+      id:             view.getInt32(o, true),
+      ex:             view.getFloat32(o + 4, true),
+      ey:             view.getFloat32(o + 8, true),
+      ez:             view.getFloat32(o + 12, true),
+      activation:     view.getFloat32(o + 16, true),
+      surprise:       view.getFloat32(o + 20, true),
+      arousal:        view.getFloat32(o + 24, true),
+      waveActivation: isV11Layout ? view.getFloat32(o + 28, true) : 0,
     };
   }
 
-  const edgeStart = 8 + nodeCount * 28;
+  const edgeStart = 8 + nodeCount * nodeStride;
   const edges: BinaryEdge[] = new Array(edgeCount);
   for (let i = 0; i < edgeCount; i++) {
     const o = edgeStart + i * 16;

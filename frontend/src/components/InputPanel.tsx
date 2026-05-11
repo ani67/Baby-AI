@@ -1,18 +1,23 @@
 import { useState } from "react";
-import { ingest } from "../lib/api";
+import { ingest, ingestRuntime } from "../lib/api";
+import type { RuntimeResponse } from "../lib/api";
 import type { CycleEvent } from "../lib/types";
 
 type Props = {
   lastCycle: CycleEvent | null;
   /** Called with (prompt, cycle) after each successful user-initiated
-   *  ingest, so App.tsx can append to the conversation log. */
+   *  ingest via the v0.9 native-head path. */
   onResponse?: (prompt: string, cycle: CycleEvent) => void;
+  /** Called with (prompt, response) after each successful user-initiated
+   *  ingest via the v1.1 wave-field path. */
+  onWaveResponse?: (prompt: string, response: RuntimeResponse) => void;
 };
 
-export function InputPanel({ lastCycle, onResponse }: Props) {
+export function InputPanel({ lastCycle, onResponse, onWaveResponse }: Props) {
   const [text, setText] = useState("");
   const [agent, setAgent] = useState("alice");
   const [sending, setSending] = useState(false);
+  const [useWaveField, setUseWaveField] = useState(true);
 
   async function send(e: React.FormEvent) {
     e.preventDefault();
@@ -20,8 +25,13 @@ export function InputPanel({ lastCycle, onResponse }: Props) {
     if (!prompt || sending) return;
     setSending(true);
     try {
-      const result = (await ingest(prompt, agent.trim() || undefined)) as CycleEvent;
-      onResponse?.(prompt, result);
+      if (useWaveField) {
+        const result = await ingestRuntime(prompt, agent.trim() || undefined);
+        onWaveResponse?.(prompt, result);
+      } else {
+        const result = (await ingest(prompt, agent.trim() || undefined)) as CycleEvent;
+        onResponse?.(prompt, result);
+      }
       setText("");
     } catch (err) {
       console.error("ingest failed:", err);
@@ -39,7 +49,7 @@ export function InputPanel({ lastCycle, onResponse }: Props) {
         <input
           type="text"
           className="flex-1 bg-black/40 border border-white/10 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-white/30"
-          placeholder="say something to the mind…"
+          placeholder={useWaveField ? "say something to the wave…" : "say something to the mind…"}
           value={text}
           onChange={(e) => setText(e.target.value)}
         />
@@ -50,6 +60,21 @@ export function InputPanel({ lastCycle, onResponse }: Props) {
           value={agent}
           onChange={(e) => setAgent(e.target.value)}
         />
+        <button
+          type="button"
+          title={useWaveField
+            ? "v1.1 wave-field path — toggle to v0.9 native-head"
+            : "v0.9 native-head path — toggle to v1.1 wave-field"}
+          onClick={() => setUseWaveField((v) => !v)}
+          className={
+            "px-2 py-1.5 rounded text-xs font-mono border " +
+            (useWaveField
+              ? "bg-sky-500/20 border-sky-400/40 text-sky-200"
+              : "bg-amber-500/20 border-amber-400/40 text-amber-200")
+          }
+        >
+          {useWaveField ? "〰 wave" : "◉ native"}
+        </button>
         <button
           type="submit"
           disabled={sending || !text.trim()}

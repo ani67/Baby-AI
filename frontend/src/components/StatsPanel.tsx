@@ -1,11 +1,13 @@
+import type { RuntimeStatus } from "../lib/api";
 import type { Stats, StateSnapshot } from "../lib/types";
 
 type Props = {
   stats: Stats;
   full: StateSnapshot | null;
+  runtimeStatus?: RuntimeStatus | null;
 };
 
-export function StatsPanel({ stats, full }: Props) {
+export function StatsPanel({ stats, full, runtimeStatus }: Props) {
   return (
     <div className="glass rounded-xl px-4 py-3 w-[260px] text-xs">
       <div className="flex items-center justify-between mb-2">
@@ -39,6 +41,56 @@ export function StatsPanel({ stats, full }: Props) {
           </div>
         </>
       )}
+      {runtimeStatus && runtimeStatus.available && (
+        <div className="mt-3 pt-2 border-t border-white/5">
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-[10px] uppercase tracking-widest text-sky-300/80">
+              wave field
+            </div>
+            <div className="text-[10px] text-zinc-500 tabular-nums">
+              {runtimeStatus.total_outputs ?? 0} / {runtimeStatus.total_inputs ?? 0}
+            </div>
+          </div>
+          <div className="py-0.5">
+            <div className="flex justify-between mb-0.5">
+              <span className="text-zinc-500">wave energy</span>
+              <span className="tabular-nums text-zinc-400 text-[10px]">
+                {(runtimeStatus.wave_energy ?? 0).toFixed(3)}
+              </span>
+            </div>
+            <WaveBar energy={runtimeStatus.wave_energy ?? 0} />
+          </div>
+          <Row k="peak activation" v={(runtimeStatus.peak_activation ?? 0).toFixed(3)} />
+          <Row k="wave steps" v={(runtimeStatus.step_count ?? 0).toLocaleString()} />
+          <Row k="active concepts" v={runtimeStatus.active_concepts ?? 0} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WaveBar({ energy }: { energy: number }) {
+  // energy is unbounded above ~0; visually clamp at 0.5 (well-saturated wave).
+  const pct = Math.min(100, energy * 200);
+  const hue = Math.max(0, 200 - energy * 100);
+  return (
+    <div
+      style={{
+        width: "100%",
+        height: 4,
+        background: "rgba(255,255,255,0.08)",
+        borderRadius: 2,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          width: `${pct}%`,
+          height: "100%",
+          background: `hsl(${hue}, 80%, 60%)`,
+          transition: "width 0.2s ease, background 0.2s ease",
+        }}
+      />
     </div>
   );
 }

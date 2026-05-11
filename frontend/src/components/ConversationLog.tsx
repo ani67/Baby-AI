@@ -1,13 +1,16 @@
+import type { RuntimeResponse } from "../lib/api";
 import type { CycleEvent } from "../lib/types";
 
 export type ConversationEntry = {
-  id: number;             // stimulus_id from the cycle
+  id: number;             // stimulus_id from the cycle (or sequential for wave)
   t: number;
   prompt: string;
   decisionType: "chosen" | "revision" | "suppression" | null;
   surface: string | null;     // the committed text, when ChosenCandidate
   reason: string | null;      // why revised / suppressed
   gap: number | null;
+  generator?: "native_head" | "wave_field";
+  topConcepts?: string[];
 };
 
 type Props = {
@@ -45,12 +48,28 @@ export function ConversationLog({ entries }: Props) {
 
 function Outcome({ e }: { e: ConversationEntry }) {
   if (e.decisionType === "chosen") {
+    const label = e.generator === "wave_field" ? "wave" : "mind";
+    const labelColor = e.generator === "wave_field"
+      ? "text-sky-300"
+      : "text-emerald-400";
     return (
       <div className="text-[11px] mt-0.5">
-        <span className="text-emerald-400">mind · </span>
+        <span className={labelColor}>{label} · </span>
         <span className="text-zinc-100">"{e.surface}"</span>
         {e.gap !== null && (
           <span className="text-zinc-600 ml-1">· gap {e.gap.toFixed(3)}</span>
+        )}
+        {e.topConcepts && e.topConcepts.length > 0 && (
+          <div className="mt-1 flex flex-wrap gap-1">
+            {e.topConcepts.slice(0, 6).map((c, i) => (
+              <span
+                key={i}
+                className="px-1.5 py-0.5 text-[10px] rounded bg-sky-500/10 border border-sky-400/20 text-sky-200 font-mono"
+              >
+                {c}
+              </span>
+            ))}
+          </div>
         )}
       </div>
     );
@@ -80,6 +99,32 @@ function Outcome({ e }: { e: ConversationEntry }) {
       mind · silent
     </div>
   );
+}
+
+/** Translate a v1.1 wave-field /ingest_runtime response into a log entry. */
+let _waveEntrySeq = 1_000_000;
+export function entryFromWaveResponse(
+  prompt: string, res: RuntimeResponse,
+): ConversationEntry {
+  const id = _waveEntrySeq++;
+  if (res.status !== "ok" || !res.response) {
+    return {
+      id, t: Date.now() / 1000, prompt,
+      decisionType: null, surface: null, reason: "thinking",
+      gap: null, generator: "wave_field",
+    };
+  }
+  return {
+    id,
+    t: Date.now() / 1000,
+    prompt,
+    decisionType: "chosen",
+    surface: res.response,
+    reason: null,
+    gap: typeof res.gap === "number" ? res.gap : null,
+    generator: "wave_field",
+    topConcepts: res.top_concepts ?? [],
+  };
 }
 
 /** Translate a CycleEvent (when triggered by a user ingest) into a log entry. */

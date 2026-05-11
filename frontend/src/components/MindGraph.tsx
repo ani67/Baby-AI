@@ -79,25 +79,31 @@ void main() {
   float activation = stateT.r;     // [0,1], from active_set or breathing
   float arousal    = stateT.g;     // affect proxy
   float actCount   = stateT.b;     // total activations, log-normalized
-  float isPinned   = stateT.a;
+  float waveAct    = stateT.a;     // v1.1: LIVE wave-field activation
 
   // breathing: only "warm" recently-active nodes pulse fast
   float breathFreq = 0.6 + activation * 2.0;
   float breathAmp  = 0.04 + activation * 0.16;
   float scale      = 1.0 + breathAmp * sin(time * breathFreq + float(iid) * 0.31);
 
-  // base radius — pinned dots are bigger; abstractions read activation
-  float baseR = (isPinned > 0.5)
-    ? 1.8
-    : (1.0 + actCount * 1.5 + activation * 0.8);
-  scale *= baseR;
+  // base radius: historical activations + cycle activation, then a
+  // wave-passing amplification (×1 + waveAct × 3) so concepts visibly
+  // grow when the wave field's interference pattern touches them.
+  float baseR = 1.0 + actCount * 1.5 + activation * 0.8;
+  scale *= baseR * (1.0 + waveAct * 3.0);
 
-  // color: blue (cool) → orange (active)
+  // color blends:
+  //   dormant: cool blue (220° hue)
+  //   v0.9 active: orange (220°→80°)
+  //   v1.1 wave passing through: warm white pulled in on top
   float hue = (220.0 - 140.0 * activation) / 360.0;
   float sat = 0.30 + 0.55 * arousal;
   float lit = 0.45 + 0.25 * actCount + 0.10 * activation;
-  vColor       = hsl2rgb(vec3(hue, sat, lit));
-  vActivation  = activation;
+  vec3 baseColor = hsl2rgb(vec3(hue, sat, lit));
+  vec3 waveColor = vec3(1.0, 0.95, 0.85);                   // warm white
+  vColor       = mix(baseColor, waveColor, clamp(waveAct, 0.0, 1.0));
+  // emissive contribution from both v0.9 active set + v1.1 wave
+  vActivation  = clamp(activation + waveAct * 1.2, 0.0, 1.6);
 
   vec3 worldPos = posTexel.xyz + position * scale;
   vWorldPos = worldPos;
@@ -416,14 +422,20 @@ export function MindGraph({ graph, lastCycle, consolidationActive }: Props) {
     posTex.type = THREE.FloatType;
     posTex.needsUpdate = true;
 
-    // -- STATE texture (activation, arousal, act_count, pinned) ----
+    // -- STATE texture (activation, arousal, act_count, wave_activation) --
+    // r: v0.9 active set (updated from cycle events via WS)
+    // g: affect arousal proxy
+    // b: historical activation_count (normalized)
+    // a: LIVE wave-field activation (v1.1, from /graph/binary refetch)
+    //    — previously unused 'pinned' channel; pinned wasn't shipped
+    //    in the binary anyway.
     const stateData = new Float32Array(nodeTexW * nodeTexH * 4);
     for (let i = 0; i < N; i++) {
       const n = graph.nodes[i];
-      stateData[i * 4]     = 0;             // current activation (filled on cycle event)
-      stateData[i * 4 + 1] = n.arousal;     // affect proxy
-      stateData[i * 4 + 2] = n.activation;  // historical activation_count, normalized
-      stateData[i * 4 + 3] = 0;             // pinned (no signal yet from binary)
+      stateData[i * 4]     = 0;                  // current activation (cycle WS fill)
+      stateData[i * 4 + 1] = n.arousal;          // affect proxy
+      stateData[i * 4 + 2] = n.activation;       // historical activation_count
+      stateData[i * 4 + 3] = n.waveActivation;   // v1.1 LIVE wave activation
     }
     const stateTex = new THREE.DataTexture(
       stateData, nodeTexW, nodeTexH, THREE.RGBAFormat, THREE.FloatType,

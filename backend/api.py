@@ -616,11 +616,16 @@ async def get_graph_binary():
     Layout (little-endian throughout):
 
         header                 : i32 node_count, i32 edge_count
-        nodes  (28 bytes each) : i32 id,
+        nodes  (32 bytes each) : i32 id,
                                   f32 ex, f32 ey, f32 ez,    (embedding[0:3])
                                   f32 activation_norm,
                                   f32 surprise_at_birth,
-                                  f32 affect_arousal_proxy
+                                  f32 affect_arousal_proxy,
+                                  f32 wave_activation         (v1.1 — live
+                                                                wave-field
+                                                                activation, 0
+                                                                when no runtime
+                                                                is attached)
         edges  (16 bytes each) : i32 source_idx, i32 target_idx,
                                   f32 weight,
                                   f32 type_idx_norm           (enum_index / 10)
@@ -641,8 +646,21 @@ async def get_graph_binary():
         node_count = len(nodes)
         edge_count = len(edges)
 
+        # v1.1 — pull current wave-field activations from the runtime
+        # if it's attached. get_top_concepts(k=1000) is enough to cover
+        # the activated set during typical query response without
+        # serializing every node's activation. Inactive nodes get 0.
+        runtime = state.get("runtime")
+        wave_activations: dict[int, float] = {}
+        if runtime is not None:
+            try:
+                top = runtime.wave_field.get_top_concepts(1000)
+                wave_activations = {int(cid): float(act) for cid, act in top}
+            except Exception:
+                wave_activations = {}
+
         # Build id → index map and the node payload in one pass.
-        node_buf = bytearray(node_count * 28)
+        node_buf = bytearray(node_count * 32)
         node_index: dict[int, int] = {}
         for i, n in enumerate(nodes):
             node_index[n.concept_id] = i
@@ -651,15 +669,17 @@ async def get_graph_binary():
             ey = float(emb[1]) if emb.shape[0] > 1 else 0.0
             ez = float(emb[2]) if emb.shape[0] > 2 else 0.0
             arousal_proxy = float(np.linalg.norm(n.affect_trace.running_state))
+            wave_act = wave_activations.get(int(n.concept_id), 0.0)
             struct.pack_into(
-                "<i6f",
+                "<i7f",
                 node_buf,
-                i * 28,
+                i * 32,
                 int(n.concept_id),
                 ex, ey, ez,
                 min(float(n.activation_count) / 100.0, 1.0),
                 float(n.surprise_at_birth),
                 arousal_proxy,
+                wave_act,
             )
 
         edge_buf = bytearray(edge_count * 16)
@@ -716,15 +736,36 @@ async def ingest_runtime(req: RuntimeIngestRequest):
     if rt is None:
         raise HTTPException(503, "runtime not available")
     rt.send(req.text, person_id=req.person_id or "default")
-    resp = rt.receive(timeout=3.0)
+    # 15s timeout: with row-normalized adjacency the wave propagates more
+    # broadly but takes ~200 steps (10s at dt=0.05) to reach peak before
+    # graph-traversal expression can pick out meaningful word activations.
+    resp = rt.receive(timeout=15.0)
     if resp is None:
         return {"status": "thinking", "response": None}
+
+    # v1.1 — also return the top wave-field concepts so the frontend can
+    # render which neighborhoods of the graph the response came from.
+    top_names: list[str] = []
+    try:
+        graph_nodes = rt.graph.nodes
+        for cid, _act in rt.wave_field.get_top_concepts(10):
+            if cid in graph_nodes:
+                name = (graph_nodes[cid].name or "").strip()
+                # Strip newlines/long whitespace and truncate for the UI tag.
+                clean = " ".join(name.split())[:32]
+                if clean:
+                    top_names.append(clean)
+    except Exception:
+        top_names = []
+
     return {
         "status": "ok",
         "response": resp.text,
         "gap": resp.gap,
         "active_concepts": resp.active_concept_count,
         "arousal": resp.arousal,
+        "top_concepts": top_names,
+        "generator": "wave_field",
     }
 
 
