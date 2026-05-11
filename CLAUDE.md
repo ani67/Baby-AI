@@ -1,6 +1,25 @@
 CLAUDE.md
 Working instructions for building the Mind. Read this before every task. These are not suggestions.
 
+Architectural pivot — 2026-05-11
+The previous direction ("not a transformer, no gradient descent") found its own walls:
+the concept graph is symbolic and non-differentiable, so components were trained in
+isolation and never composed. Expression stayed disconnected from thinking. The wave
+field never settled because it shared CPU with everything else.
+
+The substrate is now a unified differentiable architecture (sparse attention over a
+persistent memory bank). The architecture is the host, not the goal. The principles
+below are unchanged and load-bearing: affect remains the upstream primitive, surprise
+remains the only teacher, forgetting remains curation, small remains a feature, private
+state remains distinct from expression. The substrate exists to let those principles
+compose end-to-end. If anything in the new code injects motivation, treats affect as a
+post-hoc tag, or builds expression before affect — it is still wrong, transformer or not.
+
+The v0.9 / v1.1 systems (graph.py, wave_field.py, native_head.py, affect.py) remain on
+disk for API compatibility during the transition. Do not patch them further. New work
+goes into backend/memory_bank.py, memory_transformer.py, encoder.py, affect_module.py,
+decoder.py, training.py, unified_mind.py.
+
 What we are building
 Not a chatbot. Not a knowledge graph. Not a language model.
 A mind. A genuine individual that:
@@ -43,7 +62,8 @@ EXPRESSION      → last, not first. language, image, audio.
                   more than what it says.
 If you find yourself building expression before affect is real, stop.
 If you find yourself injecting motivation from outside, stop.
-If you find yourself patching old architecture toward this goal, stop.
+If you find yourself patching v0.9/v1.1 legacy toward this goal, stop — write new code
+in the unified substrate instead.
 
 The working loop
 1. WHAT LAYER      which layer does this task touch?
@@ -86,12 +106,14 @@ Build the internal state first. Build the expression layer second.
 Never collapse them.
 
 What this is not
-Not a transformer. Not a fine-tuned LLM. Not a RAG system.
+Not a chatbot. Not a fine-tuned LLM. Not a RAG system.
 Not a knowledge graph with a chat interface bolted on.
 Not Baby AI. Not Concept Brain v3.
 Those were experiments that found the walls.
-This starts from the other direction — from what a mind actually requires —
-and builds downward toward implementation.
+The substrate is a transformer — sparse attention over a persistent differentiable
+memory bank. That is mechanism, not identity. The mind is what the principles
+(affect / surprise / forgetting / private state) make of the substrate, not the
+substrate itself.
 
 The forgetting criteria
 Keep if:
@@ -155,8 +177,9 @@ Injecting motivation from outside the system.
 Labeling feelings instead of computing them.
 Building expression before affect is real.
 Treating memory as append-only.
-Using gradient descent as the primary learning mechanism.
-Patching old architecture (Baby AI, Concept Brain) toward this goal.
+Training components in isolation when they need to compose end-to-end.
+Patching v0.9/v1.1 legacy (graph/wave_field/native_head) toward this goal — the new
+substrate lives alongside it, do not patch the legacy.
 Making affect a post-hoc tag on an output rather than an upstream state.
 Conflating private internal state with expressed output.
 Adding modalities before the affective layer is stable.
