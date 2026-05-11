@@ -4,6 +4,128 @@ Cross-cutting design notes that span CLAUDE.md's architecture layers.
 Phase log + open items. Read CLAUDE.md first; this doc is the running
 log of what's been delivered and what still has to happen.
 
+## Phase 9 — v1.0 candidate (Wave Field Architecture)
+
+The largest architectural change since v0.1. The mind transitions from
+a sequential pipeline into a continuously running wave field, while
+keeping everything that existed — 60K concepts, 320K edges, 1,228+
+abstractions, W matrix shaped by the full curriculum, identity spine.
+Existing pipeline survives as fallback.
+
+See `doc/mind/v1_plan.md` for the full architecture brief.
+
+### Completed
+- **512-dim migration** — scripts/migrate_to_512.py (commit 31c58ee).
+  Linear projection R^256 → R^512 via top-half-identity matrix
+  (seed=42 for determinism); top 256 rows are identity (preserve all
+  cosine relationships exactly), bottom 256 rows are random ×0.01
+  (small enough not to disrupt existing structure). Migrates node
+  embeddings, the affect W matrix (12, 256) → (12, 512), and 4,096
+  simulation replay buffer entries. Backs up mind.db to
+  `.pre-512-migration` before save. Verified: 60,078 concepts at
+  512-dim, all norms 1.000, all relationships preserved.
+- **Wave field engine** — backend/wave_field.py (commit 31c58ee).
+  Continuous wave propagation over the concept graph on MPS.
+  All N nodes update simultaneously per dt=0.05s via one sparse
+  matrix-multiply per edge type (forward/backward/causal/hierarchy).
+  Activation has momentum (velocity); damping; affect-gated; top-down
+  bias from PC hierarchy. Settles via convergence threshold. Bridge-
+  concept finder (inject two domains, interference = bridges). Live
+  benchmark on 60K-node migrated graph: **4,969 steps/sec on MPS**
+  (25× the 200/s target).
+- **Predictive coding hierarchy** — backend/predictive_coding.py
+  (commit ba71669). 5 levels (512→256×3→512). Bottom-up encoders
+  + top-down predictors per level. Errors flow upward as learning
+  signal; top-down predictions flow downward as attention bias.
+  Online Adam learning gated on error_threshold. `get_top_down_for_wave_field`
+  emits a softmax over concept alignments → wave field's top_down
+  channel. Test: surprise 15.2 → 6.5 over 50 steps.
+- **Self model** — backend/self_model.py (commit 7b305a2). Self-echo
+  detection (30s window, 60% word overlap threshold) — the mind now
+  knows when it's hearing itself, solving the architectural gap from
+  v0.9 where reflected output was treated as exogenous input. Self-
+  prediction: small MLP learns next-affect from current-affect +
+  concept-centroid; loss 0.34 → 0.05 over 100 updates. Theory of
+  mind: per-person OtherModel with interaction stats.
+- **Multimodal fusion** — backend/fusion.py (commit 0e9e6bc). The
+  thalamus layer. ModalityProjector (per-stream linear+LN+GELU),
+  FusionTransformer (3-token attention + FF), MultimodalFusion
+  (vision/audio/text projectors). Vision and audio accept None
+  and substitute zeros — ready for CLIP/Whisper when wired.
+  Contrastive learning for online same-event/different-event tuning.
+- **Contradiction detection** — backend/contradiction.py + 5-line
+  hook in graph.write_on_surprise (commit e8c7842). The ACC
+  equivalent. New concepts in similar (cosine > 0.65) but opposing
+  (dot < −0.3) positions to existing concepts get a tension edge
+  (EdgeType.OPPOSITE_OF), are recorded in a buffer, and seed the
+  wave field — interference = the mind sitting with the contradiction.
+  Honest finding: thresholds are tight on the current graph and
+  the canonical test produced NO-DETECTION; tuning is a v1.1 item.
+- **Graph traversal expression** — backend/expression_graph.py
+  (commit 869f6ac). Unified brain-mouth: 27,108 single-word concept
+  nodes identified. Generation walks word-nodes following wave-field
+  activation; each emitted word is injected back into the field as
+  a velocity perturbation, then the field is stepped 5 times — the
+  next word follows from the shifted active set. Repetition penalty,
+  stop-word penalty, EOS detection. Runs alongside the native head
+  (still loaded, falls back when graph-traversal returns empty).
+- **Continuous runtime** — backend/mind_runtime.py + additive
+  api.py edits (commit b784dfd). MindRuntime runs the integrated
+  mind in a background thread (dt=0.05s). Every iteration: sense
+  (queue check), think (wave step), feel (affect refresh), self-
+  model update, active inference at low arousal, contradiction
+  seeding, expression check after input, sleep consolidation at
+  very low arousal + extended quiet, periodic save. `send(text)` /
+  `receive(timeout)` queue API. Self-overhearing: own emitted
+  surfaces piped back as input with person_id='self'. New API
+  endpoints `/ingest_runtime` and `/runtime_status` exist alongside
+  the v0.9 endpoints — additive, existing functionality preserved.
+- **Post-migration encoder fixes** — backend/encoders.py +
+  backend/input.py + backend/language_head.py (commit 312a076).
+  GloVe binary (locked 256-dim) auto-projects to 512 on load.
+  encode_image pools to 16×16=256 then projects to 512.
+  language_head.build_conditioning_vector truncates 512 → 256 on
+  input so the native head v2 (trained at 256) keeps working with
+  migrated concept embeddings — the top-half-identity projection
+  means truncation gives the LM exactly the vector it was trained on.
+
+### Regression sweep (all green post-migration)
+test_wave_field · test_predictive_coding · test_self_model ·
+test_fusion · test_contradiction (NO-DETECTION acceptable) ·
+test_graph_expression · test_runtime · phase1 · phase3 (19/19) —
+**all pass on the migrated 60K-node 512-dim graph**.
+
+### Open items — Phase 9 (v1.1+)
+- Wire CLIP vision encoder fully (replace the patch-stats stub)
+- Wire Whisper audio encoder fully (replace the FFT-bins stub)
+- Retrain native_head_v2 on 512-dim concept embeddings directly
+  (currently we truncate 512→256 at the conditioning vector — works
+  because top-half is identity, but training native at 512 unlocks
+  the new dims)
+- Drifting nodes — concept embeddings drift toward experience
+  (the design that pairs with valenced surprise from v0.8; formula
+  captured in the Notes section earlier in this doc)
+- Typed-attention spreading in wave field (per-type weights live;
+  per-type dynamics could differ further)
+- Multi-beam thinking (8 parallel wave trajectories with different
+  injection seeds, beam-select on settled centroid)
+- Tune contradiction thresholds against the actual graph density
+- Tune wave-field stop-word + repetition penalty so graph
+  traversal expression doesn't collapse to repeated "self self self"
+- Active inference deepening — let the mind generate its own
+  curriculum from gaps the wave field exposes
+
+### Notes
+- Migration backup at `data/first/mind.db.pre-512-migration` —
+  rollback is one `mv` command if anything is found to be off later.
+- The mind on disk is now 512-dim only. Any tool that loads it
+  must run with `D_REP=512` in config and the post-migration
+  encoder/LM fixes from commit 312a076. The frontend and curriculum
+  scripts will need a small audit before they're run again — most
+  paths use encode_text_glove which now auto-projects, but
+  multilevel_preprocessor and any direct numpy ops on raw 256-dim
+  blobs need to be verified.
+
 ## Phase 8 — v0.8 candidate
 
 Tagged as `v0.8` after all six subagent workstreams landed in
