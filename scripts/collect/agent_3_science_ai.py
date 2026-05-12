@@ -23,10 +23,29 @@ Validation mode (default, no args):
     abstracts get domain="ai", per the spec.
 
 Full mode (--full):
-    Sketch only — a function whose body comments enumerate what the full
-    sweep would do (all Gutenberg science texts, paginated arXiv survey
-    queries on cs.LG/cs.AI, every MIT OCW science+AI course, Nature/
-    Science open-access articles). Implementation deferred.
+    Fetches the full Gutenberg classical-science catalog (~18 books:
+    Darwin x4, Faraday, Maxwell, Einstein, Huxley x2, Tyndall x4,
+    Poincaré x2, Whewell, Helmholtz, Curie) and the mandatory arXiv
+    AI/ML abstract list plus a small survey-paper expansion (~18
+    papers total). Each Gutenberg ID is verified via gutendex before
+    fetch — stale IDs are substituted by gutendex search at constant-
+    table compile time, runtime ones get skip-and-warn. arXiv uses
+    single-ID queries with 3s sleep and 3/9/27s exponential backoff
+    on 429.
+
+    MIT OCW is intentionally skipped in --full because wave-1
+    validation showed the lecture-notes pages are almost entirely
+    navigation chrome — not worth the per-page filter overhead until
+    a dedicated OCW transcript collector exists.
+
+    Nature/Science open access is also out of scope here — it
+    requires per-publisher OA license verification (OpenAlex /
+    Unpaywall) and PDF extraction, which is its own collection
+    agent.
+
+    Writes JSONL in append mode to:
+        data/curriculum_v2/science/raw/agent_3_full.jsonl   (Gutenberg)
+        data/curriculum_v2/ai/raw/agent_3_full.jsonl        (arXiv)
 
 Output schema (one JSON object per line):
     text, source, domain, subdomain, quality_score, dialogue,
@@ -57,6 +76,8 @@ SCIENCE_OUT_DIR = REPO_ROOT / "data" / "curriculum_v2" / "science" / "raw"
 AI_OUT_DIR = REPO_ROOT / "data" / "curriculum_v2" / "ai" / "raw"
 SCIENCE_VALIDATION_OUT = SCIENCE_OUT_DIR / "agent_3_validation.jsonl"
 AI_VALIDATION_OUT = AI_OUT_DIR / "agent_3_validation.jsonl"
+SCIENCE_FULL_OUT = SCIENCE_OUT_DIR / "agent_3_full.jsonl"
+AI_FULL_OUT = AI_OUT_DIR / "agent_3_full.jsonl"
 
 USER_AGENT = (
     "BabyMind/2.0 curriculum-collector (research; "
@@ -108,6 +129,87 @@ OCW_VALIDATION_URL = (
     "https://ocw.mit.edu/courses/6-034-artificial-intelligence-fall-2010/"
 )
 OCW_PROSE_MIN_WORDS = 300
+
+
+# ---------------------------------------------------------------------------
+# Full collection source tables
+# ---------------------------------------------------------------------------
+
+# Full classical-science Gutenberg list. Each ID was verified live against
+# gutendex on 2026-05-12 (see commit log for verification trace). Stale
+# spec IDs (12959, 35067, 53884) were substituted via gutendex search:
+#   - 12959 (Faraday Vol 2) → not in gutendex; dropped
+#   - 35067 (Tyndall heat)  → 54969 "Sound" + 24527 "Fragments of Science"
+#                             + 14000 "Six Lectures on Light" + 1225
+#                             "Faraday as a Discoverer"
+#   - 53884 (Poincaré)      → 39713 "Foundations of Science" (bundle of
+#                             Science and Hypothesis / Value of Science /
+#                             Science and Method) + 37157 "Science and
+#                             Hypothesis"
+# verify_gutenberg_id() still runs at fetch time — if any of these drift,
+# the run will skip+warn rather than fetch the wrong text.
+GUTENBERG_FULL: list[tuple[int, str, str]] = [
+    # Darwin
+    (1228,  "Charles Darwin",       "On the Origin of Species"),
+    (2300,  "Charles Darwin",       "The Descent of Man"),
+    (944,   "Charles Darwin",       "The Voyage of the Beagle"),
+    (1227,  "Charles Darwin",       "The Expression of the Emotions in Man and Animals"),
+    # Faraday + electricity
+    (14986, "Michael Faraday",      "Experimental Researches in Electricity, Volume 1"),
+    (69914, "James Clerk Maxwell",  "An Elementary Treatise on Electricity"),
+    # Einstein
+    (30155, "Albert Einstein",      "Relativity: The Special and General Theory"),
+    # Huxley
+    (16474, "Thomas Henry Huxley",  "Lectures and Essays"),
+    (6414,  "Thomas Henry Huxley",  "Lectures and Essays (collection)"),
+    # Tyndall (subbing for the stale 35067 — same scientist, comparable corpus)
+    (54969, "John Tyndall",         "Sound"),
+    (24527, "John Tyndall",         "Fragments of Science"),
+    (14000, "John Tyndall",         "Six Lectures on Light"),
+    (1225,  "John Tyndall",         "Faraday as a Discoverer"),
+    # Poincaré (subbing for the stale 53884 — Foundations of Science is the
+    # canonical English bundle that includes Science and Method)
+    (39713, "Henri Poincaré",       "The Foundations of Science"),
+    (37157, "Henri Poincaré",       "Science and Hypothesis"),
+    # Whewell
+    (68693, "William Whewell",      "History of the Inductive Sciences"),
+    # Helmholtz
+    (77725, "Hermann von Helmholtz", "Popular Lectures on Scientific Subjects"),
+    # Curie
+    (69617, "Marie Curie",          "Pierre Curie"),
+]
+
+# arXiv full list — the MANDATORY spec IDs that exist on arXiv plus a
+# small survey/tutorial expansion (cs.LG / cs.AI, ti:"survey"). Per
+# wave-1: per-id queries, 3s sleep, 3/9/27s backoff, skip-and-warn.
+# Note: GPT-2 (Radford 2019), JEPA (LeCun 2022 position paper),
+# Predictive Coding (Rao & Ballard 1999), and Free Energy Principle
+# (Friston) are NOT on arXiv as primary host — skipped here.
+ARXIV_FULL_MANDATORY: list[tuple[str, str]] = [
+    ("1706.03762", "Attention Is All You Need"),
+    ("1810.04805", "BERT"),
+    ("2001.08361", "Scaling Laws for Neural Language Models"),
+    ("1410.5401", "Neural Turing Machines"),
+    ("1207.0580", "Improving neural networks by preventing co-adaptation (Dropout)"),
+    ("1502.03167", "Batch Normalization"),
+    ("1512.03385", "Deep Residual Learning (ResNet)"),
+    ("1406.2661", "Generative Adversarial Networks"),
+    ("1312.6114", "Auto-Encoding Variational Bayes (VAE)"),
+    ("1803.10122", "World Models"),
+]
+
+# Survey/tutorial expansion — sourced from the arXiv API on 2026-05-12
+# via `cat:cs.LG AND ti:survey`. Selected for breadth across modern ML.
+ARXIV_FULL_SURVEYS: list[tuple[str, str]] = [
+    ("2106.04554", "A Survey of Transformers"),
+    ("2408.01129", "A Survey of Mamba"),
+    ("2003.07278", "A Survey on Contextual Embeddings"),
+    ("2010.13166", "A Survey on Curriculum Learning"),
+    ("1810.03548", "Meta-Learning: A Survey"),
+    ("2101.01169", "Transformers in Vision: A Survey"),
+    ("2202.12040", "Self-Training: A Survey"),
+    ("2410.15042", "Adversarial Training: A Survey"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -576,48 +678,139 @@ def run_validation() -> dict:
 # ---------------------------------------------------------------------------
 
 def run_full() -> dict:
-    """Full collection path — sketch.
+    """Real full collection — Gutenberg classical science + arXiv AI/ML.
 
-    Implementing the --full sweep would involve, roughly:
+    See module docstring for scope. MIT OCW and Nature/Science OA are
+    intentionally out of scope here (see docstring rationale).
 
-      1. Classical science — sweep all Gutenberg IDs from the spec's
-         Agent 3 source list (Darwin x4, Faraday, Maxwell, Einstein,
-         Feynman where public-domain, Schrödinger, Heisenberg, Poincaré,
-         Curie). For each: verify via gutendex first (wave-1 lesson),
-         then download plain-text, strip boilerplate, chunk to 500-2000
-         words, quality-filter, write to data/curriculum_v2/science/raw/.
-
-      2. arXiv AI/ML — the mandatory list (Attention, BERT, GPT-2,
-         Scaling Laws, NTM, Dropout, BatchNorm, ResNet, GAN, VAE, World
-         Models, JEPA, Predictive Coding, FEP) PLUS paginated survey
-         queries (ti:"survey" OR ti:"review" AND cat:cs.LG, citations
-         >500, 2015-2024, target ~200 papers). Per the wave-1 lesson:
-         one ID per query, 3s sleep between, exponential backoff 3-9-27s
-         on 429, then skip. For full text use the LaTeX source endpoint
-         (export.arxiv.org/e-print/{id}) and strip math; abstracts are
-         only good enough for validation.
-
-      3. MIT OCW — every science+AI course on the spec list (6.034,
-         6.036, 6.867, 9.641, 8.01, 7.012). For each: walk the
-         lecture-notes page, follow every transcript-link, fetch each
-         page, require >300 prose-words, chunk + filter + write to
-         data/curriculum_v2/{ai or science}/raw/.
-
-      4. Nature + Science open-access — only properly OA URLs
-         (nature.com/articles/{slug} with the CC-BY tag). NOT a general
-         scrape; we resolve through the OpenAlex or Unpaywall APIs for
-         each candidate DOI, then download the publisher's open PDF
-         (where one exists) and extract via pdfminer. Deferred because
-         it requires significant per-publisher tuning and OA-license
-         verification.
-
-    Output target ~50M tokens split roughly 60% science / 40% ai per
-    the COLLECTION_SPEC distribution.
+    Output files are APPENDED so re-runs accumulate rather than
+    clobber. Callers who want a clean run should delete the target
+    files first.
     """
-    raise NotImplementedError(
-        "Full collection path is a sketch only. "
-        "Run without --full for the small validation set."
-    )
+    SCIENCE_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    AI_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"[agent_3:full] science → {SCIENCE_FULL_OUT}")
+    print(f"[agent_3:full] ai      → {AI_FULL_OUT}")
+
+    stats: dict = {
+        "books_verified": 0,
+        "books_fetched": 0,
+        "books_fetched_titles": [],
+        "books_failed_verification": [],
+        "books_failed_download": [],
+        "arxiv_papers_fetched": 0,
+        "arxiv_papers_fetched_ids": [],
+        "arxiv_papers_failed": [],
+        "science_records_written": 0,
+        "ai_records_written": 0,
+        "records_rejected": 0,
+        "approx_tokens": 0,
+        "failed_sources": [],
+    }
+
+    # APPEND mode — re-runs add to existing output rather than clobbering.
+    science_fout = open(SCIENCE_FULL_OUT, "a", encoding="utf-8")
+    ai_fout = open(AI_FULL_OUT, "a", encoding="utf-8")
+    try:
+        # ---- Project Gutenberg (classical science) ----
+        for book_id, author, title in GUTENBERG_FULL:
+            try:
+                print(f"[gutenberg] verifying {book_id} — {author}, {title}")
+                ok, msg = verify_gutenberg_id(book_id, author, title)
+                time.sleep(GUTENBERG_DELAY_S)
+                if not ok:
+                    print(f"  [gutenberg {book_id}] verification FAILED — {msg}")
+                    stats["books_failed_verification"].append(
+                        f"{book_id}:{msg}"
+                    )
+                    stats["failed_sources"].append(f"gutenberg:{book_id}")
+                    continue
+                stats["books_verified"] += 1
+                print(f"  [gutenberg {book_id}] OK — {msg}")
+                raw = fetch_gutenberg(book_id)
+                if raw is None:
+                    print(f"  [gutenberg {book_id}] download FAILED")
+                    stats["books_failed_download"].append(book_id)
+                    stats["failed_sources"].append(
+                        f"gutenberg:{book_id}:download"
+                    )
+                    continue
+                stats["books_fetched"] += 1
+                stats["books_fetched_titles"].append(f"{book_id}:{title}")
+                body = strip_gutenberg_boilerplate(raw)
+                for chunk in chunk_text(body):
+                    rec = make_record(
+                        text=chunk, source="gutenberg",
+                        domain="science", subdomain="classical_science",
+                        author=author, title=title,
+                    )
+                    if quality_filter_science(rec):
+                        science_fout.write(
+                            json.dumps(rec, ensure_ascii=False) + "\n"
+                        )
+                        stats["science_records_written"] += 1
+                        stats["approx_tokens"] += rec["tokens"]
+                    else:
+                        stats["records_rejected"] += 1
+                science_fout.flush()
+                time.sleep(GUTENBERG_DELAY_S)
+            except Exception as e:  # noqa: BLE001
+                # Per-source try/except — one bad book must not crash the run.
+                print(f"  [gutenberg {book_id}] UNEXPECTED ERROR: {e}",
+                      file=sys.stderr)
+                stats["failed_sources"].append(
+                    f"gutenberg:{book_id}:exception:{type(e).__name__}"
+                )
+
+        # ---- arXiv AI/ML papers (abstracts) ----
+        arxiv_all = ARXIV_FULL_MANDATORY + ARXIV_FULL_SURVEYS
+        for arxiv_id, expected_title in arxiv_all:
+            try:
+                print(f"[arxiv] fetching {arxiv_id} ({expected_title})")
+                paper = fetch_arxiv_single(arxiv_id)
+                time.sleep(ARXIV_DELAY_S)
+                if paper is None:
+                    stats["arxiv_papers_failed"].append(arxiv_id)
+                    stats["failed_sources"].append(f"arxiv:{arxiv_id}")
+                    continue
+                stats["arxiv_papers_fetched"] += 1
+                stats["arxiv_papers_fetched_ids"].append(arxiv_id)
+                text = f"{paper['title']}\n\n{paper['abstract']}"
+                rec = make_record(
+                    text=text, source="arxiv",
+                    domain="ai", subdomain="ml_paper",
+                    author=paper["authors"], title=paper["title"],
+                )
+                if quality_filter_science(rec):
+                    ai_fout.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                    stats["ai_records_written"] += 1
+                    stats["approx_tokens"] += rec["tokens"]
+                else:
+                    stats["records_rejected"] += 1
+                ai_fout.flush()
+            except Exception as e:  # noqa: BLE001
+                print(f"  [arxiv {arxiv_id}] UNEXPECTED ERROR: {e}",
+                      file=sys.stderr)
+                stats["failed_sources"].append(
+                    f"arxiv:{arxiv_id}:exception:{type(e).__name__}"
+                )
+
+        if stats["arxiv_papers_fetched"] == 0:
+            print("  [arxiv] WARNING — zero papers fetched "
+                  "(likely rate-limited); continuing")
+
+        # ---- MIT OCW: SKIPPED in --full ----
+        # Wave-1 validation showed OCW lecture-notes pages are mostly
+        # navigation chrome and the few that have transcripts are an
+        # entirely different ingestion pattern (multi-page walks,
+        # PDFs, redirect bugs). Out of scope for this collector; will
+        # be a dedicated OCW agent later. Not a failure — just not
+        # part of this surface.
+    finally:
+        science_fout.close()
+        ai_fout.close()
+
+    return stats
 
 
 # ---------------------------------------------------------------------------
