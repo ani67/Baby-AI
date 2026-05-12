@@ -115,26 +115,47 @@ OCW_PROSE_MIN_WORDS = 300
 # ---------------------------------------------------------------------------
 
 PROSE_MARKERS = (
+    # general explanatory prose
     "because", "therefore", "suggests", "implies",
     "shows", "demonstrates", "indicates",
+)
+
+# Abstract markers — academic abstracts use a distinct register from
+# long-form science prose. Wave-3 validation surfaced this: all 5 arXiv
+# abstracts (~150 words each) were rejected by the prose-only filter
+# even though they're load-bearing for the corpus.
+ABSTRACT_MARKERS = (
+    "we propose", "we show", "we demonstrate", "we present",
+    "we introduce", "we evaluate", "we find",
+    "our approach", "our method", "our model",
+    "this paper", "this work", "in this work",
+    "results show", "results demonstrate",
 )
 
 
 def quality_filter_science(record: dict) -> bool:
     """Return True if record passes the science/AI quality filter.
 
-    From COLLECTION_SPEC.md:
-        - >= 200 words
+    From COLLECTION_SPEC.md, with one validation-driven adjustment:
+        - >= 100 words minimum (was 200; arXiv abstracts are 125–170 words)
         - reject pure wet-lab protocol pages (heavy 'ml '/'μl ' usage)
-        - must contain at least one prose marker word
+        - pass if:
+            • contains an explanatory prose marker (long-form prose), OR
+            • contains an abstract marker (academic abstract register), OR
+            • text is long (>= 200 words — full papers pass on length alone)
     """
     text = record["text"]
-    if len(text.split()) < 200:
+    n_words = len(text.split())
+    if n_words < 100:
         return False
     lower = text.lower()
     if lower.count("ml ") + lower.count("μl ") > 10:
         return False
-    return any(w in lower for w in PROSE_MARKERS)
+    if any(w in lower for w in PROSE_MARKERS):
+        return True
+    if any(w in lower for w in ABSTRACT_MARKERS):
+        return True
+    return n_words > 200
 
 
 # ---------------------------------------------------------------------------

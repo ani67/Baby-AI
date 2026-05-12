@@ -52,15 +52,33 @@ HTTP_HEADERS = {"User-Agent": USER_AGENT}
 # Validation source choices --------------------------------------------------
 
 GUTENBERG_VALIDATION = [
-    # (id, author, title) — chosen from the spec's allowed list, then
-    # ID-verified via Gutendex (https://gutendex.com) at collection time.
-    # The original IDs in the validation brief were wrong on the live
-    # Gutenberg catalogue (28233 is Newton, 4239 is Malthus, 11038 is a
-    # French aeronautics text); these are the actual IDs that resolve to
-    # English plain-text editions of the requested works.
-    (25447, "Bertrand Russell", "Mysticism and Logic and Other Essays"),
-    (28696, "Lewis Carroll",    "Symbolic Logic"),
-    (22062, "John Dee",         "The Mathematicall Praeface to Elements of Geometrie of Euclid of Megara"),
+    # (id, author, title, subdomain) — chosen from the spec's allowed
+    # list, then ID-verified via Gutendex (https://gutendex.com) at
+    # collection time. The original IDs in the validation brief were
+    # wrong on the live Gutenberg catalogue (28233 is Newton, 4239 is
+    # Malthus, 11038 is a French aeronautics text); these are the
+    # actual IDs that resolve to English plain-text editions.
+    #
+    # Subdomains expanded post-validation to populate the previously
+    # empty foundations/logic and foundations/language buckets that
+    # Agent 9's pipeline pass surfaced as gaps.
+    (25447, "Bertrand Russell", "Mysticism and Logic and Other Essays",            "logic"),
+    (28696, "Lewis Carroll",    "Symbolic Logic",                                  "logic"),
+    (22062, "John Dee",         "The Mathematicall Praeface to Elements of Geometrie of Euclid of Megara", "mathematics"),
+    # foundations/logic — Aristotle Organon (logic foundations)
+    # IDs from the user's directive; verified live before fetching.
+    (6762,  "Aristotle",        "The Categories",                                  "logic"),
+    (6763,  "Aristotle",        "On Interpretation",                               "logic"),
+    (6764,  "Aristotle",        "Prior Analytics",                                 "logic"),
+    # Mill — A System of Logic (verify-live; substitute if 26861 mismatch)
+    (26861, "John Stuart Mill", "A System of Logic, Ratiocinative and Inductive",  "logic"),
+    # foundations/language — linguistics classics in public domain.
+    # Saussure's Course (1916) is not on Gutenberg in English translation.
+    # Use what is there: Jespersen's Language (1922), Sapir's Language (1921).
+    # IDs are best-guess and MUST be gutendex-verified before fetch — pass
+    # through `gutendex_verify_or_substitute` like the rest.
+    (60525, "Edward Sapir",     "Language: An Introduction to the Study of Speech", "language"),
+    (51678, "Otto Jespersen",   "Language: Its Nature, Development and Origin",     "language"),
 ]
 
 ARXIV_VALIDATION_QUERY = (
@@ -150,12 +168,19 @@ def compute_quality_score(text: str) -> float:
     return max(0.0, min(1.0, score))
 
 
+_SUBDOMAIN_TO_DOMAIN = {
+    "mathematics": "foundations/mathematics",
+    "logic":       "foundations/logic",
+    "language":    "foundations/language",
+}
+
+
 def make_record(*, text: str, source: str, subdomain: str,
                 author: str, title: str, dialogue: bool = False) -> dict:
     return {
         "text": text,
         "source": source,
-        "domain": "foundations/mathematics" if subdomain == "mathematics" else "foundations/logic",
+        "domain": _SUBDOMAIN_TO_DOMAIN.get(subdomain, "foundations/mathematics"),
         "subdomain": subdomain,
         "quality_score": round(compute_quality_score(text), 4),
         "dialogue": dialogue,
@@ -336,8 +361,16 @@ def run_validation() -> dict:
     with open(VALIDATION_OUT, "w", encoding="utf-8") as fout:
 
         # ---- Gutenberg ----
-        for book_id, author, title in GUTENBERG_VALIDATION:
-            print(f"[gutenberg] fetching {book_id} — {author}, {title}")
+        # Tuple shape changed post-validation: (id, author, title, subdomain)
+        # to populate foundations/logic and foundations/language buckets.
+        for entry in GUTENBERG_VALIDATION:
+            if len(entry) == 4:
+                book_id, author, title, subdomain = entry
+            else:
+                # legacy 3-tuple — default subdomain
+                book_id, author, title = entry
+                subdomain = "mathematics"
+            print(f"[gutenberg] fetching {book_id} — {author}, {title} [{subdomain}]")
             raw = fetch_gutenberg(book_id)
             if raw is None:
                 print(f"  [gutenberg {book_id}] FAILED — no URL worked")
@@ -347,7 +380,7 @@ def run_validation() -> dict:
             body = strip_gutenberg_boilerplate(raw)
             for chunk in chunk_text(body):
                 rec = make_record(
-                    text=chunk, source="gutenberg", subdomain="mathematics",
+                    text=chunk, source="gutenberg", subdomain=subdomain,
                     author=author, title=title,
                 )
                 if quality_filter_math(rec):
