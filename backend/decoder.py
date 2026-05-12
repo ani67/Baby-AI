@@ -107,6 +107,15 @@ class UnifiedDecoder(nn.Module):
         self.vocab_size = vocab_size
         self.token_embedding = shared_embedding or nn.Embedding(vocab_size, d_model)
         self.pos_embedding = nn.Embedding(MAX_GEN_LEN + 2, d_model)
+        # Scale-correct embedding init when we own the embedding (no
+        # shared_embedding passed). When shared, the encoder already
+        # initialised it. See encoder.py for the rationale.
+        import math
+        if shared_embedding is None:
+            nn.init.normal_(self.token_embedding.weight,
+                            std=1.0 / math.sqrt(d_model))
+        nn.init.normal_(self.pos_embedding.weight,
+                        std=1.0 / math.sqrt(d_model))
         self.layers = nn.ModuleList([DecoderLayer() for _ in range(n_layers)])
         self.final_norm = nn.LayerNorm(d_model)
         # weight-tied LM head

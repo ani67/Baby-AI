@@ -130,6 +130,17 @@ class MultiModalEncoder(nn.Module):
 
         self.text_embedding = nn.Embedding(vocab_size, d_model)
         self.text_pos_embedding = nn.Embedding(2048, d_model)
+        # Scale embedding init so LM-head logits have unit-ish std.
+        # nn.Embedding default is N(0,1); lm_head is weight-tied so
+        # logit std = norm(hidden) * sqrt(d_model) ≈ sqrt(d_model) at
+        # init = 22 for d=512, which makes CE loss ~30× expected.
+        # GPT-2 uses 0.02; we use 1/sqrt(d_model) which is similar
+        # (1/sqrt(512) ≈ 0.044) and gives logit std ≈ 1 at init.
+        import math
+        nn.init.normal_(self.text_embedding.weight,
+                        std=1.0 / math.sqrt(d_model))
+        nn.init.normal_(self.text_pos_embedding.weight,
+                        std=1.0 / math.sqrt(d_model))
 
         # vision/audio projections (frozen pretrained encoders are lazy-loaded
         # in encode_vision / encode_audio; stub for now)

@@ -243,13 +243,23 @@ class UnifiedMindTrainer:
         )
 
         # ---- L_lm: next-token cross-entropy
+        # The decoder cross-attends to (memory ⊕ just-encoded input).
+        # Without concatenating updated_inputs the decoder generates from
+        # the bank alone — no conditioning on what was just said — and LM
+        # loss can never drop below log(vocab). Concatenation also makes
+        # the encoder gradient-connected to the LM loss (its primary
+        # training signal).
         if 'target_ids' in batch and batch['target_ids'] is not None:
             tgt = batch['target_ids'].to(device).long()  # (B, T)
             bos = torch.full(
                 (tgt.shape[0], 1), 1, device=device, dtype=torch.long,
             )
             inp = torch.cat([bos, tgt[:, :-1]], dim=1)
-            logits, _ = self.dec(inp, mem_active_xfm)
+            decoder_pool = torch.cat(
+                [mem_active_xfm, enc_out['updated_inputs']],
+                dim=0,
+            )                                          # (K + L, D)
+            logits, _ = self.dec(inp, decoder_pool)
             losses['lm'] = F.cross_entropy(
                 logits.reshape(-1, cfg.vocab_size),
                 tgt.reshape(-1),
@@ -318,7 +328,32 @@ class UnifiedMindTrainer:
                 per_loss_running[t] += float(l.detach()) / cfg.grad_accum
             total_running += float(total.detach())
 
-        # clip across all trainable params
+        # Per-component gradient-norm logging — measured BEFORE clipping
+        # so we see the true pre-clip magnitude. clip_grad_norm_ rescales
+        # everything by max_grad_norm / total_norm, which would otherwise
+        # hide whether grads are actually present.
+        grad_norms = {}
+        for name, m in [
+            ('mt', self.mt),
+            ('enc', self.enc),
+            ('aff', self.aff),
+            ('dec', self.dec),
+        ]:
+            total = 0.0
+            for p in m.parameters():
+                if p.grad is not None:
+                    total += float((p.grad.detach() ** 2).sum())
+            grad_norms[name] = total ** 0.5
+        bank_grads = []
+        if self.bank.trained_slots.grad is not None:
+            bank_grads.append(
+                float((self.bank.trained_slots.grad ** 2).sum()))
+        if self.bank.alpha_logit.grad is not None:
+            bank_grads.append(
+                float((self.bank.alpha_logit.grad ** 2).sum()))
+        grad_norms['bank'] = sum(bank_grads) ** 0.5
+
+        # clip across all trainable params (moved here after pre-clip logging)
         all_params = []
         for m in (self.mt, self.enc, self.aff, self.dec):
             all_params.extend(p for p in m.parameters() if p.requires_grad)
@@ -349,6 +384,7 @@ class UnifiedMindTrainer:
             'total_loss': total_running,
             **per_loss_running,
             'weights': self.balancer.w.detach().tolist(),
+            'grad_norms': grad_norms,
         }
 
     # ---------- checkpoint ------------------------------------------------

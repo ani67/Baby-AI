@@ -242,9 +242,33 @@ def main():
                     help='10-step smoke run with a tiny bank, no graph init')
     ap.add_argument('--no-init-from-graph', action='store_true',
                     help='do not seed the memory bank from mind.db')
+    ap.add_argument('--log-every', type=int, default=None,
+                    help='override TrainingConfig.log_every (default 50)')
+    ap.add_argument('--device', default='auto',
+                    choices=['auto', 'cuda', 'mps', 'cpu'],
+                    help='device override; auto picks cuda > mps > cpu')
     args = ap.parse_args()
 
-    device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+    # Auto device detection: CUDA on cloud (A100/H100), MPS on M1 dev,
+    # CPU last resort. Same code runs on all three; the only difference
+    # is throughput.
+    if args.device == 'auto':
+        if torch.cuda.is_available():
+            device = torch.device('cuda')
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            torch.backends.cudnn.benchmark = True
+        elif torch.backends.mps.is_available():
+            device = torch.device('mps')
+        else:
+            device = torch.device('cpu')
+    else:
+        device = torch.device(args.device)
+        if device.type == 'cuda':
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            torch.backends.cudnn.benchmark = True
+
     log.info(f"device={device}")
 
     smoke = args.smoke
@@ -256,13 +280,15 @@ def main():
     )
 
     # config
-    cfg = TrainingConfig(
+    cfg_kwargs = dict(
         max_steps=steps,
         vocab_size=vocab_size,
-        # smoke: keep grad-accum small to finish quickly
         grad_accum=2 if smoke else TrainingConfig.grad_accum,
         gradnorm_every=10_000_000 if smoke else TrainingConfig.gradnorm_every,
     )
+    if args.log_every is not None:
+        cfg_kwargs['log_every'] = args.log_every
+    cfg = TrainingConfig(**cfg_kwargs)
     log.info(f"config: max_steps={cfg.max_steps} grad_accum={cfg.grad_accum} "
              f"vocab_size={cfg.vocab_size}")
 
@@ -315,9 +341,14 @@ def main():
                 f"{t}={metrics[t]:.4f}"
                 for t in ('mask', 'lm', 'align', 'affect', 'surp')
             )
+            gn = ''
+            if 'grad_norms' in metrics:
+                gn = ' grad=' + '/'.join(
+                    f"{k}:{v:.4g}" for k, v in metrics['grad_norms'].items()
+                )
             log.info(
                 f"step={trainer.step:6d} total={metrics['total_loss']:.4f} "
-                f"{ml} dt={dt:.1f}s"
+                f"{ml} dt={dt:.1f}s{gn}"
             )
 
         if (not smoke) and trainer.step % cfg.checkpoint_every == 0:
