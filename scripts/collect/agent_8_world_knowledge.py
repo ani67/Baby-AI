@@ -28,10 +28,21 @@ Validation mode (default, no args):
         data/curriculum_v2/science_general/raw/agent_8_validation.jsonl
 
 Full mode (--full):
-    Sketch only. Lists the in-scope follow-up sources (the rest of the
-    Wikipedia FA + GA set, Britannica 1911 scans on archive.org, the full
-    classical-history Gutenberg list, and the rest of the biography list)
-    as URLs and notes. The real --full sweep is deferred to a later wave.
+    Real expansion sweep. Writes to APPEND mode under
+    data/curriculum_v2/{domain}/raw/agent_8_full.jsonl.
+
+    * Wikipedia FA expansion: ~50 hand-picked stable Featured Article
+      slugs spanning history, biography, science, mathematics,
+      philosophy, arts, technology, geography. Same REST endpoint as
+      validation. Per-slug try/except — 404s are logged and skipped.
+    * Gutenberg history expansion: Tacitus (Histories, Germany), the
+      four volumes of Plutarch's Lives, Carlyle's French Revolution,
+      Macaulay's History of England Vol 1, Wells' Outline of History.
+    * Gutenberg biography expansion: Douglass, Mill, Darwin, Helen
+      Keller, Booker T. Washington. (Franklin already covered in
+      validation.)
+
+    Gutenberg full-mode IDs are verified against gutendex 2026-05-12.
 
 Output schema (per spec, one JSON object per line):
     text, source, domain, subdomain, quality_score, dialogue,
@@ -170,6 +181,193 @@ GUTENBERG_BIOGRAPHY_VALIDATION: tuple[GutenbergBook, ...] = (
         gid=23,
         title="Narrative of the Life of Frederick Douglass, an American Slave",
         author="Frederick Douglass",
+        domain="culture",
+        subdomain="biography",
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
+# Full-mode source tables
+# ---------------------------------------------------------------------------
+
+# Hand-picked stable Wikipedia Featured Article slugs spanning the spec's
+# prioritized categories: history, biography, science, mathematics,
+# philosophy, arts, technology, geography. ~50 articles. Validation already
+# covers Roman_Empire, World_War_II, Mathematics, Albert_Einstein,
+# History_of_China — those are intentionally NOT repeated here so the
+# validation file and the full file don't double-count.
+WIKI_FULL: tuple[WikiArticle, ...] = (
+    # ---- history --------------------------------------------------------
+    WikiArticle("French_Revolution",      "history", "french_revolution"),
+    WikiArticle("American_Civil_War",     "history", "american_civil_war"),
+    WikiArticle("Cold_War",               "history", "cold_war"),
+    WikiArticle("Industrial_Revolution",  "history", "industrial_revolution"),
+    WikiArticle("Renaissance",            "history", "renaissance"),
+    WikiArticle("Byzantine_Empire",       "history", "byzantine_empire"),
+    WikiArticle("Mongol_Empire",          "history", "mongol_empire"),
+    WikiArticle("Han_dynasty",            "history", "han_dynasty"),
+    WikiArticle("History_of_Japan",       "history", "history_of_japan"),
+    WikiArticle("History_of_India",       "history", "history_of_india"),
+    WikiArticle("History_of_Egypt",       "history", "history_of_egypt"),
+    # ---- biography (culture/biography) ---------------------------------
+    WikiArticle("Isaac_Newton",       "culture", "biography"),
+    WikiArticle("Charles_Darwin",     "culture", "biography"),
+    WikiArticle("Marie_Curie",        "culture", "biography"),
+    WikiArticle("Niels_Bohr",         "culture", "biography"),
+    WikiArticle("Alan_Turing",        "culture", "biography"),
+    WikiArticle("Leonardo_da_Vinci",  "culture", "biography"),
+    WikiArticle("Michelangelo",       "culture", "biography"),
+    WikiArticle("Vincent_van_Gogh",   "culture", "biography"),
+    WikiArticle("William_Shakespeare","culture", "biography"),
+    WikiArticle("Genghis_Khan",       "culture", "biography"),
+    WikiArticle("Napoleon",           "culture", "biography"),
+    WikiArticle("Augustus",           "culture", "biography"),
+    WikiArticle("Cleopatra",          "culture", "biography"),
+    # ---- science / math (science_general) -------------------------------
+    WikiArticle("Quantum_mechanics",   "science_general", "physics"),
+    WikiArticle("General_relativity",  "science_general", "physics"),
+    WikiArticle("Evolution",           "science_general", "biology"),
+    WikiArticle("DNA",                 "science_general", "biology"),
+    WikiArticle("Big_Bang",            "science_general", "cosmology"),
+    WikiArticle("Black_hole",          "science_general", "astrophysics"),
+    WikiArticle("Galaxy",              "science_general", "astronomy"),
+    WikiArticle("Photosynthesis",      "science_general", "biology"),
+    WikiArticle("Periodic_table",      "science_general", "chemistry"),
+    WikiArticle("Calculus",            "science_general", "mathematics"),
+    WikiArticle("Euclidean_geometry",  "science_general", "mathematics"),
+    WikiArticle("Pi",                  "science_general", "mathematics"),
+    # ---- philosophy (culture/philosophy) --------------------------------
+    WikiArticle("Plato",          "culture", "philosophy"),
+    WikiArticle("Aristotle",      "culture", "philosophy"),
+    WikiArticle("Immanuel_Kant",  "culture", "philosophy"),
+    WikiArticle("Stoicism",       "culture", "philosophy"),
+    WikiArticle("Epistemology",   "culture", "philosophy"),
+    # ---- arts (culture/arts) -------------------------------------------
+    WikiArticle("Renaissance_art",  "culture", "arts"),
+    WikiArticle("Baroque",          "culture", "arts"),
+    WikiArticle("Impressionism",    "culture", "arts"),
+    WikiArticle("Cubism",           "culture", "arts"),
+    WikiArticle("Classical_music",  "culture", "arts"),
+    WikiArticle("Opera",            "culture", "arts"),
+    WikiArticle("Jazz",             "culture", "arts"),
+    WikiArticle("Cinema",           "culture", "arts"),
+    # ---- technology (science_general/technology) -----------------------
+    WikiArticle("History_of_computing", "science_general", "technology"),
+    WikiArticle("Internet",             "science_general", "technology"),
+    WikiArticle("Printing_press",       "science_general", "technology"),
+    WikiArticle("Steam_engine",         "science_general", "technology"),
+    # ---- geography (history/geography) ---------------------------------
+    WikiArticle("Mount_Everest",      "history", "geography"),
+    WikiArticle("Sahara",             "history", "geography"),
+    WikiArticle("Amazon_rainforest",  "history", "geography"),
+    WikiArticle("Antarctica",         "history", "geography"),
+)
+
+# Gutenberg classical-history expansion. IDs verified via gutendex 2026-05-12.
+# Tacitus Annals proper is not split out cleanly on Project Gutenberg; we use
+# id 16927 (Tacitus: The Histories) and id 2995 (Tacitus on Germany), both
+# verified. Plutarch's Lives is four volumes (14033, 14114, 14140, 44315).
+GUTENBERG_HISTORY_FULL: tuple[GutenbergBook, ...] = (
+    GutenbergBook(
+        gid=16927,
+        title="Tacitus: The Histories, Volumes I and II",
+        author="Cornelius Tacitus",
+        domain="history",
+        subdomain="roman_history",
+    ),
+    GutenbergBook(
+        gid=2995,
+        title="Tacitus on Germany",
+        author="Cornelius Tacitus",
+        domain="history",
+        subdomain="roman_history",
+    ),
+    GutenbergBook(
+        gid=14033,
+        title="Plutarch's Lives, Volume 1 (of 4)",
+        author="Plutarch",
+        domain="history",
+        subdomain="biography",
+    ),
+    GutenbergBook(
+        gid=14114,
+        title="Plutarch's Lives, Volume 2 (of 4)",
+        author="Plutarch",
+        domain="history",
+        subdomain="biography",
+    ),
+    GutenbergBook(
+        gid=14140,
+        title="Plutarch's Lives, Volume 3 (of 4)",
+        author="Plutarch",
+        domain="history",
+        subdomain="biography",
+    ),
+    GutenbergBook(
+        gid=44315,
+        title="Plutarch's Lives, Volume 4 (of 4)",
+        author="Plutarch",
+        domain="history",
+        subdomain="biography",
+    ),
+    GutenbergBook(
+        gid=1301,
+        title="The French Revolution: A History",
+        author="Thomas Carlyle",
+        domain="history",
+        subdomain="modern_history",
+    ),
+    GutenbergBook(
+        gid=1468,
+        title="The History of England, from the Accession of James II — Volume 1",
+        author="Thomas Babington Macaulay",
+        domain="history",
+        subdomain="modern_history",
+    ),
+    GutenbergBook(
+        gid=45368,
+        title="The Outline of History: Being a Plain History of Life and Mankind",
+        author="H. G. Wells",
+        domain="history",
+        subdomain="world_history",
+    ),
+)
+
+# Gutenberg biography/memoir expansion. IDs verified via gutendex 2026-05-12.
+GUTENBERG_BIOGRAPHY_FULL: tuple[GutenbergBook, ...] = (
+    GutenbergBook(
+        gid=23,
+        title="Narrative of the Life of Frederick Douglass, an American Slave",
+        author="Frederick Douglass",
+        domain="culture",
+        subdomain="biography",
+    ),
+    GutenbergBook(
+        gid=10378,
+        title="Autobiography",
+        author="John Stuart Mill",
+        domain="culture",
+        subdomain="biography",
+    ),
+    GutenbergBook(
+        gid=2010,
+        title="The Autobiography of Charles Darwin",
+        author="Charles Darwin",
+        domain="culture",
+        subdomain="biography",
+    ),
+    GutenbergBook(
+        gid=2397,
+        title="The Story of My Life",
+        author="Helen Keller",
+        domain="culture",
+        subdomain="biography",
+    ),
+    GutenbergBook(
+        gid=2376,
+        title="Up from Slavery: An Autobiography",
+        author="Booker T. Washington",
         domain="culture",
         subdomain="biography",
     ),
@@ -540,10 +738,11 @@ def make_record(
     }
 
 
-def write_records(records: list[dict], path: Path) -> int:
+def write_records(records: list[dict], path: Path, *, append: bool = False) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
+    mode = "a" if append else "w"
     n = 0
-    with path.open("w", encoding="utf-8") as f:
+    with path.open(mode, encoding="utf-8") as f:
         for rec in records:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
             n += 1
@@ -620,7 +819,7 @@ def collect_wikipedia(
                 chunk,
                 source="wikipedia_fa",
                 domain=art.domain,
-                subdomain=art.slug.lower(),
+                subdomain=art.subdomain,
                 author="Wikipedia contributors",
                 title=title,
             )
@@ -778,112 +977,54 @@ def run_validation() -> CollectionStats:
 
 
 # ---------------------------------------------------------------------------
-# Full mode — SKETCH ONLY (per wave 1+2 convention)
+# Full mode — real expansion sweep
 # ---------------------------------------------------------------------------
 
 def run_full() -> CollectionStats:
-    """SKETCH. This function does not perform a real --full sweep.
+    """Real --full sweep.
 
-    The follow-up wave should expand the source tables below into actual
-    fetch loops. For now we just enumerate the URLs/IDs that would be
-    pulled, write an empty per-domain output file so downstream code
-    doesn't blow up, and return a stats object reflecting that nothing
-    was collected.
+    Fetches the WIKI_FULL, GUTENBERG_HISTORY_FULL, and
+    GUTENBERG_BIOGRAPHY_FULL tables defined above, chunks each source,
+    and APPENDs records to data/curriculum_v2/{domain}/raw/agent_8_full.jsonl.
+
+    Per-source failures are logged into stats.failures and don't abort
+    the run — same behavior as run_validation. Append mode means re-runs
+    add more records rather than wiping previous output; callers who
+    want a clean slate should delete the per-domain files first.
     """
-    print("=== agent_8 --full SKETCH ONLY ===")
-    print("This run intentionally collects nothing.")
-    print("It enumerates the planned follow-up sources for a later wave.")
-    print()
-
-    # ---- Wikipedia FA + GA (full set) ----------------------------------
-    # The spec calls for the curated FA + GA list (~50K articles) filtered
-    # to history / biography / science / mathematics / philosophy / arts
-    # / technology / geography. The full sweep would:
-    #   1. Pull https://en.wikipedia.org/wiki/Wikipedia:Featured_articles
-    #      and follow the topic-category links to enumerate FA slugs.
-    #   2. Pull https://en.wikipedia.org/wiki/Wikipedia:Good_articles
-    #      similarly for GA slugs.
-    #   3. For each slug, fetch via the REST endpoint already used here,
-    #      reuse extract_wikipedia_body / chunk_text, and emit records.
-    # NOT downloading the full enwiki XML dump (multi-GB; out of scope
-    # per spec).
-    wikipedia_planned = [
-        "https://en.wikipedia.org/wiki/Wikipedia:Featured_articles",
-        "https://en.wikipedia.org/wiki/Wikipedia:Good_articles",
-        "https://en.wikipedia.org/api/rest_v1/page/html/<slug>",
-    ]
-
-    # ---- Britannica 1911 (public domain) -------------------------------
-    # archive.org has full scans; quality varies because OCR. A real
-    # --full pass would prefer the Project Gutenberg subset where
-    # available (cleaner text) and fall back to archive.org plain-text
-    # exports for missing entries.
-    britannica_planned = [
-        "https://archive.org/details/EncyclopaediaBritannica1911HQ",
-        # Project Gutenberg has many EB1911 volumes; e.g. id 35753.
-        "https://gutendex.com/books/?search=Encyclopaedia+Britannica",
-    ]
-
-    # ---- Gutenberg classical history (rest of the spec list) ----------
-    # IDs to verify via gutendex before fetch (lesson from waves 1+2).
-    gutenberg_history_planned = {
-        # Already in validation: 7142 Thucydides, 2707 Herodotus,
-        # 731 Gibbon Vol 1.
-        # Livy — History of Rome (selected).
-        # Tacitus — Annals (16904), Germania.
-        # Carlyle — The French Revolution.
-        # Macaulay — History of England (selected).
-        # Prescott — Conquest of Mexico, Conquest of Peru.
-        # Parkman — Montcalm and Wolfe.
-        # Wells — The Outline of History.
-        # Plutarch — Parallel Lives (full, multiple volumes: 14033, 14140, …).
-        "tacitus_annals": 16904,
-        "plutarch_lives_vol1": 674,
-        "plutarch_lives_vol2": 14114,
-        "plutarch_lives_vol3": 14140,
-        "wells_outline_of_history": 45368,
-    }
-
-    # ---- Biography / memoir (rest of the spec list) -------------------
-    gutenberg_biography_planned = {
-        # Already in validation: 148 Franklin, 23 Douglass.
-        # Autobiography of Charles Darwin.
-        # Harriet Martineau — Autobiography.
-        # John Stuart Mill — Autobiography.
-        # Bertrand Russell — Autobiography Vol 1.
-        # Gandhi — Autobiography.
-        "darwin_autobiography": 2087,
-        "mill_autobiography": 10378,
-        "gandhi_autobiography": 8089,
-    }
-
-    # The sketch writes empty placeholder files so the downstream Agent 9
-    # tooling can still glob the directory without a KeyError.
     stats = CollectionStats()
-    for domain in DOMAINS:
-        path = output_path(domain, full=True)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("", encoding="utf-8")
-        stats.by_domain_records[domain] = 0
-        stats.by_domain_tokens[domain] = 0
-        print(f"[write] {path} -> 0 records (sketch placeholder)")
 
-    print()
-    print("Planned Wikipedia entry points:")
-    for u in wikipedia_planned:
-        print(f"  - {u}")
-    print("Planned Britannica entry points:")
-    for u in britannica_planned:
-        print(f"  - {u}")
-    print("Planned Gutenberg history IDs:")
-    for k, v in gutenberg_history_planned.items():
-        print(f"  - {v} ({k})")
-    print("Planned Gutenberg biography IDs:")
-    for k, v in gutenberg_biography_planned.items():
-        print(f"  - {v} ({k})")
-    print()
-    print("(NotImplementedError intentionally NOT raised — per wave 1+2 lesson,")
-    print(" --full is a sketch with URL lists, not a hard failure.)")
+    accepted: list[dict] = []
+
+    # 1) Wikipedia Featured Articles (highest priority per spec)
+    print(f"--- Wikipedia FA expansion ({len(WIKI_FULL)} articles) ---")
+    accepted.extend(collect_wikipedia(WIKI_FULL, stats))
+
+    # 2) Gutenberg classical history expansion
+    print(f"--- Gutenberg history expansion ({len(GUTENBERG_HISTORY_FULL)} books) ---")
+    accepted.extend(collect_gutenberg(GUTENBERG_HISTORY_FULL, stats))
+
+    # 3) Gutenberg biography/memoir expansion (fetch ALL — not stop-after-first)
+    print(f"--- Gutenberg biography expansion ({len(GUTENBERG_BIOGRAPHY_FULL)} books) ---")
+    accepted.extend(collect_gutenberg(GUTENBERG_BIOGRAPHY_FULL, stats))
+
+    # Split by domain and APPEND to per-domain files.
+    by_domain: dict[str, list[dict]] = {d: [] for d in DOMAINS}
+    for rec in accepted:
+        d = rec["domain"]
+        if d not in by_domain:
+            stats.failures.append(f"unexpected domain emitted: {d}")
+            continue
+        by_domain[d].append(rec)
+
+    for domain in DOMAINS:
+        records = by_domain[domain]
+        path = output_path(domain, full=True)
+        n = write_records(records, path, append=True)
+        stats.by_domain_records[domain] = n
+        stats.by_domain_tokens[domain] = sum(r["tokens"] for r in records)
+        print(f"[write/append] {path} -> {n} records, "
+              f"~{stats.by_domain_tokens[domain]:,} tokens")
 
     return stats
 
@@ -904,7 +1045,7 @@ def _print_summary(stats: CollectionStats, *, full: bool) -> None:
     print(f"  {'TOTAL':<16} {total_records:>4} records  ~{total_tokens:>10,} tokens")
     print()
 
-    if not full and stats.sources:
+    if stats.sources:
         print("per-source:")
         for s in stats.sources:
             tag = "OK  " if s.fetched else "FAIL"
@@ -931,15 +1072,16 @@ def main(argv: list[str] | None = None) -> int:
         "--full",
         action="store_true",
         help=(
-            "Run the full collection sketch. The default (no --full) runs "
+            "Run the full expansion sweep. The default (no --full) runs "
             "the small validation sweep over 5 Wikipedia FAs + 3 classical "
-            "history books + 1 biography. --full is a SKETCH with URL "
-            "lists only; the real full sweep is deferred to a later wave."
+            "history books + 1 biography. --full pulls ~50 hand-picked "
+            "Wikipedia FAs + ~9 history books + 5 biographies and APPENDS "
+            "to data/curriculum_v2/{domain}/raw/agent_8_full.jsonl."
         ),
     )
     args = ap.parse_args(argv)
 
-    mode = "FULL (sketch)" if args.full else "VALIDATION"
+    mode = "FULL" if args.full else "VALIDATION"
     print(f"=== agent_8_world_knowledge ({mode}) ===")
     for domain in DOMAINS:
         print(f"  output: {output_path(domain, full=args.full)}")
