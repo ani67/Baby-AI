@@ -527,6 +527,16 @@ def main() -> int:
     log(f"data_root={DATA_ROOT}")
     log(f"final_dir={FINAL_DIR}")
 
+    # Step 0: disk sanity. The heavy collection agents stream-process-
+    # delete, but the pipeline still produces train/val/test/tokenizer
+    # which can be ~10 GB at full corpus scale.
+    try:
+        from scripts.collect.download_manager import monitor_disk_during_collection
+        if not monitor_disk_during_collection(threshold_gb=20.0, path=str(DATA_ROOT)):
+            log("WARNING: disk low; proceeding anyway — set --abort-on-low-disk to bail")
+    except Exception as e:
+        log(f"(disk monitor unavailable: {e})")
+
     # Step 1
     records = collect()
     if not records:

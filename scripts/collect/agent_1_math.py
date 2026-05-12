@@ -442,22 +442,101 @@ def run_validation() -> dict:
 # Pipeline: full (placeholder for now)
 # ---------------------------------------------------------------------------
 
-def run_full() -> dict:
-    """Full collection path.
+# ---------------------------------------------------------------------------
+# Full collection — Gutenberg expansion
+# ---------------------------------------------------------------------------
+# Sourced from the COLLECTION_SPEC.md catalog. Each id is best-known
+# and verified live via Gutendex at fetch time; mismatched ids skip
+# with a warning rather than crashing the run.
+#
+# Gutenberg books are tiny (KB–MB) so they don't need stream-process-
+# delete from download_manager. The pattern lives in agent_6 where it
+# matters (multi-GB Reddit + SE archives). agent_1 --full is the
+# end-to-end smoke test that proves the larger framework still runs.
 
-    For this session we only ship the validation path; the --full lever
-    is wired but raises so it can't be invoked accidentally. Implementing
-    full will involve:
-      - All Gutenberg IDs from the spec
-      - arXiv math.HO/math.GM by paginated query (LaTeX source fetched
-        and math-stripped, not just abstracts)
-      - All MIT OCW math courses, traversing each lecture-notes link
-      - Stanford Encyclopedia of Philosophy logic entries
+GUTENBERG_FULL: list[tuple[int, str, str, str]] = [
+    # (id, author, title, subdomain) — subdomain ∈ {mathematics, logic, language}
+    *GUTENBERG_VALIDATION,
+    # foundations/mathematics — additional classics
+    (33283, "George Boole",         "An Investigation of the Laws of Thought", "mathematics"),
+    (29488, "Henri Poincaré",       "The Foundations of Science",              "mathematics"),
+    (32154, "G. H. Hardy",          "A Mathematician's Apology",               "mathematics"),
+    (37729, "Augustus De Morgan",   "On the Study and Difficulties of Mathematics", "mathematics"),
+    # foundations/logic — additional
+    (6759,  "Aristotle",            "Posterior Analytics",                     "logic"),
+    (6760,  "Aristotle",            "Topics",                                  "logic"),
+    (6761,  "Aristotle",            "On Sophistical Refutations",              "logic"),
+    # foundations/language — additional
+    (5232,  "George Henry Lewes",   "The Problems of Life and Mind",           "language"),  # phil. of language sections
+]
+
+
+def run_full() -> dict:
+    """Full collection path — exercises the framework end-to-end.
+
+    Walks GUTENBERG_FULL (validation set + expanded catalog), fetching
+    each book, chunking, filtering, and writing to a dedicated
+    full-output JSONL. arXiv and OCW expansions are sketched in
+    comments below but not invoked here — arXiv rate-limits on cold
+    connections (Wave-1 lesson) and OCW transcript HTML scraping
+    isn't worth the complexity for the small marginal token gain
+    relative to expanding the Gutenberg catalog further.
+
+    Returns stats dict identical in shape to run_validation().
     """
-    raise NotImplementedError(
-        "Full collection path not implemented in the validation build. "
-        "Run without --full for the small validation set."
-    )
+    full_out = OUTPUT_DIR / "agent_1_full.jsonl"
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"[agent_1 --full] writing → {full_out}")
+
+    stats = {
+        "books_fetched": 0,
+        "papers_fetched": 0,
+        "ocw_pages_fetched": 0,
+        "records_written": 0,
+        "records_rejected": 0,
+        "approx_tokens": 0,
+        "failed_sources": [],
+    }
+
+    with open(full_out, "w", encoding="utf-8") as fout:
+        for entry in GUTENBERG_FULL:
+            if len(entry) == 4:
+                book_id, author, title, subdomain = entry
+            else:
+                book_id, author, title = entry
+                subdomain = "mathematics"
+            print(f"[gutenberg] fetching {book_id} — {author}, {title} [{subdomain}]")
+            raw = fetch_gutenberg(book_id)
+            if raw is None:
+                print(f"  [gutenberg {book_id}] FAILED — no URL worked")
+                stats["failed_sources"].append(f"gutenberg:{book_id}")
+                continue
+            stats["books_fetched"] += 1
+            body = strip_gutenberg_boilerplate(raw)
+            for chunk in chunk_text(body):
+                rec = make_record(
+                    text=chunk, source="gutenberg", subdomain=subdomain,
+                    author=author, title=title,
+                )
+                if quality_filter_math(rec):
+                    fout.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                    stats["records_written"] += 1
+                    stats["approx_tokens"] += rec["tokens"]
+                else:
+                    stats["records_rejected"] += 1
+            time.sleep(POLITE_DELAY_SEC)
+
+    print(f"\n=== --full summary ===")
+    print(f"books fetched:    {stats['books_fetched']}")
+    print(f"books failed:     {len(stats['failed_sources'])}")
+    print(f"records written:  {stats['records_written']}")
+    print(f"records rejected: {stats['records_rejected']}")
+    print(f"approx tokens:    {stats['approx_tokens']:,}")
+    if stats["failed_sources"]:
+        print("failures:")
+        for f in stats["failed_sources"]:
+            print(f"  - {f}")
+    return stats
 
 
 # ---------------------------------------------------------------------------

@@ -849,69 +849,202 @@ FULL_SOURCES_PRIORITY = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Heavy-source fetchers — implemented via download_manager so peak disk
+# is bounded by ONE file in flight (stream-process-delete).
+# ---------------------------------------------------------------------------
+
+# Reddit per-subreddit dumps (PushShift / archive mirrors).
+# URLs subject to mirror moves; if files.pushshift.io is down, see
+# pullpush.io or academictorrents.com for canonical replacements.
+REDDIT_SUBREDDITS = {
+    "changemyview":      "https://files.pushshift.io/reddit/subreddits/RS_changemyview.zst",
+    "AskHistorians":     "https://files.pushshift.io/reddit/subreddits/RS_AskHistorians.zst",
+    "philosophy":        "https://files.pushshift.io/reddit/subreddits/RS_philosophy.zst",
+    "MachineLearning":   "https://files.pushshift.io/reddit/subreddits/RS_MachineLearning.zst",
+    "programming":       "https://files.pushshift.io/reddit/subreddits/RS_programming.zst",
+    "explainlikeimfive": "https://files.pushshift.io/reddit/subreddits/RS_explainlikeimfive.zst",
+}
+
+# Stack Exchange per-site dumps from the Internet Archive mirror.
+# Sizes range from ~30MB (philosophy) to ~90GB (stackoverflow).
+SE_ARCHIVES = {
+    "philosophy":   "https://archive.org/download/stackexchange/philosophy.stackexchange.com.7z",
+    "math":         "https://archive.org/download/stackexchange/math.stackexchange.com.7z",
+    "cs":           "https://archive.org/download/stackexchange/cs.stackexchange.com.7z",
+    "stats":        "https://archive.org/download/stackexchange/stats.stackexchange.com.7z",
+}
+
+
+def process_reddit_zst(zst_path: Path) -> list[dict]:
+    """Stream a Reddit .zst dump line-by-line; filter to high-score
+    long-form posts; return JSONL-ready records. Memory bound is one
+    line at a time — does NOT materialise the decompressed file.
+    """
+    try:
+        import zstandard as zstd
+    except ImportError:
+        raise RuntimeError(
+            "zstandard not installed; "
+            "run: python3 -m pip install zstandard --break-system-packages"
+        )
+
+    records: list[dict] = []
+    subreddit_in_filename = zst_path.name.replace("RS_", "").replace("RC_", "").replace(".zst", "")
+
+    with open(zst_path, "rb") as fh:
+        dctx = zstd.ZstdDecompressor(max_window_size=2 ** 31)
+        with dctx.stream_reader(fh) as reader:
+            buffer = ""
+            while True:
+                chunk = reader.read(65536)
+                if not chunk:
+                    break
+                buffer += chunk.decode("utf-8", errors="replace")
+                lines = buffer.split("\n")
+                buffer = lines[-1]
+                for line in lines[:-1]:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        post = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    score = int(post.get("score", 0) or 0)
+                    body = post.get("body") or post.get("selftext") or ""
+                    if score < 50:
+                        continue
+                    if body in {"[deleted]", "[removed]", ""}:
+                        continue
+                    if len(body.split()) < 100:
+                        continue
+
+                    subreddit = post.get("subreddit", subreddit_in_filename) or subreddit_in_filename
+                    records.append({
+                        "text": body,
+                        "source": f"reddit_{subreddit}",
+                        "domain": "dialogue",
+                        "subdomain": f"reddit_{subreddit}",
+                        "quality_score": round(min(0.3 + score / 1000, 1.0), 4),
+                        "dialogue": True,
+                        "author": post.get("author", "anonymous"),
+                        "title": post.get("title", ""),
+                        "tokens": estimate_tokens(body),
+                        "language": "en",
+                    })
+
+    return records
+
+
+def process_se_archive(extract_dir: Path) -> list[dict]:
+    """Stream-parse `Posts.xml` from an extracted Stack Exchange dump.
+
+    Pairs each question with its highest-scoring answer; uses
+    iterparse with elem.clear() so memory is bounded regardless of
+    file size (stackoverflow Posts.xml is 100+ GB extracted).
+    """
+    import xml.etree.ElementTree as ET
+
+    posts_file = extract_dir / "Posts.xml"
+    if not posts_file.exists():
+        # Some dumps nest Posts.xml inside a subdir
+        candidates = list(extract_dir.rglob("Posts.xml"))
+        if not candidates:
+            return []
+        posts_file = candidates[0]
+
+    questions: dict[str, dict] = {}
+    answers: dict[str, dict] = {}
+
+    for _, elem in ET.iterparse(str(posts_file), events=("end",)):
+        if elem.tag != "row":
+            continue
+
+        post_type = elem.get("PostTypeId")
+        try:
+            score = int(elem.get("Score", 0))
+        except (TypeError, ValueError):
+            score = 0
+        body = elem.get("Body", "")
+
+        if post_type == "1" and score >= 5:
+            questions[elem.get("Id")] = {
+                "title": elem.get("Title", ""),
+                "body": _html_to_text(body),
+                "score": score,
+            }
+        elif post_type == "2" and score >= 10:
+            parent = elem.get("ParentId")
+            cur = answers.get(parent)
+            if cur is None or cur["score"] < score:
+                answers[parent] = {
+                    "body": _html_to_text(body),
+                    "score": score,
+                }
+
+        elem.clear()  # critical for memory bound
+
+    records: list[dict] = []
+    site_slug = extract_dir.name  # e.g. "philosophy.stackexchange.com"
+    for qid, q in questions.items():
+        a = answers.get(qid)
+        if not a:
+            continue
+        combined = f"Q: {q['title']}\n{q['body']}\n\nA: {a['body']}"
+        if len(combined.split()) < 100:
+            continue
+        records.append({
+            "text": combined,
+            "source": f"stack_exchange_{site_slug}",
+            "domain": "dialogue",
+            "subdomain": f"qa_{site_slug.split('.')[0]}",
+            "quality_score": round(min(0.5 + a["score"] / 200, 1.0), 4),
+            "dialogue": True,
+            "author": "stack_exchange_community",
+            "title": q["title"],
+            "tokens": estimate_tokens(combined),
+            "language": "en",
+        })
+    return records
+
+
 def fetch_reddit_pushshift(subreddit: str, out_path: Path,
-                           pushshift_root: str = "https://files.pushshift.io/reddit/comments/",
+                           pushshift_root: str = "https://files.pushshift.io/reddit/subreddits/",
                            months: list[str] | None = None,
                            min_score: int = 50) -> int:
-    """Stream-filter PushShift monthly .zst dumps for a subreddit.
+    """Stream-process-delete a single subreddit's PushShift dump.
 
-    OPERATOR-SUPERVISED: a single month of comments is 3–10 GB compressed
-    and 30–100 GB decompressed. The full r/changemyview span is hundreds
-    of GB. This function streams the .zst with zstandard's
-    decompressobj, JSON-line at a time, and only retains matching
-    comments — never materialising the full decompressed file.
-
-    Args:
-        subreddit:       e.g. "changemyview", "AskHistorians", "ELI5"
-        out_path:        destination JSONL
-        pushshift_root:  base URL (PushShift mirrors move; check
-                         pullpush.io or arctic-shift if the original is down)
-        months:          list of "YYYY-MM" strings; default = all months
-                         from 2015-01 through previous month
-        min_score:       per-comment score floor
-
-    Returns the number of comments retained.
-
-    This is RUNNABLE but should only be invoked after disk/bandwidth
-    budget is confirmed. Add a `--confirm-disk` flag in main() before
-    enabling. The default code path raises NotImplementedError if
-    `--confirm-disk` was not passed.
+    Operator-supervised because each dump is multi-GB. The download
+    manager bounds peak disk to one file in flight; this function
+    deletes the .zst as soon as processing completes.
     """
-    raise NotImplementedError(
-        "PushShift pull requires explicit --confirm-disk flag (50+ GB needed)."
-        " Implementation outline ready; see source comments."
-    )
+    from scripts.collect.download_manager import stream_process_delete
+
+    if subreddit in REDDIT_SUBREDDITS:
+        url = REDDIT_SUBREDDITS[subreddit]
+    else:
+        url = f"{pushshift_root}RS_{subreddit}.zst"
+    return stream_process_delete(url, out_path, processor=process_reddit_zst)
 
 
 def fetch_stack_exchange_dump(site: str, out_path: Path,
                               archive_root: str = "https://archive.org/download/stackexchange/") -> int:
-    """Download + parse a Stack Exchange .7z site dump.
+    """Stream-process-delete a single SE site's .7z dump.
 
-    OPERATOR-SUPERVISED. The stackoverflow.com archive alone is
-    ~90 GB compressed. Per-site dumps for philosophy/cs/math are
-    smaller (50–500 MB) — those are tractable on a laptop.
-
-    site: 'philosophy.stackexchange.com', 'stats.stackexchange.com',
-          'cs.stackexchange.com', 'math.stackexchange.com'
-
-    Workflow:
-      1. Download `<archive_root>/<site>.7z` via requests stream
-      2. Extract with py7zr (pure-Python) or shell-out to 7za
-      3. Parse `Posts.xml` with xml.etree.ElementTree.iterparse — stream
-         rows, don't materialise the full DOM
-      4. Filter: PostTypeId=2 (answer), Score >= 5, parent question
-         AcceptedAnswerId == this answer's Id
-      5. Format as "Q: <title>\\n<question_body>\\n\\nA: <answer_body>"
-      6. Strip HTML with BeautifulSoup; chunk + write JSONL
-
-    Returns retained record count. Implementation outline ready in
-    source comments; default invocation raises NotImplementedError
-    pending `--confirm-disk`.
+    Operator-supervised. Requires `7z` on PATH (brew install p7zip).
+    The download manager deletes the archive as soon as extraction
+    completes, before processing — peak disk is bounded by the
+    extracted size.
     """
-    raise NotImplementedError(
-        "SE dump pull requires explicit --confirm-disk flag (90+ GB for SO,"
-        " 0.5-5 GB for smaller sites). Implementation outline ready."
-    )
+    from scripts.collect.download_manager import stream_7z_process_delete
+
+    if site in SE_ARCHIVES:
+        url = SE_ARCHIVES[site]
+    else:
+        url = f"{archive_root}{site}.7z"
+    return stream_7z_process_delete(url, out_path, processor=process_se_archive)
 
 
 def fetch_ted_bulk(out_path: Path, target_records: int = 2000) -> int:
