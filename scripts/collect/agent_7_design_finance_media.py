@@ -1,10 +1,10 @@
 """
 Agent 7 — Design, Finance & Media collection.
 
-Fetches three small, public, validation corpora — one per domain — and
-writes them as JSONL chunks under data/curriculum_v2/{domain}/raw/.
+Fetches three small, public corpora — one per domain — and writes
+them as JSONL chunks under data/curriculum_v2/{domain}/raw/.
 
-Validation mode (default) is what runs in this wave. Sources:
+Validation mode (default). Sources:
 
   finance / annual_letter   Berkshire Hathaway annual letters
                             (priority anchor — Warren Buffett, 60 years of
@@ -14,23 +14,34 @@ Validation mode (default) is what runs in this wave. Sources:
                             or Ruskin).
   media   / theory          Wikipedia REST API pages on media topics.
 
-Full mode (--full) is a sketch: URL lists + comments enumerating the
-full Berkshire span 1965–present (most pre-2000 letters are HTML,
-post-2003 letters are PDF-only and would require pdfminer/pypdf to
-extract). The sketch also lists Howard Marks memos, NBER and SEC
-EDGAR as candidates that need PDF/login handling beyond this script.
+Full mode (--full) is the real expansion pass. APPENDs to:
+  data/curriculum_v2/finance/raw/agent_7_full.jsonl
+  data/curriculum_v2/design/raw/agent_7_full.jsonl
+  data/curriculum_v2/media/raw/agent_7_full.jsonl
+
+  finance / annual_letter   All Berkshire HTML letters 1977..2001
+                            (priority anchor — ~25 letters, target
+                            ~500K tokens). PDF-only letters
+                            (2002..present) are out of scope and
+                            documented as a follow-up pass.
+  finance / classic         Adam Smith, Veblen, Mill, Smith essays,
+                            Smith Theory of Moral Sentiments.
+  design  / architecture    Vitruvius, Ruskin Seven Lamps, Ruskin
+                            Stones of Venice vols 1-3.
+  media   / theory          ~15 Wikipedia REST API pages spanning
+                            cinema, photography, music theory,
+                            painting, sculpture, animation, etc.
 
 Spec: doc/curriculum/COLLECTION_SPEC.md → "Agent 7 — Design, Finance
 & Media", with the Berkshire callout flagged as the priority anchor.
 
+Note from prior waves: the spec's Berkshire HTML/PDF cutover was
+inverted. Reality is 1977–2001 = HTML, 2002–present = PDF.
+BERKSHIRE_HTML_LETTERS_FULL_SKETCH below has the correct HTML set.
+
 Schema (per record) follows COLLECTION_SPEC.md "Output format":
   text, source, domain, subdomain, quality_score, dialogue, author,
   title, tokens, language.
-
-Three output files, one per domain:
-  data/curriculum_v2/design/raw/agent_7_validation.jsonl
-  data/curriculum_v2/finance/raw/agent_7_validation.jsonl
-  data/curriculum_v2/media/raw/agent_7_validation.jsonl
 """
 
 from __future__ import annotations
@@ -510,57 +521,183 @@ DESIGN_GUTENBERG_CANDIDATES: tuple[GutenbergSource, ...] = (
 )
 
 
+# --- --full expansions ---------------------------------------------------
+#
+# Finance: validation already covers 3300 (Smith - Wealth of Nations).
+# Add Veblen, Mill, Smith's other two public-domain works. Walras's
+# Elements of Pure Economics is not on Gutenberg (verified via
+# gutendex search) — documented and skipped. Pugin's Contrasts is
+# also not on Gutenberg — documented and skipped.
+#
+# Verified IDs (all confirmed via gutendex at build time):
+#   3300   Smith     - Wealth of Nations
+#   833    Veblen    - Theory of the Leisure Class
+#   30107  Mill      - Principles of Political Economy (abridged)
+#   67363  Smith     - Theory of Moral Sentiments
+#   58559  Smith     - Essays of Adam Smith
+#
+# Design (architecture):
+#   20239  Vitruvius - Ten Books on Architecture
+#   35898  Ruskin    - Seven Lamps of Architecture
+#   30754  Ruskin    - Stones of Venice, Vol 1
+#   30755  Ruskin    - Stones of Venice, Vol 2
+#   30756  Ruskin    - Stones of Venice, Vol 3
+
+FINANCE_GUTENBERG_FULL: tuple[GutenbergSource, ...] = (
+    GutenbergSource(
+        gid=3300,
+        fallback_title="The Wealth of Nations",
+        fallback_author="Adam Smith",
+        domain="finance",
+        subdomain="classic",
+    ),
+    GutenbergSource(
+        gid=833,
+        fallback_title="The Theory of the Leisure Class",
+        fallback_author="Thorstein Veblen",
+        domain="finance",
+        subdomain="classic",
+    ),
+    GutenbergSource(
+        gid=30107,
+        fallback_title="Principles of Political Economy",
+        fallback_author="John Stuart Mill",
+        domain="finance",
+        subdomain="classic",
+    ),
+    GutenbergSource(
+        gid=67363,
+        fallback_title="The Theory of Moral Sentiments",
+        fallback_author="Adam Smith",
+        domain="finance",
+        subdomain="classic",
+    ),
+    GutenbergSource(
+        gid=58559,
+        fallback_title="The Essays of Adam Smith",
+        fallback_author="Adam Smith",
+        domain="finance",
+        subdomain="classic",
+    ),
+)
+
+DESIGN_GUTENBERG_FULL: tuple[GutenbergSource, ...] = (
+    GutenbergSource(
+        gid=20239,
+        fallback_title="The Ten Books on Architecture",
+        fallback_author="Vitruvius",
+        domain="design",
+        subdomain="architecture",
+    ),
+    GutenbergSource(
+        gid=35898,
+        fallback_title="The Seven Lamps of Architecture",
+        fallback_author="John Ruskin",
+        domain="design",
+        subdomain="architecture",
+    ),
+    GutenbergSource(
+        gid=30754,
+        fallback_title="The Stones of Venice, Volume 1",
+        fallback_author="John Ruskin",
+        domain="design",
+        subdomain="architecture",
+    ),
+    GutenbergSource(
+        gid=30755,
+        fallback_title="The Stones of Venice, Volume 2",
+        fallback_author="John Ruskin",
+        domain="design",
+        subdomain="architecture",
+    ),
+    GutenbergSource(
+        gid=30756,
+        fallback_title="The Stones of Venice, Volume 3",
+        fallback_author="John Ruskin",
+        domain="design",
+        subdomain="architecture",
+    ),
+)
+
+
+def _collect_one_gutenberg(
+    src: GutenbergSource,
+) -> tuple[list[dict], "SourceStats"]:
+    """Verify, fetch, chunk, filter one Gutenberg source. Returns
+    (records, stats). On any failure returns ([], stats with
+    fetched=False)."""
+    label = f"gutenberg/{src.domain}/{src.gid}"
+    print(f"[gutenberg] {src.gid}  ({src.fallback_author} - {src.fallback_title})")
+    meta = verify_gutenberg(src.gid)
+    if meta is None:
+        print(f"  gutendex lookup failed", file=sys.stderr)
+        time.sleep(POLITE_DELAY)
+        return [], SourceStats(label=label, fetched=False)
+    title = meta.get("title") or src.fallback_title
+    authors = meta.get("authors") or []
+    author = authors[0]["name"] if authors else src.fallback_author
+    print(f"  verified: {title} - {author}")
+    raw = fetch_gutenberg_text(src.gid)
+    if raw is None:
+        print(f"  text fetch failed", file=sys.stderr)
+        time.sleep(POLITE_DELAY)
+        return [], SourceStats(label=label, fetched=False)
+    body = strip_gutenberg_boilerplate(raw)
+    chunks = chunk_prose(body)
+    records: list[dict] = []
+    rejected = 0
+    for chunk in chunks:
+        rec = build_record(
+            chunk,
+            source="gutenberg",
+            domain=src.domain,
+            subdomain=src.subdomain,
+            author=author,
+            title=title,
+        )
+        if not quality_filter(rec):
+            rejected += 1
+            continue
+        records.append(rec)
+    tokens = sum(r["tokens"] for r in records)
+    print(f"  -> {len(records)} chunks kept, {rejected} rejected, "
+          f"~{tokens:,} tokens")
+    time.sleep(POLITE_DELAY)
+    return records, SourceStats(
+        label=label,
+        fetched=True,
+        kept=len(records),
+        rejected=rejected,
+        tokens=tokens,
+    )
+
+
 def collect_first_gutenberg(
     candidates: Iterable[GutenbergSource],
 ) -> tuple[list[dict], "SourceStats"]:
     """Try candidates in order, return chunks from the first one that
     verifies via Gutendex and fetches text successfully."""
+    last_stat = SourceStats(label="gutenberg/none", fetched=False)
     for src in candidates:
-        label = f"gutenberg/{src.domain}/{src.gid}"
-        print(f"[gutenberg] {src.gid}  ({src.fallback_author} - {src.fallback_title})")
-        meta = verify_gutenberg(src.gid)
-        if meta is None:
-            print(f"  gutendex lookup failed; trying next", file=sys.stderr)
-            time.sleep(POLITE_DELAY)
-            continue
-        title = meta.get("title") or src.fallback_title
-        authors = meta.get("authors") or []
-        author = authors[0]["name"] if authors else src.fallback_author
-        print(f"  verified: {title} - {author}")
-        raw = fetch_gutenberg_text(src.gid)
-        if raw is None:
-            print(f"  text fetch failed; trying next", file=sys.stderr)
-            time.sleep(POLITE_DELAY)
-            continue
-        body = strip_gutenberg_boilerplate(raw)
-        chunks = chunk_prose(body)
-        records: list[dict] = []
-        rejected = 0
-        for chunk in chunks:
-            rec = build_record(
-                chunk,
-                source="gutenberg",
-                domain=src.domain,
-                subdomain=src.subdomain,
-                author=author,
-                title=title,
-            )
-            if not quality_filter(rec):
-                rejected += 1
-                continue
-            records.append(rec)
-        tokens = sum(r["tokens"] for r in records)
-        print(f"  -> {len(records)} chunks kept, {rejected} rejected, "
-              f"~{tokens:,} tokens")
-        time.sleep(POLITE_DELAY)
-        return records, SourceStats(
-            label=label,
-            fetched=True,
-            kept=len(records),
-            rejected=rejected,
-            tokens=tokens,
-        )
-    return [], SourceStats(label="gutenberg/none", fetched=False)
+        records, stats = _collect_one_gutenberg(src)
+        last_stat = stats
+        if records:
+            return records, stats
+    return [], last_stat
+
+
+def collect_all_gutenberg(
+    candidates: Iterable[GutenbergSource],
+) -> tuple[list[dict], list["SourceStats"]]:
+    """Walk all candidates, keep every one that fetches. Used by
+    --full to expand beyond a single text per domain."""
+    all_records: list[dict] = []
+    all_stats: list[SourceStats] = []
+    for src in candidates:
+        records, stats = _collect_one_gutenberg(src)
+        all_records.extend(records)
+        all_stats.append(stats)
+    return all_records, all_stats
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +710,30 @@ WIKIPEDIA_MEDIA_TOPICS: tuple[str, ...] = (
     "Cinema_of_the_United_States",
     "Photography",
     "Film_theory",
+)
+
+# --full Wikipedia expansion. Validation's 3 are first, then 12 more
+# spanning music, painting, sculpture, animation, photojournalism,
+# cinematography, modern art, architecture, plus film-theory sub-topics
+# (mise-en-scene, auteur, documentary, cinéma vérité, history of
+# photography). Target ~15 articles total.
+WIKIPEDIA_MEDIA_TOPICS_FULL: tuple[str, ...] = (
+    "Cinema_of_the_United_States",
+    "Photography",
+    "Film_theory",
+    "Music_theory",
+    "Architecture",
+    "Modern_art",
+    "Photojournalism",
+    "Cinematography",
+    "Sculpture",
+    "Painting",
+    "Animation",
+    "Mise-en-scène",
+    "Auteur",
+    "Documentary_film",
+    "Cinéma_vérité",
+    "History_of_photography",
 )
 
 
@@ -700,9 +861,10 @@ def output_path(domain: str, full: bool) -> Path:
     return OUTPUT_ROOT / domain / "raw" / fname
 
 
-def write_jsonl(records: list[dict], path: Path) -> int:
+def write_jsonl(records: list[dict], path: Path, *, append: bool = False) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
+    mode = "a" if append else "w"
+    with path.open(mode, encoding="utf-8") as f:
         for rec in records:
             f.write(json.dumps(rec, ensure_ascii=False))
             f.write("\n")
@@ -784,60 +946,117 @@ def run_validation() -> None:
         print(f"  [{flag}] {s.label:<24} kept={s.kept:<4} tokens~{s.tokens:,}")
 
 
-def run_full_sketch() -> None:
-    """--full is a sketch. Print the URL inventory the full collection
-    pass would walk; do not actually fetch beyond the validation set.
+def run_full() -> None:
+    """Full expansion pass. APPENDS records to per-domain
+    agent_7_full.jsonl files. Sources:
 
-    This mirrors the convention in Agents 1..6 — the validation script
-    is what the wave runs; the --full path documents the territory."""
+      finance  Berkshire HTML letters 1977..2001 (priority anchor) +
+               Gutenberg classics (Smith x3, Veblen, Mill).
+      design   Gutenberg architecture (Vitruvius, Ruskin Seven Lamps,
+               Ruskin Stones of Venice vols 1-3).
+      media    Wikipedia REST API pages on media-theory topics,
+               ~15 articles.
+
+    Out of scope, documented and skipped:
+      - PDF Berkshire letters (2002..present) — need pdfminer.six.
+      - Pre-1977 Berkshire letters — not posted publicly.
+      - Walras's Elements of Pure Economics — not on Gutenberg
+        (verified via gutendex search).
+      - Pugin's Contrasts — not on Gutenberg (verified)."""
     print("=" * 72)
-    print("Agent 7 — --full SKETCH (does not collect)")
+    print("Agent 7 — --full run (design, finance, media)")
     print("=" * 72)
 
-    print("\n# FINANCE — Berkshire Hathaway annual letters (priority anchor)")
-    print("# HTML letters that can be fetched and parsed by this script as-is:")
-    for y, url in sorted(BERKSHIRE_HTML_LETTERS_FULL_SKETCH):
-        print(f"#   {y}  {url}")
-    print("# PDF-only letters (2002, 2003, 2004..present):")
-    print("#   https://www.berkshirehathaway.com/letters/{year}ltr.pdf")
-    print("#   Need pdfminer.six or pypdf to extract — out of scope here.")
-    print("# 1965..1976 letters live only in printed annual reports.")
+    # --- FINANCE -----------------------------------------------------
+    print("\n[FINANCE / berkshire — priority anchor]")
+    # Dedupe by year (the sketch tuple has the 1998/1999 htm variants
+    # and the 2000/2001 AR variants alongside the 1977..1997 range —
+    # but no overlapping years, so a dict by year is just defensive).
+    berk_letters = list({y: url for y, url in
+                         BERKSHIRE_HTML_LETTERS_FULL_SKETCH}.items())
+    berk_letters.sort()  # oldest first
+    berk_records, berk_stats = collect_berkshire(berk_letters)
 
-    print("\n# FINANCE — Public-domain classics (Gutenberg)")
-    print("#   3300   Adam Smith - Wealth of Nations")
-    print("#   833    Thorstein Veblen - Theory of the Leisure Class")
-    print("#   ????   Keynes - General Theory  (NOT public domain in US)")
-    print("#   ????   Marx  - Capital Vol 1   (multiple translations on Gutenberg)")
+    print("\n[FINANCE / gutenberg classics]")
+    fin_gut_records, fin_gut_stats = collect_all_gutenberg(
+        FINANCE_GUTENBERG_FULL
+    )
 
-    print("\n# FINANCE — out-of-scope (sketch only, requires PDF/login):")
-    print("#   Dalio - Principles  (oaktree-style PDF posted by author)")
-    print("#   Howard Marks memos  (oaktreecapital.com, free but PDF)")
-    print("#   Graham - Security Analysis  (excerpts, fair-use only)")
-    print("#   NBER working papers (open access, PDF)")
-    print("#   SEC EDGAR 10-K MD&A sections (HTML but huge + needs parsing)")
+    finance_records = berk_records + fin_gut_records
+    finance_stats = berk_stats + fin_gut_stats
+    n_fin = write_jsonl(
+        finance_records, output_path("finance", full=True), append=True
+    )
+    summarize(f"finance ({n_fin} appended)", finance_records, finance_stats)
 
-    print("\n# DESIGN — Gutenberg architecture / design texts")
-    print("#   20239  Vitruvius - Ten Books on Architecture")
-    print("#   35898  Ruskin   - Seven Lamps of Architecture")
-    print("#   ????   Le Corbusier - Towards a New Architecture (translation)")
-    print("#   ????   Wright   - selected public domain writings")
-    print("#   Bauhaus writings (Gropius, Klee, Kandinsky, Moholy-Nagy)")
-    print("#   are 20th-century and mostly not yet public domain in US.")
-    print("# Eye Magazine / AIGA archives are HTML, would extend cleanly.")
+    # --- DESIGN ------------------------------------------------------
+    print("\n[DESIGN / gutenberg architecture]")
+    design_records, design_stats = collect_all_gutenberg(
+        DESIGN_GUTENBERG_FULL
+    )
+    n_des = write_jsonl(
+        design_records, output_path("design", full=True), append=True
+    )
+    summarize(f"design ({n_des} appended)", design_records, design_stats)
 
-    print("\n# MEDIA — beyond validation Wikipedia set")
-    print("# Wikipedia FA/GA pages on media-theory topics, examples:")
-    print("#   Mise-en-scene, Auteur_theory, Documentary_film, "
-          "Cinema_verite,")
-    print("#   Photojournalism, History_of_photography, Music_theory,")
-    print("#   Sound_film, Television_studies, Cultural_studies.")
-    print("# Film-theory primary sources (Bazin, Eisenstein, Sontag, "
-          "Benjamin,")
-    print("# McLuhan, Berger) are mostly still in copyright and not "
-          "available")
-    print("# as clean HTML — would need fair-use excerpts only.")
+    # --- MEDIA -------------------------------------------------------
+    print("\n[MEDIA / wikipedia]")
+    media_records, media_stats = collect_wikipedia(
+        WIKIPEDIA_MEDIA_TOPICS_FULL
+    )
+    n_med = write_jsonl(
+        media_records, output_path("media", full=True), append=True
+    )
+    summarize(f"media ({n_med} appended)", media_records, media_stats)
 
-    print("\n# (No fetch performed in --full mode.)")
+    # --- Final report ------------------------------------------------
+    print()
+    print("=" * 72)
+    print("AGENT 7 — FULL SUMMARY")
+    print("=" * 72)
+    total = len(finance_records) + len(design_records) + len(media_records)
+    fin_tokens = sum(r["tokens"] for r in finance_records)
+    des_tokens = sum(r["tokens"] for r in design_records)
+    med_tokens = sum(r["tokens"] for r in media_records)
+    total_tokens = fin_tokens + des_tokens + med_tokens
+    print(f"finance : {len(finance_records):>4} records, "
+          f"~{fin_tokens:,} tokens "
+          f"-> {output_path('finance', True)}")
+    print(f"design  : {len(design_records):>4} records, "
+          f"~{des_tokens:,} tokens "
+          f"-> {output_path('design', True)}")
+    print(f"media   : {len(media_records):>4} records, "
+          f"~{med_tokens:,} tokens "
+          f"-> {output_path('media', True)}")
+    print(f"TOTAL   : {total} records, ~{total_tokens:,} tokens")
+
+    # Berkshire roll-up — the priority anchor, called out explicitly.
+    print()
+    print("Berkshire anchor (HTML letters 1977..2001):")
+    ok_years = []
+    fail_years = []
+    for s in berk_stats:
+        flag = "OK" if s.fetched and not s.empty else (
+            "EMPTY" if s.empty else "FAIL"
+        )
+        year = s.label.rsplit("/", 1)[-1]
+        if flag == "OK":
+            ok_years.append(year)
+        else:
+            fail_years.append(year)
+        print(f"  [{flag}] {s.label:<24} kept={s.kept:<4} tokens~{s.tokens:,}")
+    print(f"  -- OK years ({len(ok_years)}): {', '.join(ok_years)}")
+    if fail_years:
+        print(f"  -- FAILED/EMPTY years ({len(fail_years)}): "
+              f"{', '.join(fail_years)}")
+
+    # Out-of-scope summary
+    print()
+    print("Documented and skipped (out of scope for --full):")
+    print("  - Berkshire 2002..present (PDF-only, needs pdfminer.six)")
+    print("  - Berkshire 1965..1976 (not posted on BH site)")
+    print("  - Walras, Elements of Pure Economics (not on Gutenberg)")
+    print("  - Pugin, Contrasts (not on Gutenberg)")
 
 
 def main() -> None:
@@ -845,11 +1064,12 @@ def main() -> None:
     ap.add_argument(
         "--full",
         action="store_true",
-        help="Print the --full sketch instead of running validation.",
+        help="Run the full expansion pass (Berkshire HTML letters + "
+             "expanded Gutenberg + expanded Wikipedia).",
     )
     args = ap.parse_args()
     if args.full:
-        run_full_sketch()
+        run_full()
     else:
         run_validation()
 
